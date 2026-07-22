@@ -1,6 +1,24 @@
-# 遥感监测内业处理与成果审核平台
+# AgriScope — 遥感监测内业处理与成果审核平台
 
 面向农业遥感监测业务的全栈 GIS 原型系统。系统使用 FastAPI、PostGIS、Vue 3、OpenLayers 与 Cesium，构建影像预处理、地块解译、质量检查、内外业核查和三级成果审核的一体化桌面工作台。
+
+## 界面预览
+
+### 项目总览
+
+![AgriScope 项目总览](docs/images/dashboard.png)
+
+### 地块解译工作台
+
+![AgriScope 地块解译工作台](docs/images/interpretation-workbench.png)
+
+### 生产调度
+
+![AgriScope 生产调度](docs/images/production-scheduling.png)
+
+### 规则配置
+
+![AgriScope 规则配置](docs/images/rule-settings.png)
 
 ## 核心能力
 
@@ -390,3 +408,9 @@ psql "$POSTGRES_DSN" -f scripts/migrations/20260722_remove_seeded_task_audit.sql
 - 数据库异常统一转换为安全提示，原始堆栈仅记录在服务端日志。
 - API 经纬度均校验为 WGS84 合法范围。
 - 生产环境应通过密钥管理系统覆盖示例数据库密码，并限制数据库端口暴露。
+
+## 开源许可
+
+AgriScope 基于 [Apache License 2.0](LICENSE) 开源。
+
+允许个人和企业使用、修改、分发及商业化，但须保留版权、许可和变更说明。项目包含的行政区划、OpenStreetMap 快照及其他公开数据仍遵循各自来源的授权和署名要求；这些联调数据不代表法定基本农田或法定调查成果。第三方数据归属说明见 [NOTICE](NOTICE)。
