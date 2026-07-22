@@ -338,6 +338,40 @@ class DeliveryService:
             ],
         )
 
+    async def get_current_package(
+        self,
+        db: AsyncSession,
+        task: object,
+    ) -> DeliveryPackage | None:
+        """查询并判定任务当前有效成果交付包。
+
+        Args:
+            db: 异步数据库会话。
+            task: 当前作业任务。
+
+        Returns:
+            DeliveryPackage | None: 当前有效成果包；不存在时为空。
+        """
+        packages = await self.dao.get_packages(db, task.id)
+        imagery = await self.workbench_dao.get_latest_imagery(
+            db,
+            task.project_id,
+        )
+        archive_state = await self.dao.get_archive_state(
+            db,
+            task.project_id,
+            task.id,
+            getattr(imagery, "id", None),
+        )
+        return next(
+            (
+                package
+                for package in packages
+                if self._get_stale_reason(package, task, archive_state) is None
+            ),
+            None,
+        )
+
     async def generate_package(
         self,
         db: AsyncSession,

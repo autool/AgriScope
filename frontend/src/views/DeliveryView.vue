@@ -3,12 +3,15 @@ import {
   CheckCircleOutlined,
   ExportOutlined,
   FileDoneOutlined,
+  FileProtectOutlined,
 } from '@ant-design/icons-vue'
 import { message } from 'ant-design-vue'
 import { storeToRefs } from 'pinia'
 import { computed, onMounted, ref } from 'vue'
 
+import AcceptanceReportModal from '@/components/delivery/AcceptanceReportModal.vue'
 import VectorExportModal from '@/components/delivery/VectorExportModal.vue'
+import { useAcceptanceReportStore } from '@/store/acceptanceReportStore'
 import { useDeliveryStore } from '@/store/deliveryStore'
 import { useUserStore } from '@/store/userStore'
 import { useVectorExportStore } from '@/store/vectorExportStore'
@@ -17,11 +20,13 @@ import type {
   VectorExportGeneratePayload,
   VectorExportPackage,
 } from '@/types/vectorExport'
+import type { AcceptanceReport } from '@/types/acceptanceReport'
 
 const workbenchStore = useWorkbenchStore()
 const deliveryStore = useDeliveryStore()
 const userStore = useUserStore()
 const vectorExportStore = useVectorExportStore()
+const acceptanceReportStore = useAcceptanceReportStore()
 const { deliveriesRef } = storeToRefs(deliveryStore)
 const {
   canDownloadComputed: canDownloadVectorComputed,
@@ -33,9 +38,18 @@ const {
   optionsRef: vectorExportOptionsRef,
 } = storeToRefs(vectorExportStore)
 const { overviewRef } = storeToRefs(workbenchStore)
+const {
+  canDownloadComputed: canDownloadAcceptanceComputed,
+  canGenerateComputed: canGenerateAcceptanceComputed,
+  downloadingCodeRef: acceptanceDownloadingCodeRef,
+  generatingRef: acceptanceGeneratingRef,
+  listRef: acceptanceReportListRef,
+  loadingRef: acceptanceLoadingRef,
+} = storeToRefs(acceptanceReportStore)
 const selectedPackageCodeRef = ref<string | null>(null)
 const generatingRef = ref(false)
 const vectorExportOpenRef = ref<boolean>(false)
+const acceptanceReportOpenRef = ref<boolean>(false)
 const selectedPackageComputed = computed(() => deliveriesRef.value?.packages?.find(
   (item) => item.package_code === selectedPackageCodeRef.value,
 ) || deliveriesRef.value?.packages?.[0] || null)
@@ -158,8 +172,54 @@ const handleDownloadVector = async (
   }
 }
 
+/**
+ * 生成绑定当前成果包的正式验收报告。
+ * Args:
+ *   reportTitle: 验收报告标题。
+ *   comment: 生成依据。
+ * Returns:
+ *   Promise<void>: 报告生成和列表刷新完成后结束。
+ */
+const handleGenerateAcceptance = async (
+  reportTitle: string,
+  comment: string,
+): Promise<void> => {
+  try {
+    const report = await acceptanceReportStore.generate({
+      report_title: reportTitle,
+      comment,
+    })
+    message.success(`成果验收报告 V${report.version} 已生成`)
+  } catch {
+    // 请求拦截器已显示安全错误，保留弹窗便于查看业务门禁。
+  }
+}
+
+/**
+ * 下载并保存通过 DOCX/PDF 复核的验收报告 ZIP。
+ * Args:
+ *   report: 待下载验收报告。
+ * Returns:
+ *   Promise<void>: 下载动作触发后结束。
+ */
+const handleDownloadAcceptance = async (
+  report: AcceptanceReport,
+): Promise<void> => {
+  try {
+    const { blob, filename } = await acceptanceReportStore.download(report)
+    downloadBlob(blob, filename)
+    message.success(`成果验收报告 V${report.version} 已校验并开始下载`)
+  } catch {
+    // 请求拦截器已显示安全错误。
+  }
+}
+
 onMounted(() => {
-  void Promise.all([deliveryStore.load(), vectorExportStore.load()])
+  void Promise.all([
+    deliveryStore.load(),
+    vectorExportStore.load(),
+    acceptanceReportStore.load(),
+  ])
 })
 </script>
 
@@ -170,6 +230,9 @@ onMounted(() => {
       <div>
         <a-button @click="vectorExportOpenRef = true">
           <ExportOutlined />矢量成果
+        </a-button>
+        <a-button @click="acceptanceReportOpenRef = true">
+          <FileProtectOutlined />验收报告
         </a-button>
         <a-button
           type="primary"
@@ -272,6 +335,20 @@ onMounted(() => {
       @refresh="vectorExportStore.load"
       @generate="handleGenerateVector"
       @download="handleDownloadVector"
+    />
+    <AcceptanceReportModal
+      :open="acceptanceReportOpenRef"
+      :task-code="overviewRef?.task.task_code || '--'"
+      :list="acceptanceReportListRef"
+      :loading="acceptanceLoadingRef"
+      :generating="acceptanceGeneratingRef"
+      :downloading-code="acceptanceDownloadingCodeRef"
+      :can-generate="canGenerateAcceptanceComputed"
+      :can-download="canDownloadAcceptanceComputed"
+      @cancel="acceptanceReportOpenRef = false"
+      @refresh="acceptanceReportStore.load"
+      @generate="handleGenerateAcceptance"
+      @download="handleDownloadAcceptance"
     />
   </div>
 </template>

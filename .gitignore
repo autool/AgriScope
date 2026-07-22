@@ -29,3 +29,4 @@ backend/storage/field-evidence/
 backend/storage/disaster-reports/
 backend/storage/statistics-reports/
 backend/storage/vector-exports/
+backend/storage/acceptance-reports/

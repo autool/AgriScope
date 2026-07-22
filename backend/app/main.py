@@ -13,6 +13,7 @@ from sqlalchemy import text
 from sqlalchemy.exc import DBAPIError, IntegrityError, SQLAlchemyError
 
 from app.api.v1.endpoints import (
+    acceptance_report,
     boundary,
     change_detection,
     delivery,
@@ -200,6 +201,7 @@ app.include_router(imagery_history.router)
 app.include_router(imagery_mosaic.router)
 app.include_router(imagery_registration.router)
 app.include_router(delivery.router)
+app.include_router(acceptance_report.router)
 app.include_router(boundary.router)
 app.include_router(rule_config.router)
 app.include_router(service_sharing.router)

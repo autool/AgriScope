@@ -1,5 +1,6 @@
 """数据库模型。"""
 
+from app.models.acceptance_report import AcceptanceReport
 from app.models.disaster_report import DisasterReport
 from app.models.imagery_fusion import ImageryFusionEvent, ImageryFusionJob
 from app.models.imagery_mosaic import (
@@ -73,6 +74,7 @@ from app.models.workbench import (
 )
 
 __all__ = [
+    "AcceptanceReport",
     "Base",
     "DatasetAsset",
     "DatasetLineage",

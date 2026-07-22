@@ -60,6 +60,10 @@
 
 ![AgriScope 多格式矢量成果导出](docs/images/vector-export-modal.png)
 
+### 成果验收正式报告
+
+![AgriScope 成果验收正式报告](docs/images/acceptance-report-modal.png)
+
 ### 数据共享服务
 
 ![AgriScope 数据共享服务](docs/images/service-sharing-workbench.png)
@@ -88,6 +92,7 @@
 - 支持外业 CSV / Excel 原子导入、原始 XLSX 受控保存、点斑空间匹配、偏移判定和疑点人工处置；处置完整覆盖保留内业、采用外业、显式折中、驳回外业和重新打开，实际改图生成不可变版本，未匹配记录不能虚构图斑修改；现场照片、语音和调查表作为独立实体执行格式、大小、SHA-256 与稳定用户角色审计，历史 URL 明确标为未经校验引用。
 - 支持任务作用域内地级区域、县区、地类、作物、种植模式、权属村面积聚合，使用真实任务面积生成年度趋势，并由项目负责人导出 CSV。
 - 支持从真实任务图斑按县区和六类地类筛选，生成 GeoJSON、ESRI Shapefile、OGC KML 2.2、OpenFileGDB 四种实体矢量成果；服务端复核要素数量、EPSG:4326、中文属性、逐文件大小和 SHA-256，任务变化后旧版本自动转为审计历史。
+- 支持三级审核完成后基于当前有效成果包生成正式验收报告 ZIP，真实包含 DOCX、自动分页 PDF 和 manifest；报告覆盖工作量、质量与精度评价、三级审核、完整成果清单、验收结论和签署栏，并绑定成果包与任务 SHA-256 快照。
 - 支持外部灾害模型 GeoJSON 批量导入、PostGIS 面积与省域校验、分级渲染、受灾面积评估和人工复核确认；全部斑块闭环后可生成含空间分布图、等级/类型图表、明细及来源 SHA-256 的 XLSX 实体专题报告，下载和成果归档前重新校验。
 - 支持辐射定标、DOS1 大气校正、普通重投影、GCP 仿射精校正、RPC+DEM 严格正射、真实行政区裁剪、百分位拉伸、直方图均衡化和波段产品流水线；GCP 按像素 RMSE 门禁，RPC 正射校验 DEM 实体、覆盖范围和 SHA-256。
 - 支持两景不同 `operational` 影像步骤实体的相位相关平移配准：服务端自动计算初始位移、有效重叠率和相关峰旁比，将待配准影像写入参考影像同网格 GeoTIFF，再从实体输出复算像素残差并按项目位置精度规则验收。
@@ -518,6 +523,15 @@ GeoJSON、ESRI Shapefile、OGC KML 2.2、OpenFileGDB 格式，服务端从 `task
 内全部实体成员的大小/SHA256。下载前会重新打开四种格式并核验数量与 EPSG:4326；
 项目负责人和甲方可下载，最终成果包只纳入当前任务版本仍有效的矢量导出成员。
 
+成果交付页同时提供“验收报告”入口。只有任务完成三级审核且存在当前有效成果包时，
+项目负责人才能生成正式报告；服务端冻结任务图斑数与更新时间、成果包 ID/编号/完成时间/
+大小/SHA256、完整成果清单、质量摘要规范化 SHA256、三级审核记录和稳定生成人角色，
+原子生成 DOCX、自动分页 A4 PDF 与 `manifest.json`。报告明确列出工作量、质量覆盖率、
+门禁通过率、问题及外业证据状态、影像证据、全部交付成员、验收结论和签署栏，不会把
+未提供的外业、灾害、专题图或监理证据描述为已完成。任务或当前成果包变化后旧报告自动
+转为历史；下载前重新打开 DOCX、校验 PDF 页数并核对 ZIP、成员大小和 SHA256。仅项目
+负责人可生成，项目负责人和甲方可下载。
+
 已有数据库执行以下迁移清理旧固定年度数值：
 
 ```bash
@@ -526,6 +540,7 @@ psql "$POSTGRES_DSN" -f scripts/migrations/20260722_statistics_task_scope.sql
 psql "$POSTGRES_DSN" -f scripts/migrations/20260722_statistics_history_import.sql
 psql "$POSTGRES_DSN" -f scripts/migrations/20260723_statistics_reports.sql
 psql "$POSTGRES_DSN" -f scripts/migrations/20260723_vector_export_packages.sql
+psql "$POSTGRES_DSN" -f scripts/migrations/20260723_acceptance_reports.sql
 ```
 
 ## 可选 3D Tiles
@@ -779,6 +794,9 @@ psql "$POSTGRES_DSN" -f scripts/migrations/20260722_remove_seeded_task_audit.sql
 | GET | `/api/v1/vector-exports` | 查询当前及历史矢量成果导出版本与失效原因 |
 | POST | `/api/v1/vector-exports/generate` | 项目负责人按县区、地类和格式生成真实多格式矢量 ZIP |
 | GET | `/api/v1/vector-exports/{export_code}/download` | 项目负责人或甲方复核格式、数量、大小和 SHA-256 后下载 |
+| GET | `/api/v1/acceptance-reports` | 查询正式验收报告生成门禁、当前成果包和版本历史 |
+| POST | `/api/v1/acceptance-reports/generate` | 项目负责人基于当前成果包生成 DOCX、分页 PDF 和 manifest |
+| GET | `/api/v1/acceptance-reports/{report_code}/download` | 项目负责人或甲方复核全部实体与快照后下载报告 ZIP |
 | GET | `/api/v1/disasters/summary` | 获取灾害斑块和受灾范围汇总 |
 | POST | `/api/v1/disasters/import-geojson` | 批量导入灾害模型 GeoJSON，重算面积并保存来源审计 |
 | PATCH | `/api/v1/disasters/{patch_code}` | 人工修正灾害等级和确认状态 |
