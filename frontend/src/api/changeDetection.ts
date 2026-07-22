@@ -26,7 +26,7 @@ export const getChangeDetectionOverview = (
   params: contextParams(projectCode, taskCode),
 })
 
-/** 创建绑定两期影像、规则快照与配准证据的检测任务。 */
+/** 创建绑定两期影像、规则快照与实体配准成果的检测任务。 */
 export const createChangeDetectionRun = (
   payload: ChangeRunCreatePayload,
   projectCode: string,

@@ -6,7 +6,7 @@ import axios, {
 
 interface ApiEnvelope<T> {
   code: number
-  data?: T
+  data: T
   msg?: string
 }
 
@@ -68,44 +68,50 @@ axiosInstance.interceptors.response.use(
   },
 )
 
-const unwrapResponse = <T>(body: ApiEnvelope<T> | T): T => {
+const isBinaryResponse = (config?: AxiosRequestConfig): boolean => (
+  config?.responseType === 'blob' || config?.responseType === 'arraybuffer'
+)
+
+const unwrapResponse = <T>(body: unknown, config?: AxiosRequestConfig): T => {
+  if (isBinaryResponse(config)) return body as T
   if (
-    typeof body === 'object'
-    && body !== null
-    && 'code' in body
-    && typeof (body as ApiEnvelope<T>).code === 'number'
+    typeof body !== 'object'
+    || body === null
+    || !('code' in body)
+    || typeof (body as Partial<ApiEnvelope<T>>).code !== 'number'
+    || !('data' in body)
   ) {
-    const envelope = body as ApiEnvelope<T>
-    if (envelope.code !== 200 || envelope.data === undefined) {
-      message.error(envelope.msg || '服务响应异常')
-      throw new Error(envelope.msg || '业务请求失败')
-    }
-    return envelope.data
+    message.error('服务响应不符合统一接口契约')
+    throw new Error('服务响应缺少 code/data 包络')
   }
-  // 兼容尚未迁移为统一成功包络的存量接口，后端迁移完成后删除此分支。
-  return body as T
+  const envelope = body as ApiEnvelope<T>
+  if (envelope.code !== 200) {
+    message.error(envelope.msg || '服务响应异常')
+    throw new Error(envelope.msg || '业务请求失败')
+  }
+  return envelope.data
 }
 
 const request = {
   get<T>(url: string, config?: AxiosRequestConfig): Promise<T> {
     return axiosInstance
-      .get<ApiEnvelope<T> | T>(url, config)
-      .then((response) => unwrapResponse(response.data))
+      .get<unknown>(url, config)
+      .then((response) => unwrapResponse<T>(response.data, config))
   },
   post<T>(url: string, data?: unknown, config?: AxiosRequestConfig): Promise<T> {
     return axiosInstance
-      .post<ApiEnvelope<T> | T>(url, data, config)
-      .then((response) => unwrapResponse(response.data))
+      .post<unknown>(url, data, config)
+      .then((response) => unwrapResponse<T>(response.data, config))
   },
   patch<T>(url: string, data?: unknown, config?: AxiosRequestConfig): Promise<T> {
     return axiosInstance
-      .patch<ApiEnvelope<T> | T>(url, data, config)
-      .then((response) => unwrapResponse(response.data))
+      .patch<unknown>(url, data, config)
+      .then((response) => unwrapResponse<T>(response.data, config))
   },
   delete<T>(url: string, config?: AxiosRequestConfig): Promise<T> {
     return axiosInstance
-      .delete<ApiEnvelope<T> | T>(url, config)
-      .then((response) => unwrapResponse(response.data))
+      .delete<unknown>(url, config)
+      .then((response) => unwrapResponse<T>(response.data, config))
   },
 }
 

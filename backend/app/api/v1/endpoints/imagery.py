@@ -141,7 +141,11 @@ async def get_imagery_quicklooks(
     return await quicklook_service.get_quicklooks(db, asset_code)
 
 
-@router.get("/{asset_code}/quicklooks/{product_code}.png")
+@router.get(
+    "/{asset_code}/quicklooks/{product_code}.png",
+    response_class=Response,
+    responses={200: {"content": {"image/png": {}}}},
+)
 async def get_imagery_quicklook_image(
     asset_code: str,
     product_code: Literal["source", "true_color", "false_color", "ndvi"],

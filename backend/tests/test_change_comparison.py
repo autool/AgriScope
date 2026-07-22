@@ -167,16 +167,19 @@ def test_comparison_service_persists_manifest_and_reuses_cache(
         run_code="CD-2026-001",
         baseline_asset_id=10,
         target_asset_id=11,
+        registration_job_id=30,
         rule_config_version=3,
         alignment_offset_pixels=Decimal("1.2"),
         source_snapshot={
             "baseline": {"checksum_sha256": baseline_checksum},
             "target": {"checksum_sha256": target_checksum},
+            "registration": {"output_sha256": target_checksum},
         },
     )
     dao = AsyncMock()
     workbench_dao = AsyncMock()
     imagery_service = MagicMock()
+    registration_service = AsyncMock()
     renderer = CountingRenderer()
     workbench_dao.get_project_by_code.return_value = SimpleNamespace(id=1)
     workbench_dao.get_task_by_code.return_value = SimpleNamespace(
@@ -185,18 +188,22 @@ def test_comparison_service_persists_manifest_and_reuses_cache(
     )
     dao.get_run_by_code.return_value = run
     dao.get_imagery_assets_by_ids.return_value = [baseline, target]
-    imagery_service.resolve_verified_asset_path.side_effect = [
-        baseline_path,
+    imagery_service.resolve_verified_asset_path.return_value = baseline_path
+    registration_service.resolve_verified_job_by_id.return_value = (
+        SimpleNamespace(
+            id=30,
+            task_id=2,
+            reference_asset_id=10,
+            moving_asset_id=11,
+            checksum_sha256=target_checksum,
+        ),
         target_path,
-        baseline_path,
-        target_path,
-        baseline_path,
-        target_path,
-    ]
+    )
     service = ChangeComparisonService(
         dao=dao,
         workbench_dao=workbench_dao,
         imagery_service=imagery_service,
+        registration_service=registration_service,
         renderer=renderer,
     )
     service.preview_root = tmp_path / "cache"

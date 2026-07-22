@@ -5,10 +5,12 @@ import type {
   ChangeImagery,
   ChangeRunCreatePayload,
 } from '@/types/changeDetection'
+import type { ImageryRegistrationJob } from '@/types/imageryRegistration'
 
 const props = defineProps<{
   open: boolean
   imagery: ChangeImagery[]
+  registrations: ImageryRegistrationJob[]
   operatorCode: string | null
   saving: boolean
 }>()
@@ -22,12 +24,18 @@ const runCodeRef = ref<string>('')
 const runNameRef = ref<string>('')
 const baselineAssetCodeRef = ref<string>('')
 const targetAssetCodeRef = ref<string>('')
-const alignmentMethodRef = ref<string>('同名点与道路交叉点联合配准')
-const alignmentOffsetPixelsRef = ref<number>(1)
-const alignmentEvidenceUriRef = ref<string>('')
+const registrationJobCodeRef = ref<string>('')
 
 const eligibleImageryComputed = computed<ChangeImagery[]>(() => (
   props.imagery.filter((asset) => asset.eligible)
+))
+
+const matchingRegistrationsComputed = computed<ImageryRegistrationJob[]>(() => (
+  props.registrations.filter(job => (
+    job.artifact_verified
+    && job.reference_asset_code === baselineAssetCodeRef.value
+    && job.moving_asset_code === targetAssetCodeRef.value
+  ))
 ))
 
 const canSubmitComputed = computed<boolean>(() => Boolean(
@@ -37,8 +45,9 @@ const canSubmitComputed = computed<boolean>(() => Boolean(
   && baselineAssetCodeRef.value
   && targetAssetCodeRef.value
   && baselineAssetCodeRef.value !== targetAssetCodeRef.value
-  && alignmentMethodRef.value.trim()
-  && alignmentEvidenceUriRef.value.trim(),
+  && matchingRegistrationsComputed.value.some(
+    job => job.job_code === registrationJobCodeRef.value,
+  ),
 ))
 
 const submit = (): void => {
@@ -48,9 +57,7 @@ const submit = (): void => {
     run_name: runNameRef.value.trim(),
     baseline_asset_code: baselineAssetCodeRef.value,
     target_asset_code: targetAssetCodeRef.value,
-    alignment_method: alignmentMethodRef.value.trim(),
-    alignment_offset_pixels: alignmentOffsetPixelsRef.value,
-    alignment_evidence_uri: alignmentEvidenceUriRef.value.trim(),
+    registration_job_code: registrationJobCodeRef.value,
     operator_code: props.operatorCode,
   })
 }
@@ -63,8 +70,14 @@ watch(
     runNameRef.value = ''
     baselineAssetCodeRef.value = ''
     targetAssetCodeRef.value = ''
-    alignmentOffsetPixelsRef.value = 1
-    alignmentEvidenceUriRef.value = ''
+    registrationJobCodeRef.value = ''
+  },
+)
+
+watch(
+  () => [baselineAssetCodeRef.value, targetAssetCodeRef.value],
+  () => {
+    registrationJobCodeRef.value = matchingRegistrationsComputed.value[0]?.job_code || ''
   },
 )
 </script>
@@ -119,25 +132,29 @@ watch(
           </a-select>
         </a-form-item>
       </div>
-      <a-form-item label="配准方法" required>
-        <a-input v-model:value="alignmentMethodRef" />
+      <a-form-item label="实体配准成果" required>
+        <a-select
+          v-model:value="registrationJobCodeRef"
+          :disabled="!baselineAssetCodeRef || !targetAssetCodeRef"
+          placeholder="选择与两期影像完全匹配的配准成果"
+        >
+          <a-select-option
+            v-for="job in matchingRegistrationsComputed"
+            :key="job.job_code"
+            :value="job.job_code"
+          >
+            {{ job.job_name }} · 残差 {{ job.residual_offset_pixels.toFixed(4) }} px ·
+            SHA {{ job.checksum_sha256.slice(0, 12) }}…
+          </a-select-option>
+        </a-select>
       </a-form-item>
-      <div class="alignment-row">
-        <a-form-item label="配准偏差（像素）" required>
-          <a-input-number
-            v-model:value="alignmentOffsetPixelsRef"
-            :min="0"
-            :max="1000"
-            :precision="3"
-          />
-        </a-form-item>
-        <a-form-item label="配准证据 URI" required>
-          <a-input
-            v-model:value="alignmentEvidenceUriRef"
-            placeholder="storage://alignment/run-001/report.json"
-          />
-        </a-form-item>
-      </div>
+      <a-alert
+        v-if="baselineAssetCodeRef && targetAssetCodeRef && !matchingRegistrationsComputed.length"
+        type="warning"
+        show-icon
+        message="所选两期影像没有通过实体残差门禁的配准成果"
+        description="请先在影像预处理页完成双景自动配准；不能再手工填写偏差和证据 URI。"
+      />
     </a-form>
   </a-modal>
 </template>
@@ -145,6 +162,4 @@ watch(
 <style scoped>
 .run-form { margin-top: 14px; }
 .form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 0 12px; }
-.alignment-row { display: grid; grid-template-columns: 160px 1fr; gap: 12px; }
-.alignment-row :deep(.ant-input-number) { width: 100%; }
 </style>

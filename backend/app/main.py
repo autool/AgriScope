@@ -20,6 +20,10 @@ from app.api.v1.endpoints import (
     field_verification,
     health,
     imagery,
+    imagery_fusion,
+    imagery_history,
+    imagery_mosaic,
+    imagery_registration,
     monitoring_network,
     plot,
     production,
@@ -33,6 +37,7 @@ from app.api.v1.endpoints import (
     uav,
     workbench,
 )
+from app.core.api_envelope import ApiEnvelopeMiddleware, configure_openapi_envelopes
 from app.core.config import settings
 from app.core.database import async_engine
 from app.core.exceptions import AppException
@@ -90,6 +95,7 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+app.add_middleware(ApiEnvelopeMiddleware)
 
 
 @app.exception_handler(AppException)
@@ -187,6 +193,10 @@ app.include_router(review.router)
 app.include_router(statistics.router)
 app.include_router(disaster.router)
 app.include_router(imagery.router)
+app.include_router(imagery_fusion.router)
+app.include_router(imagery_history.router)
+app.include_router(imagery_mosaic.router)
+app.include_router(imagery_registration.router)
 app.include_router(delivery.router)
 app.include_router(boundary.router)
 app.include_router(rule_config.router)
@@ -197,3 +207,4 @@ app.include_router(supervision.router)
 app.include_router(thematic_map.router)
 app.include_router(monitoring_network.router)
 app.include_router(uav.router)
+configure_openapi_envelopes(app)

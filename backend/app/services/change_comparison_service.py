@@ -26,6 +26,7 @@ from app.schemas.change_detection import (
 )
 from app.services.change_comparison_renderer import ChangeComparisonRenderer
 from app.services.imagery_asset_service import ImageryAssetService
+from app.services.imagery_registration_service import ImageryRegistrationService
 
 
 @dataclass(frozen=True)
@@ -47,6 +48,7 @@ class ChangeComparisonService:
         dao: ChangeDetectionDAO | None = None,
         workbench_dao: WorkbenchDAO | None = None,
         imagery_service: ImageryAssetService | None = None,
+        registration_service: ImageryRegistrationService | None = None,
         renderer: ChangeComparisonRenderer | None = None,
     ) -> None:
         """初始化双时相预览服务。
@@ -55,6 +57,7 @@ class ChangeComparisonService:
             dao: 变化检测 DAO。
             workbench_dao: 项目任务公共 DAO。
             imagery_service: 影像实体路径校验服务。
+            registration_service: 配准成果实体校验服务。
             renderer: 栅格公共网格渲染器。
 
         Returns:
@@ -63,6 +66,9 @@ class ChangeComparisonService:
         self.dao = dao or ChangeDetectionDAO()
         self.workbench_dao = workbench_dao or WorkbenchDAO()
         self.imagery_service = imagery_service or ImageryAssetService()
+        self.registration_service = (
+            registration_service or ImageryRegistrationService()
+        )
         self.renderer = renderer or ChangeComparisonRenderer()
         self.preview_root = (
             Path(__file__).resolve().parents[2]
@@ -152,12 +158,19 @@ class ChangeComparisonService:
         return baseline, target
 
     @staticmethod
-    def _source_state(asset: ImageryAsset, path: Path) -> dict[str, object]:
+    def _source_state(
+        asset: ImageryAsset,
+        path: Path,
+        checksum_sha256: str | None = None,
+        evidence_type: str = "imagery_asset",
+    ) -> dict[str, object]:
         """提取参与缓存指纹的影像实体状态。
 
         Args:
             asset: 影像资产。
             path: 已校验实体路径。
+            checksum_sha256: 下游实体校验值；空值时使用资产校验值。
+            evidence_type: 当前物理来源类别。
 
         Returns:
             dict[str, object]: 资产校验值、大小和文件修改时间。
@@ -165,9 +178,10 @@ class ChangeComparisonService:
         stat = path.stat()
         return {
             "asset_code": asset.asset_code,
-            "checksum_sha256": asset.checksum_sha256,
+            "checksum_sha256": checksum_sha256 or asset.checksum_sha256,
             "file_size_bytes": stat.st_size,
             "mtime_ns": stat.st_mtime_ns,
+            "evidence_type": evidence_type,
         }
 
     def _fingerprint(
@@ -349,8 +363,8 @@ class ChangeComparisonService:
                 asset_code=target.asset_code,
                 asset_name=target.asset_name,
                 acquired_at=target.acquired_at,
-                checksum_sha256=str(target.checksum_sha256),
-                file_size_bytes=int(target.file_size_bytes or 0),
+                checksum_sha256=str(target_source["checksum_sha256"]),
+                file_size_bytes=int(target_source["file_size_bytes"]),
                 band_indexes=tuple(target_source["band_indexes"]),
             ),
             baseline_url=baseline_url,
@@ -392,12 +406,40 @@ class ChangeComparisonService:
             run_code,
         )
         baseline, target = await self._resolve_run_assets(db, project.id, run)
+        if run.registration_job_id is None:
+            raise ValidationException("检测任务未绑定可复核的实体配准成果")
+        registration, target_source_path = (
+            await self.registration_service.resolve_verified_job_by_id(
+                db,
+                project.id,
+                run.registration_job_id,
+            )
+        )
+        if (
+            registration.task_id != run.task_id
+            or registration.reference_asset_id != baseline.id
+            or registration.moving_asset_id != target.id
+        ):
+            raise ValidationException("检测任务配准成果与两期影像或任务范围不一致")
+        registration_snapshot = (run.source_snapshot or {}).get(
+            "registration",
+            {},
+        )
+        if (
+            registration_snapshot.get("output_sha256")
+            != registration.checksum_sha256
+        ):
+            raise ValidationException("检测任务配准成果快照与当前实体校验值不一致")
         baseline_source_path = self.imagery_service.resolve_verified_asset_path(
             baseline
         )
-        target_source_path = self.imagery_service.resolve_verified_asset_path(target)
         baseline_state = self._source_state(baseline, baseline_source_path)
-        target_state = self._source_state(target, target_source_path)
+        target_state = self._source_state(
+            target,
+            target_source_path,
+            registration.checksum_sha256,
+            "imagery_registration",
+        )
         fingerprint = self._fingerprint(run, baseline_state, target_state)
         cache_dir = self.preview_root / str(run.id) / fingerprint[:20]
         baseline_path = cache_dir / "baseline.png"
@@ -449,8 +491,8 @@ class ChangeComparisonService:
             )
             if actual_baseline_checksum != baseline.checksum_sha256:
                 raise ValidationException("前时相影像实体 SHA-256 与资产记录不一致")
-            if actual_target_checksum != target.checksum_sha256:
-                raise ValidationException("后时相影像实体 SHA-256 与资产记录不一致")
+            if actual_target_checksum != registration.checksum_sha256:
+                raise ValidationException("后时相配准实体 SHA-256 与任务记录不一致")
             try:
                 rendered = await asyncio.to_thread(
                     self.renderer.render_pair,

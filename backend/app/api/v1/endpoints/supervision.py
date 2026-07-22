@@ -314,7 +314,12 @@ async def generate_supervision_report(
     )
 
 
-@router.get("/reports/{report_code}/download")
+@router.get(
+    "/reports/{report_code}/download",
+    response_class=Response,
+    responses={200: {"content": {"application/json": {}}}},
+    openapi_extra={"x-api-envelope": False},
+)
 async def download_supervision_report(
     report_code: str,
     db: DatabaseSession,

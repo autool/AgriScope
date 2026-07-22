@@ -87,7 +87,18 @@ async def generate_thematic_map_products(
     return await service.generate_batch(db, project_code, task_code, request)
 
 
-@router.get("/products/{product_code}/download")
+@router.get(
+    "/products/{product_code}/download",
+    response_class=Response,
+    responses={
+        200: {
+            "content": {
+                "image/png": {},
+                "application/pdf": {},
+            }
+        }
+    },
+)
 async def download_thematic_map_product(
     product_code: str,
     db: DatabaseSession,

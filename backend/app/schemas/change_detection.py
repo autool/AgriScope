@@ -5,6 +5,8 @@ from typing import Literal, Self
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from app.schemas.imagery_registration import ImageryRegistrationJobResponse
+
 ChangeClass = Literal[
     "suspected_construction",
     "farmland_outflow",
@@ -63,9 +65,7 @@ class ChangeRunCreateRequest(BaseModel):
     run_name: str = Field(min_length=1, max_length=200)
     baseline_asset_code: str = Field(min_length=1, max_length=80)
     target_asset_code: str = Field(min_length=1, max_length=80)
-    alignment_method: str = Field(min_length=1, max_length=120)
-    alignment_offset_pixels: float = Field(ge=0, le=1000)
-    alignment_evidence_uri: str = Field(min_length=1, max_length=500)
+    registration_job_code: str = Field(min_length=1, max_length=80)
     operator_code: str = Field(min_length=1, max_length=50)
 
     model_config = ConfigDict(extra="forbid")
@@ -74,8 +74,7 @@ class ChangeRunCreateRequest(BaseModel):
         "run_name",
         "baseline_asset_code",
         "target_asset_code",
-        "alignment_method",
-        "alignment_evidence_uri",
+        "registration_job_code",
         "operator_code",
     )
     @classmethod
@@ -325,6 +324,7 @@ class ChangeDetectionRunResponse(BaseModel):
     run_name: str
     baseline_asset_code: str
     target_asset_code: str
+    registration_job_code: str
     rule_config_version: int
     rule_profile_snapshot: dict
     source_snapshot: dict
@@ -356,6 +356,7 @@ class ChangeDetectionOverviewResponse(BaseModel):
     task_code: str
     blockers: list[str]
     imagery: list[ChangeImageryResponse]
+    registrations: list[ImageryRegistrationJobResponse]
     runs: list[ChangeDetectionRunResponse]
 
 

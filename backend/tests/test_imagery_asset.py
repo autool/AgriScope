@@ -1,6 +1,7 @@
 """真实遥感影像文件入库与元数据提取测试。"""
 
 import asyncio
+import warnings
 from datetime import UTC, datetime
 from io import BytesIO
 from pathlib import Path
@@ -11,7 +12,9 @@ import numpy as np
 import pytest
 import rasterio
 from pydantic import ValidationError
+from rasterio.errors import NotGeoreferencedWarning
 from rasterio.io import MemoryFile
+from rasterio.rpc import RPC
 from rasterio.transform import from_origin
 
 from app.core.exceptions import ValidationException
@@ -72,6 +75,56 @@ def build_create_request(
         data_status="demo",
         operator_code="interp-li-jing",
     )
+
+
+def build_rpc_geotiff_bytes() -> bytes:
+    """构造无普通 CRS、但带完整 RPC 模型的原始卫星影像。"""
+    zeros = [0.0] * 20
+    line_numerator = zeros.copy()
+    line_numerator[2] = -1.0
+    line_denominator = zeros.copy()
+    line_denominator[0] = 1.0
+    sample_numerator = zeros.copy()
+    sample_numerator[1] = 1.0
+    sample_denominator = zeros.copy()
+    sample_denominator[0] = 1.0
+    rpc_model = RPC(
+        height_off=100,
+        height_scale=500,
+        lat_off=45.8,
+        lat_scale=0.04,
+        line_den_coeff=line_denominator,
+        line_num_coeff=line_numerator,
+        line_off=2.5,
+        line_scale=2.5,
+        long_off=126.6,
+        long_scale=0.05,
+        samp_den_coeff=sample_denominator,
+        samp_num_coeff=sample_numerator,
+        samp_off=4.5,
+        samp_scale=4.5,
+        err_bias=0.5,
+        err_rand=0.2,
+    )
+    data = np.arange(180, dtype="uint16").reshape(3, 6, 10)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", NotGeoreferencedWarning)
+        with MemoryFile() as memory_file:
+            with memory_file.open(
+                driver="GTiff",
+                width=10,
+                height=6,
+                count=3,
+                dtype="uint16",
+            ) as dataset:
+                dataset.write(data)
+                dataset.update_tags(
+                    SATELLITE="TEST-RPC-SAT",
+                    ACQUIRED="2026-06-18",
+                    PROCESSING_LEVEL="L1A",
+                )
+                dataset.update_tags(ns="RPC", **rpc_model.to_gdal())
+            return memory_file.read()
 
 
 def build_service(tmp_path: Path) -> tuple[ImageryAssetService, AsyncMock, AsyncMock]:
@@ -171,10 +224,51 @@ def test_upload_geotiff_extracts_real_raster_metadata(tmp_path: Path) -> None:
         "atmospheric",
         "geometric",
         "clip",
+        "enhancement",
         "band_products",
+    ]
+    assert [step.sequence for step in steps] == [1, 2, 3, 4, 5, 6]
+    assert [step.is_required for step in steps] == [
+        True,
+        True,
+        True,
+        True,
+        False,
+        True,
     ]
     workbench_dao.add_review_record.assert_awaited_once()
     db.commit.assert_awaited_once()
+
+
+def test_upload_accepts_rpc_only_imagery_and_derives_wgs84_footprint(
+    tmp_path: Path,
+) -> None:
+    """验证无普通 CRS 的 RPC 原始影像可入库并保留传感器模型。"""
+    service, _, _ = build_service(tmp_path)
+
+    response = asyncio.run(
+        service.upload_asset(
+            AsyncMock(),
+            "RS-2026",
+            "RS-2026-045",
+            build_create_request(),
+            "rpc_source.tif",
+            BytesIO(build_rpc_geotiff_bytes()),
+        )
+    )
+
+    assert response.file_verified is True
+    assert response.crs == "RPC:WGS84"
+    assert response.raster_metadata["has_rpc"] is True
+    assert response.raster_metadata["rpc_summary"]["error_bias"] == 0.5
+    assert response.footprint is not None
+    coordinates = response.footprint["coordinates"][0]
+    assert coordinates[0] == pytest.approx([126.55, 45.76])
+    assert coordinates[2] == pytest.approx([126.65, 45.84])
+    stored_path = tmp_path / "assets/GF2-TEST-001/rpc_source.tif"
+    with rasterio.open(stored_path) as dataset:
+        assert dataset.crs is None
+        assert dataset.rpcs is not None
 
 
 def test_upload_uses_audited_user_fallback_when_tags_are_missing(

@@ -690,6 +690,7 @@ class ImageryProcessingStep(Base):
     step_code: Mapped[str] = mapped_column(String(50), nullable=False)
     step_name: Mapped[str] = mapped_column(String(100), nullable=False)
     sequence: Mapped[int] = mapped_column(Integer, nullable=False)
+    is_required: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     status: Mapped[str] = mapped_column(String(20), nullable=False)
     progress: Mapped[int] = mapped_column(Integer, nullable=False)
     parameters: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)

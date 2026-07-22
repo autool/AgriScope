@@ -63,6 +63,74 @@ the platform has persisted evidence and executable workflows.
   and NDVI quicklooks are available only from a checksum-verified `band_products`
   artifact, remain visibly demo when their source is demo, and do not count as an
   accepted production artifact by themselves.
+- The implemented historical-imagery contract builds one real matrix cell for every
+  persisted imagery time slice and each of the complete 122 county boundaries. Coverage
+  is the WGS84 footprint/county intersection geography area divided by the full county
+  geography area; zero cells remain visible and demo time slices remain separate. Its
+  trace timeline revalidates source and processing-artifact SHA-256 values and derives
+  import, required-step, invalid-artifact, cloud-rule, and superseded-artifact events
+  from persisted evidence. The current real acquisition range is returned as-is; the
+  platform does not fabricate the procurement example's 1980–2024 archive when those
+  physical source scenes have not been supplied.
+- The implemented geometric-correction contract supports ordinary reprojection,
+  first-order affine GCP correction from 3–100 traceable non-collinear control points,
+  and GDAL RPC/DEM orthorectification. RPC-only source rasters derive WGS84 footprints
+  from the physical RPC model and retain that model through radiometric/atmospheric
+  outputs. The server validates controlled DEM signature, CRS, real elevation data,
+  complete RPC-range coverage, size, and SHA-256 before warping, then persists RPC,
+  DEM, grid, resampling, and orthorectified-output evidence. GCP correction retains its
+  per-point residual/RMSE gate. Reruns preserve prior evidence and invalidate downstream
+  artifacts without deleting history. This is not regional block adjustment or fusion.
+- The implemented optional enhancement step sits between administrative clipping and
+  band products. Leaving it pending does not reduce required-pipeline completion or block
+  products; executing it performs per-band percentile contrast stretch or histogram
+  equalization, rejects empty/constant bands, writes a physical 0–1 floating GeoTIFF,
+  persists actual ranges/thresholds/bins and checksum evidence, and invalidates downstream
+  products. Browser-only display filters are not accepted as enhancement evidence.
+- The implemented automatic-registration contract selects two distinct operational
+  imagery assets and one checksum-verified processing artifact per asset. The server
+  estimates a translation on their real common pixel window using phase correlation,
+  rejects inadequate valid overlap, texture, peak-to-sidelobe ratio, or initial offset,
+  and writes the moving image onto the reference CRS, resolution, dimensions, and grid.
+  It then recomputes residual from the physical output and applies the stricter of the
+  requested threshold and persisted project positional-pixel rule. Passing jobs retain
+  input/output size and SHA-256, shift/residual/overlap/correlation evidence, stable user
+  role audit, atomic output, and download revalidation. This is translation registration,
+  not affine/projective registration, orthorectification, or regional block adjustment.
+  New change-detection runs must bind this persisted registration job and use its verified
+  output for the target-side common-grid preview; typed offsets or arbitrary evidence URIs
+  are not accepted.
+- The implemented multi-scene mosaic contract selects 2–20 distinct imagery assets and
+  one checksum-verified processing artifact per asset. Inputs must have consistent band
+  counts and descriptions. The Rasterio worker computes statistics, applies optional
+  global mean/std balancing, and performs first-scene or overlap-mean compositing in
+  bounded raster windows. Empty or constant bands are rejected instead of being given
+  synthetic contrast.
+- Coverage acceptance uses the complete persisted administrative geometry as the
+  denominator and a target grid containing both the imagery union and the full boundary;
+  administrative pixels outside all scenes remain NoData. Tasks above the configured
+  pixel ceiling or below the explicit coverage threshold leave no partial output. Passing
+  jobs persist an atomic GeoTIFF, resolution/CRS/coverage counts, input checksums, output
+  size/SHA-256, stable user-role audit, and download revalidation. This is not advanced
+  seamline optimization, regional block adjustment, pan-sharpening, or province-scale
+  load-test evidence.
+- The implemented pan-sharpening contract selects two different operational assets from
+  the same traceable product with acquisition times no more than 60 seconds apart. Both
+  controlled files are revalidated by size and SHA-256 and must expose radiometric-
+  calibration/reflectance tags plus identical product identity. The multispectral source
+  provides at least three bands; the physical single-band panchromatic source must be at
+  least 1.5 times finer. The bounded-window histogram-matched Brovey worker targets the
+  panchromatic grid and enforces output pixels, valid overlap, per-band spectral
+  correlation, and spatial-detail gradient gain before atomically publishing a floating
+  GeoTIFF. Passing jobs preserve complete input/output lineage and stable user-role audit,
+  and downloads revalidate the artifact. Demo imagery, grayscale derivatives, ordinary
+  upsampling, and different-scene pairs are rejected. The current real integration uses
+  Google Cloud Public Datasets / USGS Landsat-8 scene
+  `LC08_L1TP_117028_20200724_20200807_01_T1`: B2/B3/B4 and B8 are converted from physical
+  DN values to TOA reflectance with the scene MTL coefficients. The verified 15 m result
+  records 99.4537% valid overlap, 0.872138 minimum per-band spectral correlation, and
+  1.903269 spatial-detail gradient gain. It remains public-data processing evidence, not
+  a statutory survey product or proof of all-sensor fusion support.
 
 ## Supervision, acceptance, maps, and archives
 
@@ -92,7 +160,7 @@ the platform has persisted evidence and executable workflows.
   layout, renderer version, output size/SHA-256, and stable operator-role evidence.
   Preview and download revalidate controlled path, signature, size, and checksum; maps
   made from public Sentinel-2 evidence retain a visible non-statutory-results label.
-  This contract is not evidence that RPC/GCP orthorectification, fusion, color balancing,
+  This contract is not evidence that regional block adjustment, fusion, color balancing,
   mosaicking, historical atlas composition, or complete archival delivery is finished.
 - Publish approved map/data services only through registered endpoints with application,
   approval, credentials, documentation, health state, usage audit, and revocation.

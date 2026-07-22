@@ -6,8 +6,10 @@ from datetime import UTC, datetime
 from pathlib import Path
 from uuid import uuid4
 
+import numpy as np
 import rasterio
 from rasterio.errors import RasterioIOError
+from rasterio.warp import transform_bounds
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.exceptions import NotFoundException, ValidationException
@@ -88,6 +90,96 @@ class ImageryService:
         except ValueError as exc:
             raise ValidationException(str(exc)) from exc
 
+    def _inspect_rpc_dem(
+        self,
+        source_path: Path,
+        dem_relative_path: str,
+    ) -> tuple[Path, dict]:
+        """校验 RPC 源模型及受控 DEM 的结构、范围和物理证据。
+
+        Args:
+            source_path: 待正射影像实体。
+            dem_relative_path: 影像受控目录内 DEM 相对路径。
+
+        Returns:
+            tuple[Path, dict]: DEM 实体路径和可审计证据。
+        """
+        normalized_path = dem_relative_path.strip()
+        prefix = "storage://imagery/"
+        if normalized_path.startswith(prefix):
+            normalized_path = normalized_path.removeprefix(prefix)
+        if not normalized_path:
+            raise ValidationException("RPC/DEM 正射必须指定受控 DEM 相对路径")
+        dem_path = self._resolve_artifact_path(normalized_path)
+        if dem_path == source_path:
+            raise ValidationException("RPC 源影像不能同时作为 DEM")
+        if not dem_path.is_file():
+            raise ValidationException("指定 DEM 实体不存在")
+        if not has_supported_raster_signature(dem_path):
+            raise ValidationException("DEM 文件头与栅格扩展名不一致")
+        try:
+            with rasterio.open(source_path) as source:
+                rpc_model = source.rpcs
+                if rpc_model is None:
+                    raise ValidationException("源影像没有可用 RPC 模型")
+                rpc_bounds_wgs84 = (
+                    rpc_model.long_off - abs(rpc_model.long_scale),
+                    rpc_model.lat_off - abs(rpc_model.lat_scale),
+                    rpc_model.long_off + abs(rpc_model.long_scale),
+                    rpc_model.lat_off + abs(rpc_model.lat_scale),
+                )
+            with rasterio.open(dem_path) as dem:
+                if dem.crs is None:
+                    raise ValidationException("DEM 缺少 CRS")
+                if dem.width <= 0 or dem.height <= 0 or dem.count <= 0:
+                    raise ValidationException("DEM 栅格结构无效")
+                dtype = np.dtype(dem.dtypes[0])
+                if not np.issubdtype(dtype, np.number) or np.issubdtype(
+                    dtype,
+                    np.complexfloating,
+                ):
+                    raise ValidationException("DEM 第一波段必须为实数高程")
+                required_bounds = transform_bounds(
+                    "EPSG:4326",
+                    dem.crs,
+                    *rpc_bounds_wgs84,
+                    densify_pts=21,
+                )
+                tolerance = max(abs(value) for value in dem.res) * 0.5
+                if not (
+                    dem.bounds.left <= required_bounds[0] + tolerance
+                    and dem.bounds.bottom <= required_bounds[1] + tolerance
+                    and dem.bounds.right >= required_bounds[2] - tolerance
+                    and dem.bounds.top >= required_bounds[3] - tolerance
+                ):
+                    raise ValidationException("DEM 未完整覆盖 RPC 归一化地理范围")
+                dem_bounds_wgs84 = transform_bounds(
+                    dem.crs,
+                    "EPSG:4326",
+                    *dem.bounds,
+                    densify_pts=21,
+                )
+                evidence = {
+                    "relative_path": normalized_path,
+                    "file_size_bytes": dem_path.stat().st_size,
+                    "checksum_sha256": calculate_sha256(dem_path),
+                    "driver": dem.driver,
+                    "crs": dem.crs.to_string(),
+                    "width": dem.width,
+                    "height": dem.height,
+                    "band_count": dem.count,
+                    "dtype": dem.dtypes[0],
+                    "nodata": dem.nodata,
+                    "resolution": [float(value) for value in dem.res],
+                    "bounds_wgs84": [float(value) for value in dem_bounds_wgs84],
+                    "rpc_required_bounds_wgs84": [
+                        float(value) for value in rpc_bounds_wgs84
+                    ],
+                }
+        except RasterioIOError as exc:
+            raise ValidationException("RPC 源影像或 DEM 无法由 Rasterio 读取") from exc
+        return dem_path, evidence
+
     def _inspect_step_artifact(
         self,
         step: object,
@@ -158,6 +250,7 @@ class ImageryService:
             step_code=step.step_code,
             step_name=step.step_name,
             sequence=step.sequence,
+            is_required=getattr(step, "is_required", True),
             status=effective_status,
             progress=100 if verified else 0,
             parameters=step.parameters or {},
@@ -216,15 +309,24 @@ class ImageryService:
         """
         previous_steps = [item for item in steps if item.sequence < step.sequence]
         blockers = [
-            item for item in previous_steps if not self._inspect_step_artifact(item)[0]
+            item
+            for item in previous_steps
+            if getattr(item, "is_required", True)
+            and not self._inspect_step_artifact(item)[0]
         ]
         if blockers:
             raise ValidationException(
                 f"请先完成并校验步骤：{blockers[0].step_name}"
             )
-        if not previous_steps:
+        verified_previous_steps = [
+            item for item in previous_steps if self._inspect_step_artifact(item)[0]
+        ]
+        if not verified_previous_steps:
             return self.resolve_verified_asset_source_path(asset)
-        previous_step = max(previous_steps, key=lambda item: item.sequence)
+        previous_step = max(
+            verified_previous_steps,
+            key=lambda item: item.sequence,
+        )
         evidence = (previous_step.parameters or {}).get("artifact_evidence") or {}
         relative_path = str(evidence.get("relative_path") or "")
         if not relative_path:
@@ -415,6 +517,16 @@ class ImageryService:
         step.updated_at = now
         step.output_uri = f"storage://imagery/{relative_path}"
         parameters = dict(step.parameters or {})
+        previous_evidence = parameters.get("artifact_evidence")
+        if previous_evidence:
+            history = list(parameters.get("artifact_history") or [])
+            history.append({
+                **previous_evidence,
+                "superseded_at": now.isoformat(),
+                "superseded_by_step": step.step_code,
+                "superseded_by_operator_code": operator.user_code,
+            })
+            parameters["artifact_history"] = history
         parameters["artifact_evidence"] = {
             "relative_path": relative_path,
             "file_size_bytes": file_size_bytes,
@@ -463,13 +575,14 @@ class ImageryService:
             raise NotFoundException(f"未找到影像资产 {asset_code}")
         steps = list(await self.dao.get_steps(db, asset.id))
         step_responses = [self._to_step_response(step) for step in steps]
+        required_steps = [step for step in step_responses if step.is_required]
         completion_rate = (
             round(
-                sum(100 for step in step_responses if step.output_verified)
-                / len(step_responses),
+                sum(100 for step in required_steps if step.output_verified)
+                / len(required_steps),
                 2,
             )
-            if step_responses
+            if required_steps
             else 0
         )
         return ImageryProcessingResponse(
@@ -485,8 +598,8 @@ class ImageryService:
             ),
             processing_level=asset.processing_level,
             completion_rate=completion_rate,
-            completed_steps=sum(step.output_verified for step in step_responses),
-            total_steps=len(step_responses),
+            completed_steps=sum(step.output_verified for step in required_steps),
+            total_steps=len(required_steps),
             steps=step_responses,
         )
 
@@ -532,6 +645,7 @@ class ImageryService:
             item
             for item in steps
             if item.sequence < step.sequence
+            and getattr(item, "is_required", True)
             and not self._inspect_step_artifact(item)[0]
         ]
         if blockers:
@@ -604,6 +718,8 @@ class ImageryService:
         steps = list(await self.dao.get_steps(db, asset.id))
         source_path = self._resolve_step_source_path(asset, steps, step)
         boundary_geometry = None
+        rpc_dem_path = None
+        dem_evidence = None
         if step_code == "clip":
             boundary_code = str(request.parameters.get("boundary_code") or "")
             geometry_text = await self.dao.get_boundary_geometry(
@@ -614,6 +730,19 @@ class ImageryService:
             if geometry_text is None:
                 raise ValidationException("未找到当前项目的行政区裁剪边界")
             boundary_geometry = json.loads(geometry_text)
+        if (
+            step_code == "geometric"
+            and str(request.parameters.get("method") or "").strip().lower()
+            == "rpc_dem"
+        ):
+            dem_relative_path = str(
+                request.parameters.get("dem_relative_path") or ""
+            )
+            rpc_dem_path, dem_evidence = await asyncio.to_thread(
+                self._inspect_rpc_dem,
+                source_path,
+                dem_relative_path,
+            )
         relative_path = (
             Path("processed")
             / asset.asset_code
@@ -632,6 +761,8 @@ class ImageryService:
                 output_path,
                 request.parameters,
                 boundary_geometry,
+                rpc_dem_path,
+                dem_evidence,
             )
             invalidated_steps = self._invalidate_downstream_steps(
                 asset,

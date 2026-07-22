@@ -113,6 +113,7 @@ class ImageryProcessingStepResponse(BaseModel):
     step_code: str
     step_name: str
     sequence: int
+    is_required: bool
     status: str
     progress: int
     parameters: dict

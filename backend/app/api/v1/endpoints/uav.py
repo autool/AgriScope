@@ -381,7 +381,11 @@ async def review_uav_finding(
     )
 
 
-@router.get("/artifacts/{artifact_code}/download")
+@router.get(
+    "/artifacts/{artifact_code}/download",
+    response_class=FileResponse,
+    responses={200: {"content": {"application/octet-stream": {}}}},
+)
 async def download_uav_artifact(
     artifact_code: str,
     db: DatabaseSession,

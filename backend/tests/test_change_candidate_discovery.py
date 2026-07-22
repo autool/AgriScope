@@ -82,6 +82,30 @@ def test_discovery_engine_returns_empty_for_unchanged_pair() -> None:
     assert result.changed_pixel_count == 0
 
 
+def test_discovery_engine_splits_corner_touching_components() -> None:
+    """验证角点相接像元不会生成 PostGIS 无法接收的自接触 Polygon。"""
+    baseline = np.zeros((3, 12, 12), dtype="uint8")
+    target = baseline.copy()
+    target[:, 4, 4] = 255
+    target[:, 5, 5] = 255
+
+    result = ChangeCandidateDiscoveryEngine().discover(
+        make_rgba_png(baseline),
+        make_rgba_png(target),
+        (126.0, 45.0, 127.0, 46.0),
+        difference_threshold=0.5,
+        min_component_pixels=1,
+        max_candidates=10,
+    )
+
+    assert len(result.candidates) == 2
+    for candidate in result.candidates:
+        ring = candidate.geometry["coordinates"][0]
+        assert candidate.pixel_count == 1
+        assert ring[0] == ring[-1]
+        assert len(set(map(tuple, ring[:-1]))) == len(ring) - 1
+
+
 def test_discovery_engine_rejects_silent_candidate_truncation() -> None:
     """验证候选过多时要求调整阈值，而不是静默截断结果。"""
     baseline = np.zeros((3, 20, 20), dtype="uint8")

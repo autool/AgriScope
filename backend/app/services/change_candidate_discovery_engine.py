@@ -32,7 +32,7 @@ class ChangeCandidateDiscoveryEngine:
     """执行共同拉伸 RGB 绝对差分、连通域筛选和 Polygon 矢量化。"""
 
     algorithm_code = "rgb_absolute_difference"
-    algorithm_version = "1.0.0"
+    algorithm_version = "1.1.0"
 
     @staticmethod
     def _read_rgba(png: bytes) -> np.ndarray:
@@ -93,10 +93,12 @@ class ChangeCandidateDiscoveryEngine:
         difference = np.mean(np.abs(target_rgb - baseline_rgb), axis=0)
         binary = ((difference >= difference_threshold) & valid_mask).astype("uint8")
         if min_component_pixels > 1:
+            # 四邻域避免仅在角点接触的像元被合并成自接触环；这类八邻域
+            # Polygon 会被 PostGIS 判定为无效，且不应作为正式变化候选。
             binary = sieve(
                 binary,
                 size=min_component_pixels,
-                connectivity=8,
+                connectivity=4,
             ).astype("uint8")
         changed_pixel_count = int(np.count_nonzero(binary))
         if changed_pixel_count == 0:
@@ -111,7 +113,7 @@ class ChangeCandidateDiscoveryEngine:
         for geometry, value in shapes(
             binary,
             mask=binary.astype(bool),
-            connectivity=8,
+            connectivity=4,
             transform=transform,
         ):
             if int(value) != 1 or geometry.get("type") != "Polygon":

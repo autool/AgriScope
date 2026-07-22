@@ -87,7 +87,11 @@ async def import_field_verification_xlsx(
     )
 
 
-@router.get("/import-template.xlsx")
+@router.get(
+    "/import-template.xlsx",
+    response_class=Response,
+    responses={200: {"content": {XLSX_MEDIA_TYPE: {}}}},
+)
 async def download_field_verification_xlsx_template() -> Response:
     """下载外业核查 Excel 标准模板。
 

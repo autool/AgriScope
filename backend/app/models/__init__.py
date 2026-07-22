@@ -1,5 +1,15 @@
 """数据库模型。"""
 
+from app.models.imagery_fusion import ImageryFusionEvent, ImageryFusionJob
+from app.models.imagery_mosaic import (
+    ImageryMosaicEvent,
+    ImageryMosaicInput,
+    ImageryMosaicJob,
+)
+from app.models.imagery_registration import (
+    ImageryRegistrationEvent,
+    ImageryRegistrationJob,
+)
 from app.models.monitoring_network import (
     DeviceFault,
     DeviceTelemetry,
@@ -67,6 +77,13 @@ __all__ = [
     "FarmlandPlot",
     "FieldVerification",
     "ImageryAsset",
+    "ImageryFusionEvent",
+    "ImageryFusionJob",
+    "ImageryMosaicEvent",
+    "ImageryMosaicInput",
+    "ImageryMosaicJob",
+    "ImageryRegistrationEvent",
+    "ImageryRegistrationJob",
     "MonitoringProject",
     "MonitoringDevice",
     "MonitoringEvent",

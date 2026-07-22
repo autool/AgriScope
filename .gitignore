@@ -20,6 +20,8 @@ frontend/.env.*.local
 # Runtime-generated delivery artifacts
 backend/storage/deliveries/*.zip
 backend/storage/imagery/
+backend/storage/imagery-registration/
+backend/storage/imagery-fusion/
 backend/storage/change_detection/
 backend/storage/supervision/
 backend/storage/thematic_maps/

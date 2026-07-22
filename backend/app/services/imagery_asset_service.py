@@ -631,16 +631,29 @@ class ImageryAssetService:
                         rasterio.open(root_dataset.subdatasets[0])
                     )
                 dataset = nested_dataset or root_dataset
-                if dataset.crs is None:
-                    raise ValidationException("影像缺少 CRS，无法统一到 WGS84")
                 if dataset.width <= 0 or dataset.height <= 0 or dataset.count <= 0:
                     raise ValidationException("影像尺寸或波段数量无效")
-                bounds_wgs84 = transform_bounds(
-                    dataset.crs,
-                    "EPSG:4326",
-                    *dataset.bounds,
-                    densify_pts=21,
-                )
+                rpc_model = dataset.rpcs
+                if dataset.crs is None and rpc_model is None:
+                    raise ValidationException(
+                        "影像缺少 CRS 且没有 RPC，无法统一到 WGS84"
+                    )
+                if dataset.crs is not None:
+                    bounds_wgs84 = transform_bounds(
+                        dataset.crs,
+                        "EPSG:4326",
+                        *dataset.bounds,
+                        densify_pts=21,
+                    )
+                    crs_name = dataset.crs.to_string()
+                else:
+                    bounds_wgs84 = (
+                        rpc_model.long_off - abs(rpc_model.long_scale),
+                        rpc_model.lat_off - abs(rpc_model.lat_scale),
+                        rpc_model.long_off + abs(rpc_model.long_scale),
+                        rpc_model.lat_off + abs(rpc_model.lat_scale),
+                    )
+                    crs_name = "RPC:WGS84"
                 left, bottom, right, top = bounds_wgs84
                 if not (
                     -180 <= left < right <= 180
@@ -679,6 +692,21 @@ class ImageryAssetService:
                     ],
                     "tags": safe_tags,
                     "tag_namespaces": tag_namespaces,
+                    "has_rpc": rpc_model is not None,
+                    "rpc_summary": (
+                        {
+                            "error_bias": rpc_model.err_bias,
+                            "error_random": rpc_model.err_rand,
+                            "longitude_offset": rpc_model.long_off,
+                            "longitude_scale": rpc_model.long_scale,
+                            "latitude_offset": rpc_model.lat_off,
+                            "latitude_scale": rpc_model.lat_scale,
+                            "height_offset": rpc_model.height_off,
+                            "height_scale": rpc_model.height_scale,
+                        }
+                        if rpc_model is not None
+                        else None
+                    ),
                     "subdataset": dataset.name
                     if nested_dataset is not None
                     else None,
@@ -688,7 +716,7 @@ class ImageryAssetService:
                     width=dataset.width,
                     height=dataset.height,
                     band_count=dataset.count,
-                    crs=dataset.crs.to_string(),
+                    crs=crs_name,
                     bounds_wgs84=(left, bottom, right, top),
                     resolution_m=self._resolution_m(dataset, bounds_wgs84),
                     metadata=metadata,
@@ -702,7 +730,7 @@ class ImageryAssetService:
 
     @staticmethod
     def _default_steps(asset_id: int) -> list[ImageryProcessingStep]:
-        """创建新影像资产的标准五步预处理流水线。
+        """创建新影像资产的标准必选步骤与可选增强步骤。
 
         Args:
             asset_id: 影像资产主键。
@@ -711,14 +739,16 @@ class ImageryAssetService:
             list[ImageryProcessingStep]: 待处理步骤列表。
         """
         definitions = [
-            ("radiometric", "辐射定标", {"output": "TOA reflectance"}),
-            ("atmospheric", "大气校正", {"model": "待配置"}),
-            ("geometric", "几何精校正", {"method": "RPC/GCP"}),
-            ("clip", "行政区裁剪", {"boundary": "待选择"}),
+            ("radiometric", "辐射定标", {"output": "TOA reflectance"}, True),
+            ("atmospheric", "大气校正", {"model": "待配置"}, True),
+            ("geometric", "几何精校正", {"method": "RPC/GCP"}, True),
+            ("clip", "行政区裁剪", {"boundary": "待选择"}, True),
+            ("enhancement", "影像增强", {"method": "optional"}, False),
             (
                 "band_products",
                 "波段与指数产品",
                 {"products": ["true_color", "false_color", "NDVI"]},
+                True,
             ),
         ]
         return [
@@ -727,11 +757,12 @@ class ImageryAssetService:
                 step_code=step_code,
                 step_name=step_name,
                 sequence=index,
+                is_required=is_required,
                 status="pending",
                 progress=0,
                 parameters=parameters,
             )
-            for index, (step_code, step_name, parameters) in enumerate(
+            for index, (step_code, step_name, parameters, is_required) in enumerate(
                 definitions,
                 start=1,
             )

@@ -44,11 +44,38 @@ def test_change_run_rejects_same_temporal_imagery() -> None:
             run_name="七月变化检测",
             baseline_asset_code="IMG-001",
             target_asset_code="IMG-001",
-            alignment_method="同名点配准",
-            alignment_offset_pixels=0.8,
-            alignment_evidence_uri="storage://evidence/alignment.json",
+            registration_job_code="REG-001",
             operator_code="manager-zhao-zhiyuan",
         )
+
+
+def test_change_run_rejects_legacy_alignment_claims() -> None:
+    """验证旧版客户端不能用手填配准结论代替实体配准成果。"""
+    with pytest.raises(ValidationError) as exc_info:
+        ChangeRunCreateRequest.model_validate(
+            {
+                "run_code": "CD-2026-001",
+                "run_name": "七月变化检测",
+                "baseline_asset_code": "IMG-BASE",
+                "target_asset_code": "IMG-TARGET",
+                "registration_job_code": "REG-2026-001",
+                "operator_code": "manager-zhao-zhiyuan",
+                "alignment_method": "客户端手填平移配准",
+                "alignment_offset_pixels": 0.2,
+                "alignment_evidence_uri": "storage://unverified/alignment.json",
+            }
+        )
+
+    rejected_fields = {
+        error["loc"][0]
+        for error in exc_info.value.errors()
+        if error["type"] == "extra_forbidden"
+    }
+    assert rejected_fields == {
+        "alignment_method",
+        "alignment_offset_pixels",
+        "alignment_evidence_uri",
+    }
 
 
 def test_excluded_candidate_requires_reason() -> None:
@@ -68,6 +95,7 @@ def test_create_run_freezes_imagery_rules_and_task_scope() -> None:
     user_service = AsyncMock()
     rule_service = AsyncMock()
     imagery_service = MagicMock()
+    registration_service = AsyncMock()
     now = datetime.now(UTC)
     project = SimpleNamespace(id=1)
     task = SimpleNamespace(
@@ -134,6 +162,25 @@ def test_create_run_freezes_imagery_rules_and_task_scope() -> None:
     dao.count_task_plots.return_value = 35020
     imagery_service.verify_asset_file.return_value = (True, None)
     rule_service.ensure_for_project.return_value = config
+    registration = SimpleNamespace(
+        id=30,
+        task_id=2,
+        job_code="REG-2026-001",
+        reference_asset_id=10,
+        moving_asset_id=11,
+        output_uri="storage://imagery-registration/jobs/REG-2026-001/out.tif",
+        file_size_bytes=123456,
+        checksum_sha256="c" * 64,
+        initial_offset_pixels=Decimal("3.4000"),
+        residual_offset_pixels=Decimal("0.3500"),
+        residual_threshold_pixels=Decimal("1.000"),
+        overlap_ratio=Decimal("0.91000"),
+        peak_to_sidelobe_ratio=Decimal("8.50000"),
+    )
+    registration_service.resolve_verified_job.return_value = (
+        registration,
+        SimpleNamespace(),
+    )
 
     async def add_run(_: object, run: object) -> object:
         run.id = 20
@@ -148,6 +195,7 @@ def test_create_run_freezes_imagery_rules_and_task_scope() -> None:
         user_service=user_service,
         rule_service=rule_service,
         imagery_service=imagery_service,
+        registration_service=registration_service,
     )
 
     result = asyncio.run(
@@ -160,9 +208,7 @@ def test_create_run_freezes_imagery_rules_and_task_scope() -> None:
                 run_name="七月变化检测",
                 baseline_asset_code="IMG-BASE",
                 target_asset_code="IMG-TARGET",
-                alignment_method="同名点配准",
-                alignment_offset_pixels=1.2,
-                alignment_evidence_uri="storage://alignment/CD-2026-001.json",
+                registration_job_code="REG-2026-001",
                 operator_code="manager-zhao-zhiyuan",
             ),
         )
@@ -173,7 +219,10 @@ def test_create_run_freezes_imagery_rules_and_task_scope() -> None:
     assert saved_run.rule_config_version == 7
     assert saved_run.task_plot_count == 35020
     assert saved_run.source_snapshot["baseline"]["checksum_sha256"] == "a" * 64
-    assert saved_run.alignment_overlap_ratio == Decimal("0.9432")
+    assert saved_run.registration_job_id == 30
+    assert saved_run.alignment_offset_pixels == Decimal("0.35")
+    assert saved_run.alignment_overlap_ratio == Decimal("0.91")
+    assert saved_run.source_snapshot["registration"]["output_sha256"] == "c" * 64
     event = dao.add_event.await_args.args[1]
     assert event.event_type == "run_created"
     assert event.new_values["task_plot_count"] == 35020

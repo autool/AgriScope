@@ -331,7 +331,7 @@ watch(selectedRunCodeRef, (runCode) => {
           <main v-else class="run-empty">
             <WarningOutlined />
             <strong>尚未建立检测任务</strong>
-            <p>上传并完成两期真实影像预处理后，创建任务以固化影像校验值、规则版本、任务图斑范围和配准证据。</p>
+            <p>上传并完成两期真实影像预处理与双景自动配准后，创建任务以固化影像校验值、规则版本、任务图斑范围和实体配准成果。</p>
           </main>
         </section>
       </template>
@@ -340,6 +340,7 @@ watch(selectedRunCodeRef, (runCode) => {
     <ChangeRunCreateModal
       :open="createModalOpenRef"
       :imagery="overviewRef?.imagery || []"
+      :registrations="overviewRef?.registrations || []"
       :operator-code="currentUserCodeComputed"
       :saving="savingRef"
       @close="createModalOpenRef = false"

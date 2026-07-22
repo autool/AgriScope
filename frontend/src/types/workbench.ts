@@ -206,6 +206,7 @@ export interface ImageryProcessingStep {
   step_code: string
   step_name: string
   sequence: number
+  is_required: boolean
   status: string
   progress: number
   parameters: Record<string, unknown>
@@ -228,9 +229,19 @@ export interface ImageryArtifactRegisterPayload {
   comment?: string | null
 }
 
+export interface ImageryGcpControlPointDraft {
+  point_id: string
+  pixel_column: number | null
+  pixel_row: number | null
+  x: number | null
+  y: number | null
+  z: number | null
+  source: string
+}
+
 export interface ImageryStepExecutePayload {
   operator_code: string
-  parameters: Record<string, string | number>
+  parameters: Record<string, unknown>
   comment?: string | null
 }
 
@@ -298,6 +309,8 @@ export interface ImageryBusinessMetadataField {
 
 export interface ImageryRasterMetadata extends Record<string, unknown> {
   descriptions?: Array<string | null>
+  has_rpc?: boolean
+  rpc_summary?: Record<string, number | null> | null
   business_metadata?: Partial<Record<
     'sensor_type' | 'acquired_at' | 'processing_level' | 'cloud_cover',
     ImageryBusinessMetadataField

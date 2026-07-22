@@ -44,6 +44,10 @@ class ChangeDetectionRun(Base):
         ForeignKey("imagery_assets.id", ondelete="RESTRICT"),
         nullable=False,
     )
+    registration_job_id: Mapped[int | None] = mapped_column(
+        ForeignKey("imagery_registration_jobs.id", ondelete="RESTRICT"),
+        nullable=True,
+    )
     rule_config_version: Mapped[int] = mapped_column(Integer, nullable=False)
     rule_profile_snapshot: Mapped[dict] = mapped_column(
         JSON,

@@ -467,7 +467,18 @@ async def review_pest_report(
     return await service.review_report(db, project_code, report_code, request)
 
 
-@router.get("/reports/{report_code}/download")
+@router.get(
+    "/reports/{report_code}/download",
+    response_class=FileResponse,
+    responses={
+        200: {
+            "content": {
+                "application/vnd.openxmlformats-officedocument."
+                "spreadsheetml.sheet": {}
+            }
+        }
+    },
+)
 async def download_pest_report(
     report_code: str,
     db: DatabaseSession,

@@ -9,6 +9,10 @@ import { message } from 'ant-design-vue'
 import { storeToRefs } from 'pinia'
 import { computed, onMounted, ref } from 'vue'
 
+import ImageryMosaicPanel from '@/components/imagery/ImageryMosaicPanel.vue'
+import ImageryHistoryPanel from '@/components/imagery/ImageryHistoryPanel.vue'
+import ImageryFusionPanel from '@/components/imagery/ImageryFusionPanel.vue'
+import ImageryRegistrationPanel from '@/components/imagery/ImageryRegistrationPanel.vue'
 import ImageryStepActionModal from '@/components/imagery/ImageryStepActionModal.vue'
 import { useAssetStore } from '@/store/assetStore'
 import { useImageryStore } from '@/store/imageryStore'
@@ -28,6 +32,10 @@ const {
 } = storeToRefs(imageryStore)
 const { catalogRef } = storeToRefs(assetStore)
 const actionVisibleRef = ref<boolean>(false)
+const fusionOpenRef = ref<boolean>(false)
+const historyOpenRef = ref<boolean>(false)
+const mosaicOpenRef = ref<boolean>(false)
+const registrationOpenRef = ref<boolean>(false)
 const actionModeRef = ref<'execute' | 'register' | 'source-accept'>('execute')
 const selectedStepRef = ref<ImageryProcessingStep | null>(null)
 const selectedAssetCodeRef = ref<string>('')
@@ -74,12 +82,17 @@ const statusLabel = (step: ImageryProcessingStep): string => {
   if (step.output_verified) return '产物已校验'
   if (step.status === 'artifact_missing') return '产物缺失'
   if (step.status === 'running') return '处理中'
+  if (!step.is_required) return '可选处理'
   return '待登记'
 }
 
 const stepBlocked = (step: ImageryProcessingStep): boolean => (
   (processingRef.value?.steps || []).some(
-    (candidate) => candidate.sequence < step.sequence && !candidate.output_verified,
+    (candidate) => (
+      candidate.sequence < step.sequence
+      && candidate.is_required
+      && !candidate.output_verified
+    ),
   )
 )
 
@@ -96,6 +109,32 @@ const sourceAccepted = (step: ImageryProcessingStep): boolean => {
     && 'execution_mode' in evidence
     && evidence.execution_mode === 'source_level_acceptance'
   )
+}
+
+const geometricEvidenceSummary = (step: ImageryProcessingStep): string | null => {
+  const artifactEvidence = step.parameters.artifact_evidence
+  if (typeof artifactEvidence !== 'object' || artifactEvidence === null) return null
+  if (!('execution_parameters' in artifactEvidence)) return null
+  const executionParameters = artifactEvidence.execution_parameters
+  if (typeof executionParameters !== 'object' || executionParameters === null) return null
+  if (!('method' in executionParameters)) return null
+  if (executionParameters.method === 'gcp_affine') {
+    const gcpCount = 'gcp_count' in executionParameters ? executionParameters.gcp_count : '--'
+    const rawRmse = 'rmse_pixels' in executionParameters ? executionParameters.rmse_pixels : null
+    const rmse = typeof rawRmse === 'number' ? rawRmse.toFixed(4) : '--'
+    return `GCP ${String(gcpCount)} 点 · RMSE ${rmse} px`
+  }
+  if (executionParameters.method === 'rpc_dem_orthorectification') {
+    const demEvidence = 'dem_evidence' in executionParameters
+      ? executionParameters.dem_evidence
+      : null
+    const demSha = typeof demEvidence === 'object' && demEvidence !== null
+      && 'checksum_sha256' in demEvidence
+      ? String(demEvidence.checksum_sha256).slice(0, 12)
+      : '--'
+    return `RPC + DEM 正射 · DEM SHA ${demSha}…`
+  }
+  return null
 }
 
 const openActionModal = (
@@ -209,7 +248,35 @@ onMounted(() => {
     <aside class="processing-panel">
       <header>
         <span><small>PROCESSING PIPELINE</small><strong>影像预处理流水线</strong></span>
-        <b>{{ processingRef?.completion_rate ?? 0 }}%</b>
+        <div class="pipeline-actions">
+          <b>{{ processingRef?.completion_rate ?? 0 }}%</b>
+          <a-button
+            size="small"
+            @click="registrationOpenRef = true"
+          >
+            自动配准
+          </a-button>
+          <a-button
+            size="small"
+            type="primary"
+            ghost
+            @click="mosaicOpenRef = true"
+          >
+            多景镶嵌
+          </a-button>
+          <a-button
+            size="small"
+            @click="historyOpenRef = true"
+          >
+            时序覆盖
+          </a-button>
+          <a-button
+            size="small"
+            @click="fusionOpenRef = true"
+          >
+            全色融合
+          </a-button>
+        </div>
       </header>
       <a-select
         v-model:value="selectedAssetCodeRef"
@@ -253,7 +320,7 @@ onMounted(() => {
           <article v-for="step in processingRef.steps" :key="step.step_code" :class="step.status">
             <i><CheckCircleOutlined v-if="step.output_verified" /><span v-else>{{ step.sequence }}</span></i>
             <div>
-              <header><span><strong>{{ step.step_name }}</strong><small>{{ step.step_code }}</small></span><a-tag :color="statusColor(step)">{{ statusLabel(step) }}</a-tag></header>
+              <header><span><strong>{{ step.step_name }}</strong><small>{{ step.step_code }}{{ step.is_required ? '' : ' · 可选' }}</small></span><a-tag :color="statusColor(step)">{{ statusLabel(step) }}</a-tag></header>
               <a-progress :percent="step.progress" :show-info="false" size="small" />
               <p>{{ step.artifact_error || step.output_uri || '尚未登记实体产物' }}</p>
               <p v-if="step.output_verified" class="artifact-evidence">
@@ -261,9 +328,10 @@ onMounted(() => {
                 {{ step.output_size_bytes }} bytes ·
                 SHA256 {{ step.output_checksum_sha256?.slice(0, 12) }}…
               </p>
-              <div v-if="!step.output_verified" class="step-actions">
+              <p v-if="geometricEvidenceSummary(step)" class="artifact-evidence">{{ geometricEvidenceSummary(step) }}</p>
+              <div class="step-actions">
                 <a-button
-                  v-if="sourceAcceptanceAvailable(step)"
+                  v-if="sourceAcceptanceAvailable(step) && !step.output_verified"
                   size="small"
                   :loading="processingStepCodeRef === step.step_code"
                   :disabled="!canProcessComputed || !selectedAssetComputed?.file_verified || stepBlocked(step)"
@@ -280,14 +348,14 @@ onMounted(() => {
                   :title="stepBlocked(step) ? '请先完成上一步处理' : '由平台执行明确参数化算法'"
                   @click="openActionModal(step, 'execute')"
                 >
-                  <PlayCircleOutlined /> 平台执行
+                  <PlayCircleOutlined /> {{ step.output_verified ? '重新执行' : '平台执行' }}
                 </a-button>
                 <a-button
                   size="small"
                   :disabled="!canProcessComputed || stepBlocked(step)"
                   @click="openActionModal(step, 'register')"
                 >
-                  <CloudUploadOutlined /> 登记外部产物
+                  <CloudUploadOutlined /> {{ step.output_verified ? '替换外部产物' : '登记外部产物' }}
                 </a-button>
               </div>
             </div>
@@ -303,10 +371,17 @@ onMounted(() => {
       :asset-verified="selectedAssetComputed?.file_verified || false"
       :asset-band-count="selectedAssetComputed?.band_count || null"
       :asset-band-descriptions="selectedAssetComputed?.raster_metadata.descriptions || []"
+      :raster-width="selectedAssetComputed?.raster_width || null"
+      :raster-height="selectedAssetComputed?.raster_height || null"
+      :asset-has-rpc="selectedAssetComputed?.raster_metadata.has_rpc === true"
       :processing-level="processingRef?.processing_level || null"
       :initial-mode="actionModeRef"
       @success="handleActionSuccess"
     />
+    <ImageryHistoryPanel v-model:open="historyOpenRef" />
+    <ImageryFusionPanel v-model:open="fusionOpenRef" />
+    <ImageryRegistrationPanel v-model:open="registrationOpenRef" />
+    <ImageryMosaicPanel v-model:open="mosaicOpenRef" />
   </div>
 </template>
 
@@ -335,6 +410,7 @@ onMounted(() => {
 .processing-panel header > span { display: flex; flex-direction: column; }
 .processing-panel header small { font-size: 7px; color: #8b9690; }
 .processing-panel header strong { font-size: 11px; }
+.pipeline-actions { display: flex; gap: 7px; align-items: center; justify-content: flex-end; flex-wrap: wrap; }
 .processing-panel > header b { font-size: 20px; color: #347957; }
 .asset-selector { width: 100%; margin: 10px 0 8px; }
 .asset-meta { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; margin: 10px 0; }

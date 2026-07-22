@@ -1,3 +1,5 @@
+import type { ImageryRegistrationJob } from '@/types/imageryRegistration'
+
 export type ChangeClass =
   | 'suspected_construction'
   | 'farmland_outflow'
@@ -83,6 +85,7 @@ export interface ChangeDetectionRun {
   run_name: string
   baseline_asset_code: string
   target_asset_code: string
+  registration_job_code: string
   rule_config_version: number
   rule_profile_snapshot: Record<string, unknown>
   source_snapshot: Record<string, unknown>
@@ -112,6 +115,7 @@ export interface ChangeDetectionOverview {
   task_code: string
   blockers: string[]
   imagery: ChangeImagery[]
+  registrations: ImageryRegistrationJob[]
   runs: ChangeDetectionRun[]
 }
 
@@ -120,9 +124,7 @@ export interface ChangeRunCreatePayload {
   run_name: string
   baseline_asset_code: string
   target_asset_code: string
-  alignment_method: string
-  alignment_offset_pixels: number
-  alignment_evidence_uri: string
+  registration_job_code: string
   operator_code: string
 }
 

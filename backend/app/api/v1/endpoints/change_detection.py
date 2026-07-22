@@ -170,7 +170,11 @@ async def get_change_comparison_metadata(
     )
 
 
-@router.get("/runs/{run_code}/comparison/{side}.png")
+@router.get(
+    "/runs/{run_code}/comparison/{side}.png",
+    response_class=Response,
+    responses={200: {"content": {"image/png": {}}}},
+)
 async def get_change_comparison_image(
     run_code: str,
     side: Literal["baseline", "target"],

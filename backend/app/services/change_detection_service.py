@@ -31,6 +31,7 @@ from app.schemas.change_detection import (
     ChangeRunCreateRequest,
 )
 from app.services.imagery_asset_service import ImageryAssetService
+from app.services.imagery_registration_service import ImageryRegistrationService
 from app.services.project_user_service import ProjectUserService
 from app.services.rule_config_service import RuleConfigService
 
@@ -50,6 +51,7 @@ class ChangeDetectionService:
         user_service: ProjectUserService | None = None,
         rule_service: RuleConfigService | None = None,
         imagery_service: ImageryAssetService | None = None,
+        registration_service: ImageryRegistrationService | None = None,
     ) -> None:
         """初始化变化检测服务。
 
@@ -59,6 +61,7 @@ class ChangeDetectionService:
             user_service: 项目成员能力服务。
             rule_service: 项目规则服务。
             imagery_service: 真实影像文件校验服务。
+            registration_service: 物理配准成果校验服务。
 
         Returns:
             None: 无返回值。
@@ -68,6 +71,9 @@ class ChangeDetectionService:
         self.user_service = user_service or ProjectUserService()
         self.rule_service = rule_service or RuleConfigService()
         self.imagery_service = imagery_service or ImageryAssetService()
+        self.registration_service = (
+            registration_service or ImageryRegistrationService()
+        )
 
     async def _resolve_context(
         self,
@@ -266,6 +272,10 @@ class ChangeDetectionService:
             for row in imagery_rows
         }
         runs = list(await self.dao.list_runs(db, task.id))
+        registrations = await self.registration_service.list_project_job_responses(
+            db,
+            project.id,
+        )
         run_ids = [run.id for run in runs]
         candidate_rows = await self.dao.list_candidate_rows(db, run_ids)
         events = await self.dao.list_events(db, run_ids)
@@ -330,6 +340,11 @@ class ChangeDetectionService:
                         run.target_asset_id,
                         "已删除影像",
                     ),
+                    registration_job_code=str(
+                        (run.source_snapshot or {})
+                        .get("registration", {})
+                        .get("job_code", "legacy-unverified")
+                    ),
                     rule_config_version=run.rule_config_version,
                     rule_profile_snapshot=run.rule_profile_snapshot or {},
                     source_snapshot=run.source_snapshot or {},
@@ -383,6 +398,8 @@ class ChangeDetectionService:
             blockers.append(
                 "至少需要两期具备实体文件、SHA-256 且完成定标和校正的业务影像"
             )
+        if not any(item.artifact_verified for item in registrations):
+            blockers.append("至少需要一个通过实体残差门禁的双景配准成果")
         if task.status != "interpreting":
             blockers.append("当前任务不处于解译阶段，不能新建变化检测任务")
         return ChangeDetectionOverviewResponse(
@@ -390,6 +407,7 @@ class ChangeDetectionService:
             task_code=task_code,
             blockers=blockers,
             imagery=imagery,
+            registrations=registrations,
             runs=run_responses,
         )
 
@@ -458,10 +476,23 @@ class ChangeDetectionService:
             if not eligible:
                 raise ValidationException(f"{label}影像不可用于检测：{reason}")
 
+        registration, _ = await self.registration_service.resolve_verified_job(
+            db,
+            project.id,
+            request.registration_job_code,
+        )
+        if registration.task_id != task.id:
+            raise ValidationException("配准成果不属于当前变化检测任务")
+        if (
+            registration.reference_asset_id != baseline.id
+            or registration.moving_asset_id != target.id
+        ):
+            raise ValidationException("配准成果绑定的参考景和待配准景与两期影像不一致")
         max_offset = float(config.positional_accuracy_pixels)
-        if request.alignment_offset_pixels > max_offset:
+        registration_residual = float(registration.residual_offset_pixels)
+        if registration_residual > max_offset:
             raise ValidationException(
-                f"影像配准偏差 {request.alignment_offset_pixels} 像素超过规则上限 "
+                f"影像配准残差 {registration_residual} 像素超过规则上限 "
                 f"{max_offset} 像素"
             )
         pair_metrics = await self.dao.analyze_asset_pair(db, baseline.id, target.id)
@@ -470,7 +501,11 @@ class ChangeDetectionService:
         if not bool(pair_metrics["intersects"]):
             raise ValidationException("前后时相影像覆盖范围不相交")
         overlap_ratio = Decimal(
-            str(min(max(float(pair_metrics["overlap_ratio"] or 0), 0), 1))
+            str(min(
+                max(float(registration.overlap_ratio), 0),
+                float(pair_metrics["overlap_ratio"] or 0),
+                1,
+            ))
         )
         if overlap_ratio <= 0:
             raise ValidationException("前后时相影像没有有效重叠面积")
@@ -485,6 +520,7 @@ class ChangeDetectionService:
             run_name=request.run_name,
             baseline_asset_id=baseline.id,
             target_asset_id=target.id,
+            registration_job_id=registration.id,
             rule_config_version=config.version,
             rule_profile_snapshot=self._rule_snapshot(config),
             source_snapshot={
@@ -512,13 +548,29 @@ class ChangeDetectionService:
                         else None
                     ),
                 },
+                "registration": {
+                    "job_code": registration.job_code,
+                    "output_uri": registration.output_uri,
+                    "output_size_bytes": registration.file_size_bytes,
+                    "output_sha256": registration.checksum_sha256,
+                    "initial_offset_pixels": float(
+                        registration.initial_offset_pixels
+                    ),
+                    "residual_offset_pixels": registration_residual,
+                    "residual_threshold_pixels": float(
+                        registration.residual_threshold_pixels
+                    ),
+                    "peak_to_sidelobe_ratio": float(
+                        registration.peak_to_sidelobe_ratio
+                    ),
+                },
             },
             task_plot_count=task_plot_count,
             task_updated_at_snapshot=task.updated_at,
-            alignment_method=request.alignment_method,
-            alignment_offset_pixels=Decimal(str(request.alignment_offset_pixels)),
+            alignment_method="phase_correlation_translation",
+            alignment_offset_pixels=Decimal(str(registration_residual)),
             alignment_overlap_ratio=overlap_ratio,
-            alignment_evidence_uri=request.alignment_evidence_uri,
+            alignment_evidence_uri=registration.output_uri,
             status="active",
             created_by=operator.display_name,
             created_by_code=operator.user_code,
@@ -539,7 +591,8 @@ class ChangeDetectionService:
                         "target_asset_code": target.asset_code,
                         "rule_config_version": config.version,
                         "task_plot_count": task_plot_count,
-                        "alignment_offset_pixels": request.alignment_offset_pixels,
+                        "registration_job_code": registration.job_code,
+                        "alignment_offset_pixels": registration_residual,
                         "alignment_overlap_ratio": float(overlap_ratio),
                     },
                     comment="创建变化检测任务并固化影像、规则与任务范围快照",
