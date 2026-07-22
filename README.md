@@ -32,6 +32,10 @@
 
 ![AgriScope 数据共享服务](docs/images/service-sharing-workbench.png)
 
+### 无人机任务与成果核验
+
+![AgriScope 无人机任务与成果核验](docs/images/uav-workbench.png)
+
 ### 规则配置
 
 ![AgriScope 规则配置](docs/images/rule-settings.png)
@@ -56,6 +60,7 @@
 - 支持从已校验 `band_products` 实体栅格批量生成真彩色、标准假彩色和 NDVI 专题图，输出 PNG/PDF 实体文件。版式包含图名、图廓、指北针、比例尺、图例、制图单位、日期和图号；清单同时保存来源 URI/SHA-256、STAC/许可/密级血缘、渲染参数、成图大小与 SHA-256，预览和下载前重新校验实体，公开数据显式标注“非法定调查成果”。
 - 成果 ZIP 采用标准目录归档任务矢量、统计、灾害、外业、质量、审核、报告、真实专题图和独立监理报告；影像源与处理产物通过重新校验的 URI、大小和 SHA-256 血缘引用，多源数据资产目录与归档状态索引一并写入。除清单自身外，每个内嵌文件保存大小和 SHA-256；新增专题图、监理报告、数据资产或影像处理产物会使旧包失效，新版本生成时旧版本明确转为审计历史。
 - 支持地图与数据服务受控共享：项目负责人登记服务和真实资源证据，甲方审核代表独立审批；项目成员提交用途和期限明确的访问申请，项目负责人审批并可签发只显示一次的 API Key。数据库仅保存密钥 SHA-256 和末四位，支持真实健康探测、SSRF 内网防护、调用指标审计、单凭证撤销和服务级批量吊销。
+- 支持田间监测网络与病虫害预警闭环：监测站坐标必须落在申报县区真实边界内，设备保存厂商、型号、序列号、权属和照片实体 SHA-256；遥测通过设备级幂等键写入，故障驱动设备异常状态并以处置回执闭环。病虫害模型保存实体版本、训练/评估来源和 Accuracy/Recall/F1/ROC AUC，识别结果必须人工复核后才能创建告警，送达时登记真实回执实体。
 - OpenLayers 二维地图与 Cesium 三维视图共享选中图斑和业务状态。
 - 应用壳层参考 Vben5，支持持久化布局偏好、折叠侧栏、多标签页、KeepAlive、局部刷新和内容最大化。
 - 支持 WGS84（EPSG:4326）坐标点查、地图点击查询和包围盒空间查询。
@@ -74,7 +79,7 @@
 3. 独立项目监理已实现真实任务图斑抽样、过程检查、问题整改、逐轮复检、县区评价和不可变实体报告；当前数据库无业务监理记录时保持真实空状态。
 4. RPC/GCP、DEM 正射、区域网平差、配准、融合、匀色、镶嵌和覆盖率验收。
 5. 专题制图已实现持久化版式模板、真实波段产品批量成图、PNG/PDF 实体输出、双 SHA-256 校验、公开数据标识和角色审计；标准化交付归档已纳入真实专题图、监理报告、影像处理血缘、多源资产目录、逐文件 SHA-256 和归档源变化失效判断。数据共享已实现注册、甲方审批、访问申请、一次性凭证、健康检查、调用审计和撤销。历史影像长周期溯源、完整图集编排和源栅格离线封存仍待继续建设。
-6. 无人机任务、田间监测站、物联网设备、AI 病虫害识别与风险预警。
+6. 田间监测站、物联网设备、幂等遥测、设备故障闭环、AI 病虫害模型版本、人工复核与告警送达已实现，并在无业务数据时保持真实空状态；无人机任务、移动采集、专家会商、分级报表与规模化设备接入仍待继续建设。
 
 公开采购文件中的最小图斑面积、完整率、边界吻合度、地类准确率、关键字段准确率和像素套合精度将作为可配置规则保存，不在业务代码中硬编码。公开或演示数据继续与正式业务、涉密数据严格区分。
 
@@ -300,6 +305,43 @@ API Key 模式批准后密钥明文只返回一次，数据库仅保存 SHA-256 
 当前联调目录登记的是公开 Element 84 Earth Search STAC，已经由项目负责人登记、
 甲方审核代表批准，并完成一次 HTTP 200 的真实健康探测。该记录用于公开 Sentinel-2
 影像检索，不代表平台对外发布了涉密或法定调查成果。
+
+### 田间监测网络与病虫害预警
+
+田间监测页使用 `monitoring_stations`、`monitoring_devices`、`device_telemetry`、
+`device_faults`、`pest_model_versions`、`pest_assessments`、`pest_alerts` 和
+`monitoring_events` 保存完整业务链。监测站登记时由 PostGIS 校验 WGS84 坐标确实
+位于申报县区真实边界内，并保存来源、版本、权属、照片或验收证据的大小和 SHA-256；
+设备保存厂商、型号、序列号、安装时间、权属、状态和照片实体证据。
+
+遥测接口以设备和 `idempotency_key` 组成唯一键。相同键和相同载荷重复上报时返回原
+记录，不重复写库；相同键对应不同载荷时明确拒绝。遥测支持数值、JSON 原始载荷及
+可选图像实体，在线、离线、异常、维护和退役状态与故障流程保持一致。故障登记后设备
+进入异常状态，只有提交处置说明以及回执 URI、大小和 SHA-256 后才能关闭。
+
+病虫害模型版本保存训练来源、评估来源、部署目标、模型实体及 Accuracy、Recall、F1、
+ROC AUC 指标；登记新活动版本时旧活动版本转为 `superseded` 并保留替代关系。模型识别
+记录保存输入实体、置信度和预测依据，必须由具备能力的真实项目用户批准或驳回；未经
+批准不得创建告警。告警保存渠道和真实接收对象，实际送达后必须登记回执实体校验值。
+所有动作写入不可变事件，初始化脚本不创建固定站点、设备、模型或告警。
+
+### 无人机飞行任务与成果核验
+
+无人机任务页使用 `uav_aircraft`、`uav_missions`、`uav_artifacts`、
+`uav_findings` 和 `uav_events` 保存航空器、飞手资质、飞行范围、实体成果、空间疑点
+和不可变审计。航空器登记必须上传登记或适航证书实体；任务创建必须上传飞手执照，
+并由 PostGIS 验证 WGS84 飞行 Polygon 完整位于申报县区真实边界内。
+
+原始影像、航迹、照片、视频、正射、DEM 和报告均写入受控存储并保存文件大小与
+SHA-256。正射及 DEM 由 Rasterio 提取 CRS、分辨率、尺寸和 WGS84 覆盖范围；正射成果
+必须完整覆盖任务范围。任务按 `planned → in_progress → captured → processed → reviewed`
+流转：完成采集前必须具备原始影像和航迹，完成处理前必须具备满足任务目标分辨率与
+覆盖要求的正射实体，完成审核前必须清空待复核疑点。
+
+疑点坐标必须落在任务飞行范围内，关联图斑必须属于当前任务；人工确认或排除均保存
+稳定用户编码、角色快照、复核依据和时间。成果下载前重新核对受控路径、文件大小与
+SHA-256。初始化脚本不创建固定航空器、任务、成果或疑点，工作台在无记录时展示数据库
+真实空态。
 
 ### 外业核查 CSV / Excel 导入
 
@@ -558,6 +600,25 @@ psql "$POSTGRES_DSN" -f scripts/migrations/20260722_remove_seeded_task_audit.sql
 | POST | `/api/v1/service-sharing/services/{service_code}/usage` | 校验项目身份或 API Key 后写入调用审计 |
 | POST | `/api/v1/service-sharing/services/{service_code}/revoke` | 撤销服务并原子吊销全部活动凭证 |
 | POST | `/api/v1/service-sharing/credentials/{credential_code}/revoke` | 单独撤销一个访问凭证 |
+| GET | `/api/v1/monitoring-network/overview` | 查询监测站、设备、遥测、故障、模型、复核和告警真实总览 |
+| POST | `/api/v1/monitoring-network/stations` | 校验真实县界后登记监测站及实体证据 |
+| POST | `/api/v1/monitoring-network/stations/{station_code}/devices` | 登记设备身份、归属和照片校验值 |
+| POST | `/api/v1/monitoring-network/devices/{device_code}/telemetry` | 通过设备级幂等键写入数值、载荷或图像证据 |
+| POST | `/api/v1/monitoring-network/devices/{device_code}/faults` | 登记设备故障并切换异常状态 |
+| POST | `/api/v1/monitoring-network/faults/{fault_code}/resolve` | 以实体处置回执关闭设备故障 |
+| POST | `/api/v1/monitoring-network/models` | 登记模型实体、评估来源和四项验证指标并替代旧版本 |
+| POST | `/api/v1/monitoring-network/assessments` | 登记模型输入、置信度和预测依据并进入人工复核 |
+| POST | `/api/v1/monitoring-network/assessments/{assessment_code}/review` | 人工批准或驳回模型识别结果 |
+| POST | `/api/v1/monitoring-network/assessments/{assessment_code}/alerts` | 仅从已批准识别结果创建待发送告警 |
+| POST | `/api/v1/monitoring-network/alerts/{alert_code}/deliver` | 登记告警真实送达回执、大小和 SHA-256 |
+| GET | `/api/v1/uav/overview` | 查询航空器、任务、实体成果、疑点和不可变事件真实总览 |
+| POST | `/api/v1/uav/aircraft` | 上传证书并登记航空器、传感器和权属身份 |
+| POST | `/api/v1/uav/missions` | 上传飞手资质并创建真实县界内飞行任务 |
+| POST | `/api/v1/uav/missions/{mission_code}/artifacts` | 上传原始影像、航迹、照片、视频、正射、DEM 或报告实体 |
+| POST | `/api/v1/uav/missions/{mission_code}/status` | 按实体成果、分辨率、覆盖和疑点门禁流转任务状态 |
+| POST | `/api/v1/uav/missions/{mission_code}/findings` | 登记任务范围内且绑定实体成果的空间疑点 |
+| POST | `/api/v1/uav/missions/{mission_code}/findings/{finding_code}/review` | 人工确认或排除无人机疑点并记录稳定身份审计 |
+| GET | `/api/v1/uav/artifacts/{artifact_code}/download` | 鉴权并复核文件大小与 SHA-256 后下载成果 |
 
 ## 数据安全
 

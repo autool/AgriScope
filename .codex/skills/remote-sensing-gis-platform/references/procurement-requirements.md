@@ -128,6 +128,24 @@ the platform has persisted evidence and executable workflows.
 - AI recognition and prediction must preserve model code/version, training/evaluation
   source, deployment target, input data, confidence, accuracy/recall/F1/ROC evidence,
   prediction basis, human review, and superseded versions. Never use fixed fake alerts.
+- The implemented field-monitoring contract persists stations, devices, idempotent
+  telemetry, device faults, model versions, assessments, alerts, and immutable events.
+  Station WGS84 coordinates must fall inside the declared persisted district boundary;
+  device photos, optional telemetry files, model artifacts, assessment inputs, fault
+  resolutions, and alert-delivery receipts preserve physical size and SHA-256 evidence.
+  Reusing an idempotency key with a different canonical payload is rejected. New active
+  model versions supersede but do not delete prior evidence, and only a stable authorized
+  human review can make an assessment eligible for alert creation.
+- The implemented UAV contract persists aircraft and sensor identity, aircraft
+  certificates, pilot licences, district-contained WGS84 flight Polygons, missions,
+  controlled physical artifacts, spatial findings, human review, and immutable events.
+  Raster artifacts are inspected for CRS, resolution, dimensions, and WGS84 footprint;
+  orthomosaics must cover the mission boundary and satisfy the planned resolution.
+  Capture completion requires raw imagery plus a flight log, processing completion
+  requires a qualifying orthomosaic, and review completion requires no pending findings.
+  Downloads revalidate controlled path, size, and SHA-256. This is not evidence that
+  mobile collection, live flight-control integration, expert consultation,
+  province-wide report workflows, or 10,000-device scale testing are complete.
 
 ## Official sources
 

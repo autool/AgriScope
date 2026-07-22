@@ -20,6 +20,7 @@ from app.api.v1.endpoints import (
     field_verification,
     health,
     imagery,
+    monitoring_network,
     plot,
     production,
     project_user,
@@ -29,6 +30,7 @@ from app.api.v1.endpoints import (
     statistics,
     supervision,
     thematic_map,
+    uav,
     workbench,
 )
 from app.core.config import settings
@@ -193,3 +195,5 @@ app.include_router(production.router)
 app.include_router(change_detection.router)
 app.include_router(supervision.router)
 app.include_router(thematic_map.router)
+app.include_router(monitoring_network.router)
+app.include_router(uav.router)

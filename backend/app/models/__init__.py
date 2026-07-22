@@ -1,5 +1,15 @@
 """数据库模型。"""
 
+from app.models.monitoring_network import (
+    DeviceFault,
+    DeviceTelemetry,
+    MonitoringDevice,
+    MonitoringEvent,
+    MonitoringStation,
+    PestAlert,
+    PestAssessment,
+    PestModelVersion,
+)
 from app.models.plot import Base, FarmlandPlot
 from app.models.service_sharing import (
     ServiceAccessRequest,
@@ -23,6 +33,7 @@ from app.models.thematic_map import (
     ThematicMapProduct,
     ThematicMapTemplate,
 )
+from app.models.uav import UavAircraft, UavArtifact, UavEvent, UavFinding, UavMission
 from app.models.workbench import (
     DatasetAsset,
     DatasetLineage,
@@ -47,11 +58,19 @@ __all__ = [
     "Base",
     "DatasetAsset",
     "DatasetLineage",
+    "DeviceFault",
+    "DeviceTelemetry",
     "FarmlandPlot",
     "FieldVerification",
     "ImageryAsset",
     "MonitoringProject",
+    "MonitoringDevice",
+    "MonitoringEvent",
+    "MonitoringStation",
     "MonitoringTask",
+    "PestAlert",
+    "PestAssessment",
+    "PestModelVersion",
     "ProductionBatch",
     "ProductionAuditEvent",
     "ProjectRuleConfig",
@@ -77,6 +96,11 @@ __all__ = [
     "ThematicMapEvent",
     "ThematicMapProduct",
     "ThematicMapTemplate",
+    "UavAircraft",
+    "UavArtifact",
+    "UavEvent",
+    "UavFinding",
+    "UavMission",
     "WorkPackage",
     "WorkPackagePlot",
 ]

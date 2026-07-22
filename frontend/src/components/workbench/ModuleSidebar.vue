@@ -13,8 +13,10 @@ import {
   FileImageOutlined,
   RadarChartOutlined,
   SafetyCertificateOutlined,
+  SendOutlined,
   ShareAltOutlined,
   SettingOutlined,
+  WifiOutlined,
 } from '@ant-design/icons-vue'
 import { storeToRefs } from 'pinia'
 import { computed } from 'vue'
@@ -53,6 +55,8 @@ const navGroupsComputed = computed(() => [
         icon: RadarChartOutlined,
         badge: overviewRef.value?.statistics.pending_disaster_count || undefined,
       },
+      { path: '/monitoring-network', label: '田间监测', icon: WifiOutlined },
+      { path: '/uav', label: '无人机任务', icon: SendOutlined },
     ],
   },
   {

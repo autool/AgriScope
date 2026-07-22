@@ -86,6 +86,26 @@ const router = createRouter({
           },
         },
         {
+          path: 'monitoring-network',
+          component: () => import('@/views/MonitoringNetworkView.vue'),
+          meta: {
+            title: '田间监测与病虫害预警',
+            description: '真实监测站、设备遥测、故障闭环、模型复核与告警送达',
+            fullWidth: true,
+            keepAlive: true,
+          },
+        },
+        {
+          path: 'uav',
+          component: () => import('@/views/UavView.vue'),
+          meta: {
+            title: '无人机任务',
+            description: '航空器资质、飞行任务、实体成果、空间疑点与审核门禁',
+            fullWidth: true,
+            keepAlive: true,
+          },
+        },
+        {
           path: 'field',
           component: () => import('@/views/FieldVerificationView.vue'),
           meta: {
