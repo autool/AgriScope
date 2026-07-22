@@ -561,6 +561,7 @@ class PlotVersion(Base):
         nullable=False,
     )
     version: Mapped[int] = mapped_column(Integer, nullable=False)
+    owner_village: Mapped[str | None] = mapped_column(String(100), nullable=True)
     land_class: Mapped[str | None] = mapped_column(String(50), nullable=True)
     crop_type: Mapped[str | None] = mapped_column(String(50), nullable=True)
     planting_mode: Mapped[str | None] = mapped_column(String(50), nullable=True)

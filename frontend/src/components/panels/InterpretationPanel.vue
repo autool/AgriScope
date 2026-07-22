@@ -1,14 +1,16 @@
 <script setup lang="ts">
 import { message } from 'ant-design-vue'
 import { storeToRefs } from 'pinia'
-import { computed } from 'vue'
+import { computed, ref } from 'vue'
 
+import PlotAttributeWorkbookModal from '@/components/editing/PlotAttributeWorkbookModal.vue'
 import TaskQualityPanel from '@/components/quality/TaskQualityPanel.vue'
 import { useWorkbenchStore } from '@/store/workbenchStore'
 import type { PlotAttributeUpdate, QualityRuleResult } from '@/types/workbench'
 import { formatArea, hectaresToMu } from '@/utils/area'
 
 const workbenchStore = useWorkbenchStore()
+const workbookModalOpenRef = ref<boolean>(false)
 const {
   plotAttributesRef,
   plotDraftRef,
@@ -100,6 +102,9 @@ const statusLabel = (rule: QualityRuleResult): string => ({
         <strong>{{ plotAttributesRef?.plot_code || '未选择' }}</strong>
       </span>
       <a-space size="small">
+        <a-button size="small" @click="workbookModalOpenRef = true">
+          Excel 属性
+        </a-button>
         <a-badge v-if="plotDirtyComputed" status="processing" text="未保存" />
         <a-tag color="green">v{{ plotAttributesRef?.version || 1 }}</a-tag>
       </a-space>
@@ -246,6 +251,10 @@ const statusLabel = (rule: QualityRuleResult): string => ({
         历史版本 {{ plotVersionsRef?.versions.length || 0 }} 个，当前版本 v{{ plotVersionsRef?.current_version || plotAttributesRef?.version || 1 }}
       </div>
     </template>
+    <PlotAttributeWorkbookModal
+      :open="workbookModalOpenRef"
+      @cancel="workbookModalOpenRef = false"
+    />
   </section>
 </template>
 

@@ -27,6 +27,7 @@ from app.models.workbench import (
 
 REVIEW_CYCLE_RESET_ACTIONS = {
     "plot_source_imported",
+    "plot_attributes_xlsx_imported",
     "return",
     "reject",
     "rollback",
@@ -1466,7 +1467,7 @@ class WorkbenchDAO:
         statement = text(
             """
             WITH restore_version AS (
-                SELECT land_class, crop_type, planting_mode,
+                SELECT owner_village, land_class, crop_type, planting_mode,
                        irrigation_condition, interpretation_status, geom
                 FROM plot_versions
                 WHERE plot_code = :plot_code
@@ -1475,7 +1476,8 @@ class WorkbenchDAO:
                 LIMIT 1
             )
             UPDATE farmland_plots AS plot
-            SET land_class = restore_version.land_class,
+            SET owner_village = restore_version.owner_village,
+                land_class = restore_version.land_class,
                 crop_type = restore_version.crop_type,
                 planting_mode = restore_version.planting_mode,
                 irrigation_condition = restore_version.irrigation_condition,

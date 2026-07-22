@@ -22,6 +22,9 @@ from app.models.workbench import DeliveryPackage
 from app.schemas.delivery import DeliveryGenerateRequest
 from app.services.boundary_service import BoundaryService
 from app.services.delivery_service import DeliveryService
+from app.services.plot_attribute_workbook_parser import (
+    PlotAttributeWorkbookParser,
+)
 from app.services.project_user_service import ProjectUserService
 from app.services.statistics_report_service import StatisticsReportService
 from app.services.vector_export_renderer import VectorExportRenderer
@@ -637,6 +640,22 @@ def test_delivery_generation_archives_verified_physical_evidence(
     field_photo_path.write_bytes(b"\x89PNG\r\n\x1a\nverified-field-photo")
     field_workbook_path = tmp_path / "field-import.xlsx"
     field_workbook_path.write_bytes(b"verified-field-import-workbook")
+    plot_attribute_workbook_path = tmp_path / "plot-attributes.xlsx"
+    plot_attribute_workbook_path.write_bytes(
+        PlotAttributeWorkbookParser.build_export(
+            [
+                SimpleNamespace(
+                    plot_code="PLOT-001",
+                    version=1,
+                    owner_village="测试村",
+                    land_class="耕地",
+                    crop_type="玉米",
+                    planting_mode="单季种植",
+                    irrigation_condition="良好",
+                )
+            ]
+        )
+    )
     archive_state = DeliveryArchiveState(
         thematic_map_count=1,
         thematic_map_latest_at=generated_at,
@@ -945,6 +964,31 @@ def test_delivery_generation_archives_verified_physical_evidence(
             "actor_code": "field-zhang-qiang",
         }
     ]
+    plot_attribute_workbook_service = AsyncMock()
+    plot_attribute_workbook_service.load_verified_import_workbooks.return_value = [
+        SimpleNamespace(
+            path=plot_attribute_workbook_path,
+            batch_code="PATTR-TEST-001",
+            original_filename="plot-attributes.xlsx",
+            file_uri=(
+                "storage://plot-attribute-imports/"
+                f"{hashlib.sha256(plot_attribute_workbook_path.read_bytes()).hexdigest()}"
+                ".xlsx"
+            ),
+            file_size_bytes=plot_attribute_workbook_path.stat().st_size,
+            checksum_sha256=hashlib.sha256(
+                plot_attribute_workbook_path.read_bytes()
+            ).hexdigest(),
+            row_count=1,
+            changed_count=1,
+            unchanged_count=0,
+            imported_by="李静",
+            imported_by_code="interp-li-jing",
+            imported_by_role="interpreter",
+            import_comment="依据公开影像逐图斑确认属性",
+            imported_at=generated_at,
+        )
+    ]
     service = DeliveryService(
         dao=dao,
         workbench_dao=workbench_dao,
@@ -958,6 +1002,7 @@ def test_delivery_generation_archives_verified_physical_evidence(
         statistics_report_service=statistics_report_service,
         vector_export_service=vector_export_service,
         field_artifact_service=field_artifact_service,
+        plot_attribute_workbook_service=plot_attribute_workbook_service,
     )
     service.storage_dir = tmp_path / "deliveries"
     db = AsyncMock()
@@ -1003,6 +1048,24 @@ def test_delivery_generation_archives_verified_physical_evidence(
             "field/evidence/FV-REAL-001/FIELD-EV-PHOTO-001.png" in names
         )
         assert any(name.startswith("field/import_sources/") for name in names)
+        assert "attributes/import_manifest.json" in names
+        assert any(
+            name.startswith("attributes/import_sources/PATTR-TEST-001/")
+            for name in names
+        )
+        attribute_manifest = json.loads(
+            archive.read("attributes/import_manifest.json")
+        )
+        assert attribute_manifest[0]["batch_code"] == "PATTR-TEST-001"
+        assert attribute_manifest[0]["changed_count"] == 1
+        archive_index = json.loads(archive.read("archive/archive_index.json"))
+        assert archive_index["schema_version"] == "delivery-archive-v3"
+        assert archive_index["categories"]["plot_attribute_imports"] == {
+            "status": "included",
+            "count": 1,
+            "row_count": 1,
+            "changed_count": 1,
+        }
         for item in manifest_payload["manifest"]:
             if item["path"] == "manifest.json":
                 continue
@@ -1017,6 +1080,9 @@ def test_delivery_generation_archives_verified_physical_evidence(
     assert response.quality_summary["imagery_step_count"] == 1
     assert response.quality_summary["field_verified_artifact_count"] == 1
     assert response.quality_summary["field_import_workbook_count"] == 1
+    assert response.quality_summary["plot_attribute_import_workbook_count"] == 1
+    assert response.quality_summary["plot_attribute_import_row_count"] == 1
+    assert response.quality_summary["plot_attribute_import_changed_count"] == 1
     assert response.quality_summary["field_evidence_status"] == "included"
     assert response.is_current is True
     dao.supersede_completed_packages.assert_awaited_once_with(db, task.id)

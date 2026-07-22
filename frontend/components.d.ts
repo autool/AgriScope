@@ -95,6 +95,7 @@ declare module 'vue' {
     OlViewer: typeof import('./src/components/OlViewer.vue')['default']
     PestIntelligencePanel: typeof import('./src/components/monitoring/PestIntelligencePanel.vue')['default']
     PestReportLedgerPanel: typeof import('./src/components/monitoring/PestReportLedgerPanel.vue')['default']
+    PlotAttributeWorkbookModal: typeof import('./src/components/editing/PlotAttributeWorkbookModal.vue')['default']
     PlotCreateModal: typeof import('./src/components/editing/PlotCreateModal.vue')['default']
     PlotHistoryActionModal: typeof import('./src/components/editing/PlotHistoryActionModal.vue')['default']
     PlotMergeModal: typeof import('./src/components/editing/PlotMergeModal.vue')['default']

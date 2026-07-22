@@ -26,6 +26,7 @@ from app.models.monitoring_network import (
     PestReportItem,
 )
 from app.models.plot import Base, FarmlandPlot
+from app.models.plot_attribute_workbook import PlotAttributeImportBatch
 from app.models.service_sharing import (
     ServiceAccessRequest,
     ServiceCredential,
@@ -109,6 +110,7 @@ __all__ = [
     "ProjectRuleConfig",
     "ProjectRuleConfigAudit",
     "PlotQualityCheck",
+    "PlotAttributeImportBatch",
     "PlotVersion",
     "QualityIssue",
     "ReviewRecord",

@@ -254,6 +254,9 @@ class ReviewService:
         )
 
         new_version = plot.version + 1
+        plot.owner_village = (
+            getattr(target, "owner_village", None) or plot.owner_village
+        )
         plot.land_class = target.land_class
         plot.crop_type = target.crop_type
         plot.planting_mode = target.planting_mode
@@ -267,6 +270,7 @@ class ReviewService:
             PlotVersion(
                 plot_code=plot_code,
                 version=new_version,
+                owner_village=plot.owner_village,
                 land_class=plot.land_class,
                 crop_type=plot.crop_type,
                 planting_mode=plot.planting_mode,

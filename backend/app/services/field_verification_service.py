@@ -788,6 +788,7 @@ class FieldVerificationService:
                     PlotVersion(
                         plot_code=plot.plot_code,
                         version=plot.version,
+                        owner_village=getattr(plot, "owner_village", None),
                         land_class=plot.land_class,
                         crop_type=plot.crop_type,
                         planting_mode=plot.planting_mode,

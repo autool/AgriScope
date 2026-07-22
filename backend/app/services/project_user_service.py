@@ -13,6 +13,8 @@ from app.schemas.project_user import (
 ROLE_CAPABILITIES: dict[str, tuple[str, ...]] = {
     "interpreter": (
         "edit_plots",
+        "export_plot_attributes",
+        "import_plot_attributes",
         "manage_imagery",
         "process_imagery",
         "import_disaster",
@@ -42,6 +44,8 @@ ROLE_CAPABILITIES: dict[str, tuple[str, ...]] = {
         "view_field_evidence",
     ),
     "quality_inspector": (
+        "export_plot_attributes",
+        "import_plot_attributes",
         "run_quality_check",
         "run_plot_quality_check",
         "review_quality",
@@ -97,6 +101,8 @@ ROLE_CAPABILITIES: dict[str, tuple[str, ...]] = {
         "review_uav_findings",
         "download_uav_artifacts",
         "edit_plots",
+        "export_plot_attributes",
+        "import_plot_attributes",
         "manage_imagery",
         "process_imagery",
         "import_disaster",

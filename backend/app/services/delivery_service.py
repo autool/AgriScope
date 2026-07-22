@@ -38,6 +38,9 @@ from app.services.field_verification_artifact_service import (
     FieldVerificationArtifactService,
 )
 from app.services.imagery_service import ImageryService
+from app.services.plot_attribute_workbook_service import (
+    PlotAttributeWorkbookService,
+)
 from app.services.project_user_service import ProjectUserService
 from app.services.statistics_report_service import StatisticsReportService
 from app.services.statistics_service import StatisticsService
@@ -78,6 +81,7 @@ class DeliveryService:
         disaster_report_service: DisasterReportService | None = None,
         statistics_report_service: StatisticsReportService | None = None,
         vector_export_service: VectorExportService | None = None,
+        plot_attribute_workbook_service: PlotAttributeWorkbookService | None = None,
     ) -> None:
         """初始化成果交付服务。
 
@@ -94,6 +98,7 @@ class DeliveryService:
             disaster_report_service: 灾害专题报告实体校验服务。
             statistics_report_service: 面积统计正式报告实体校验服务。
             vector_export_service: 多格式矢量成果实体校验服务。
+            plot_attribute_workbook_service: 地块属性导入源文件复核服务。
 
         Returns:
             None: 无返回值。
@@ -116,6 +121,9 @@ class DeliveryService:
             statistics_report_service or StatisticsReportService()
         )
         self.vector_export_service = vector_export_service or VectorExportService()
+        self.plot_attribute_workbook_service = (
+            plot_attribute_workbook_service or PlotAttributeWorkbookService()
+        )
         self.storage_dir = (
             Path(__file__).resolve().parents[2] / "storage" / "deliveries"
         )
@@ -594,6 +602,12 @@ class DeliveryService:
                 field_rows
             )
         )
+        plot_attribute_import_workbooks = (
+            await self.plot_attribute_workbook_service.load_verified_import_workbooks(
+                db,
+                task.id,
+            )
+        )
         field_artifact_events = await self.field_artifact_service.list_task_events(
             db,
             task.id,
@@ -668,6 +682,7 @@ class DeliveryService:
             "field_rows": field_rows,
             "field_artifacts": field_artifacts,
             "field_import_workbooks": field_import_workbooks,
+            "plot_attribute_import_workbooks": plot_attribute_import_workbooks,
             "field_artifact_events": field_artifact_events,
             "field_missing_photo_count": field_missing_photo_count,
             "reviews": reviews,
@@ -1041,8 +1056,30 @@ class DeliveryService:
             }
             for item in source_data["field_artifacts"]
         ]
+        plot_attribute_import_manifest = [
+            {
+                "batch_code": workbook.batch_code,
+                "original_filename": workbook.original_filename,
+                "file_uri": workbook.file_uri,
+                "file_size_bytes": workbook.file_size_bytes,
+                "checksum_sha256": workbook.checksum_sha256,
+                "row_count": workbook.row_count,
+                "changed_count": workbook.changed_count,
+                "unchanged_count": workbook.unchanged_count,
+                "imported_by": workbook.imported_by,
+                "imported_by_code": workbook.imported_by_code,
+                "imported_by_role": workbook.imported_by_role,
+                "import_comment": workbook.import_comment,
+                "imported_at": workbook.imported_at,
+                "archive_path": (
+                    "attributes/import_sources/"
+                    f"{workbook.batch_code}/{workbook.checksum_sha256}.xlsx"
+                ),
+            }
+            for workbook in source_data["plot_attribute_import_workbooks"]
+        ]
         archive_index = {
-            "schema_version": "delivery-archive-v2",
+            "schema_version": "delivery-archive-v3",
             "task_code": task.task_code,
             "task_name": task.task_name,
             "categories": {
@@ -1115,6 +1152,25 @@ class DeliveryService:
                         "field_missing_photo_count"
                     ],
                 },
+                "plot_attribute_imports": {
+                    "status": (
+                        "included"
+                        if quality_summary[
+                            "plot_attribute_import_workbook_count"
+                        ]
+                        > 0
+                        else "not_provided"
+                    ),
+                    "count": quality_summary[
+                        "plot_attribute_import_workbook_count"
+                    ],
+                    "row_count": quality_summary[
+                        "plot_attribute_import_row_count"
+                    ],
+                    "changed_count": quality_summary[
+                        "plot_attribute_import_changed_count"
+                    ],
+                },
                 "disaster_evidence": {
                     "status": quality_summary["disaster_evidence_status"],
                     "count": quality_summary["disaster_patch_count"],
@@ -1169,6 +1225,14 @@ class DeliveryService:
                 len(source_data["field_artifact_events"]),
                 "外业实体证据上传和下载的稳定用户角色事件",
                 cls._json_text(source_data["field_artifact_events"]),
+            ),
+            cls._text_entry(
+                "attributes/import_manifest.json",
+                "地块属性导入审计",
+                "JSON",
+                len(plot_attribute_import_manifest),
+                "逐行属性工作簿批次、实体大小、SHA-256 和稳定用户角色清单",
+                cls._json_text(plot_attribute_import_manifest),
             ),
             cls._text_entry(
                 "quality/quality_issues.json",
@@ -1291,6 +1355,36 @@ class DeliveryService:
                     source_uri=workbook.file_uri,
                 )
             )
+        for workbook in source_data["plot_attribute_import_workbooks"]:
+            content = workbook.path.read_bytes()
+            if (
+                len(content) != workbook.file_size_bytes
+                or hashlib.sha256(content).hexdigest()
+                != workbook.checksum_sha256
+            ):
+                raise ValidationException(
+                    "地块属性导入工作簿在归档写入前发生变化"
+                )
+            entries.append(
+                DeliveryArchiveEntry(
+                    path=(
+                        "attributes/import_sources/"
+                        f"{workbook.batch_code}/"
+                        f"{workbook.checksum_sha256}.xlsx"
+                    ),
+                    category="地块属性导入源文件",
+                    format="XLSX",
+                    record_count=workbook.row_count,
+                    description=(
+                        f"{workbook.original_filename} · 更新 "
+                        f"{workbook.changed_count} 个 · 未变化 "
+                        f"{workbook.unchanged_count} 个"
+                    ),
+                    content=content,
+                    source_entity_code=workbook.batch_code,
+                    source_uri=workbook.file_uri,
+                )
+            )
         return entries
 
     @staticmethod
@@ -1390,6 +1484,10 @@ class DeliveryService:
         field_rows = source_data["field_rows"]
         field_artifacts = source_data.get("field_artifacts", [])
         field_import_workbooks = source_data.get("field_import_workbooks", [])
+        plot_attribute_import_workbooks = source_data.get(
+            "plot_attribute_import_workbooks",
+            [],
+        )
         quality_gate = source_data["quality_gate"]
         imagery = source_data["imagery"]
         field_count = len(field_rows)
@@ -1409,6 +1507,17 @@ class DeliveryService:
             "field_verification_count": field_count,
             "field_verified_artifact_count": len(field_artifacts),
             "field_import_workbook_count": len(field_import_workbooks),
+            "plot_attribute_import_workbook_count": len(
+                plot_attribute_import_workbooks
+            ),
+            "plot_attribute_import_row_count": sum(
+                workbook.row_count
+                for workbook in plot_attribute_import_workbooks
+            ),
+            "plot_attribute_import_changed_count": sum(
+                workbook.changed_count
+                for workbook in plot_attribute_import_workbooks
+            ),
             "field_missing_photo_count": source_data.get(
                 "field_missing_photo_count",
                 field_count if field_count > 0 else 0,
@@ -1666,6 +1775,9 @@ class DeliveryService:
 - 外业核查记录：{summary['field_verification_count']}
 - 外业实体证据：{summary['field_verified_artifact_count']}
 - 外业导入源工作簿：{summary['field_import_workbook_count']}
+- 地块属性导入工作簿：{summary['plot_attribute_import_workbook_count']}
+- 地块属性导入行数：{summary['plot_attribute_import_row_count']}
+- 地块属性实际更新：{summary['plot_attribute_import_changed_count']}
 - 缺少实体照片：{summary['field_missing_photo_count']}
 - 待处置外业记录：{summary['pending_field_count']}
 - 实体专题图：{summary['thematic_map_count']} 张
@@ -1716,6 +1828,11 @@ class DeliveryService:
             if summary["disaster_report_count"] > 0
             else "未提供"
         )
+        attribute_import_text = (
+            "已纳入原始 XLSX 与批次审计"
+            if summary["plot_attribute_import_workbook_count"] > 0
+            else "未提供属性工作簿导入记录"
+        )
         return f"""# 遥感监测项目验收报告
 
 ## 基本信息
@@ -1734,6 +1851,9 @@ class DeliveryService:
 - 外业核查：{summary['field_verification_count']} 条
 - 外业实体证据：{summary['field_verified_artifact_count']} 份
 - 外业导入源工作簿：{summary['field_import_workbook_count']} 份
+- 地块属性导入工作簿：{summary['plot_attribute_import_workbook_count']} 份
+- 地块属性导入行数：{summary['plot_attribute_import_row_count']} 行
+- 地块属性实际更新：{summary['plot_attribute_import_changed_count']} 个图斑
 - 审核及操作记录：{summary['review_record_count']} 条
 - 专题图成果：{summary['thematic_map_count']} 张
 - 独立监理报告：{summary['supervision_report_count']} 份
@@ -1744,6 +1864,7 @@ class DeliveryService:
 ## 专项证据状态
 
 - 外业核查：{field_text}
+- 地块属性导入：{attribute_import_text}
 - 灾害监测：{disaster_text}
 - 灾害专题报告：{disaster_report_text}
 - 业务影像：{summary['imagery_asset_code'] or '未关联'}
@@ -1752,7 +1873,8 @@ class DeliveryService:
 
 ## 验收结论
 
-本成果包包含最终地块数据、属性、面积统计、完整质量问题清单、审核记录、
+本成果包包含最终地块数据、属性、属性工作簿导入证据、面积统计、
+完整质量问题清单、审核记录、
 质量报告、影像血缘和数据资产目录。外业照片、语音、调查表、专题图、灾害专题
 报告与独立监理报告均以通过受控路径、格式、大小和 SHA-256 复核的原始实体写入；
 外业、灾害、

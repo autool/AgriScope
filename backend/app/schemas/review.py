@@ -67,6 +67,7 @@ class PlotVersionResponse(BaseModel):
 
     plot_code: str
     version: int
+    owner_village: str | None = None
     land_class: str | None
     crop_type: str | None
     planting_mode: str | None
