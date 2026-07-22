@@ -318,3 +318,37 @@ class FieldVerificationDAO:
             )
             .values(status="resolved", resolved_at=func.now())
         )
+
+    async def reopen_quality_issue(
+        self,
+        db: AsyncSession,
+        task_id: int,
+        verification_code: str,
+    ) -> bool:
+        """重新打开指定外业核查记录关联的质量问题。
+
+        Args:
+            db: 异步数据库会话。
+            task_id: 任务主键。
+            verification_code: 外业记录编号。
+
+        Returns:
+            bool: 找到并重新打开历史问题时返回 True。
+        """
+        result = await db.execute(
+            update(QualityIssue)
+            .where(
+                QualityIssue.task_id == task_id,
+                QualityIssue.rule_code == f"FIELD_{verification_code}",
+                QualityIssue.status == "resolved",
+            )
+            .values(
+                status="open",
+                resolved_at=None,
+                resolved_by=None,
+                resolved_by_code=None,
+                resolved_by_role=None,
+                resolution_comment=None,
+            )
+        )
+        return bool(result.rowcount)

@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.exceptions import NotFoundException, ValidationException
 from app.dao.disaster_dao import DisasterDAO
+from app.dao.disaster_report_dao import DisasterReportDAO
 from app.dao.workbench_dao import WorkbenchDAO
 from app.models.workbench import DisasterPatch, ReviewRecord
 from app.schemas.disaster import (
@@ -32,6 +33,7 @@ class DisasterService:
         dao: DisasterDAO | None = None,
         workbench_dao: WorkbenchDAO | None = None,
         project_user_service: ProjectUserService | None = None,
+        report_dao: DisasterReportDAO | None = None,
     ) -> None:
         """初始化灾害业务服务。
 
@@ -39,6 +41,7 @@ class DisasterService:
             dao: 灾害斑块 DAO。
             workbench_dao: 工作台公共 DAO。
             project_user_service: 项目用户与角色校验服务。
+            report_dao: 灾害专题报告 DAO。
 
         Returns:
             None: 无返回值。
@@ -46,6 +49,7 @@ class DisasterService:
         self.dao = dao or DisasterDAO()
         self.workbench_dao = workbench_dao or WorkbenchDAO()
         self.project_user_service = project_user_service or ProjectUserService()
+        self.report_dao = report_dao or DisasterReportDAO()
 
     @staticmethod
     def _to_patch_response(
@@ -312,6 +316,7 @@ class DisasterService:
         created_count = 0
         replaced_count = 0
         try:
+            await self.report_dao.supersede_completed_reports(db, task.id)
             for values in prepared_values:
                 existing = existing_by_code.get(str(values["patch_code"]))
                 if existing is None:
@@ -376,7 +381,7 @@ class DisasterService:
         Returns:
             DisasterPatchResponse: 修正后的灾害斑块。
         """
-        task = await self.workbench_dao.get_task_by_code(db, task_code)
+        task = await self.workbench_dao.get_task_by_code_for_update(db, task_code)
         patch = await self.dao.get_patch_by_code_for_update(db, patch_code)
         if task is None:
             raise NotFoundException(f"未找到任务 {task_code}")
@@ -397,6 +402,8 @@ class DisasterService:
         patch.review_comment = request.comment or "人工复核灾害斑块"
         patch.reviewed_at = reviewed_at
         patch.updated_at = reviewed_at
+        task.updated_at = reviewed_at
+        await self.report_dao.supersede_completed_reports(db, task.id)
         await self.workbench_dao.add_review_record(
             db,
             ReviewRecord(

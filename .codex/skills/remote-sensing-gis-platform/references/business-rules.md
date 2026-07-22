@@ -58,11 +58,15 @@
 ## Field verification
 
 - Store WGS84 coordinates, capture time, investigator, photos, voice notes, observations, and forms.
+- Treat `photo_urls` and `voice_url` only as legacy external references. Operational photos, voice notes, and investigation forms must be physical controlled artifacts with configured type-specific size limits, validated file extension/signature/MIME, atomic publication, server-computed size/SHA256, stable uploader role, and immutable upload/download events. Revalidate controlled path, signature, size, and SHA256 before download or delivery embedding.
+- Require at least one verified physical photo before resolving a field discrepancy or generating a final delivery package. Delivery archives embed every verified field artifact plus a checksum manifest and stable-user event ledger; they must never label URL-only records as included evidence.
 - Accept CSV and physical `.xlsx` batches of at most 500 records. Parse XLSX only on the server; validate archive structure, paths, encryption, expanded size, formulas, headers, timezone-aware capture times, coordinates, and photo evidence. Persist the original file SHA256 and stable uploader-role evidence, and roll back the entire batch when any record fails.
 - Match field points to plots spatially and record offset distance and status.
 - Thresholds are configurable and decisions are auditable.
 - Store offset distance, nearest-neighbor search radius, positional pixel tolerance, and imagery/field time-gap thresholds per project. Matching services must read the persisted values rather than hard-code them, and each rule update must preserve before/after audit values.
-- Resolution supports correcting indoor data, accepting field data, compromise, rejection, and reopening.
+- The resolution UI and API expose four explicit decisions: keep the internal result, apply the field result, apply a human compromise, or reject the field result. Every decision requires a human evidence comment; compromise additionally requires the final land class and a crop when the final class is farmland. Never hard-code comments or silently reuse internal attributes as a compromise.
+- Use-field and compromise may modify only a matched task plot. Unmatched records may keep the absence of an internal plot or reject the field conclusion, but must never fabricate a plot mutation. Every actual attribute change creates an immutable plot version and records the final applied values plus stable resolver role.
+- Reopening is allowed only for a resolved discrepancy. It restores or recreates the field quality issue, clears the current resolution fields, returns the task to interpretation, clears the quality score, and appends a stable-user audit containing the previous decision and new reason without deleting history.
 
 ## Review
 
@@ -82,6 +86,8 @@
 - Manual disaster corrections create reviewer and comment audit data.
 - Import disaster model results as task-scoped EPSG:4326 GeoJSON FeatureCollections. Persist source URI/version, source feature ID, canonical content SHA256, import batch, stable importer code, and role snapshot; never seed or present untraceable rectangles as real results.
 - Recompute disaster area with PostGIS geography and require valid Polygon geometry fully covered by the persisted project boundary. Imports are atomic. Duplicate source features are rejected; explicit patch-code replacement resets previous review fields and returns the patch to pending review.
+- Generate a disaster monitoring report only after every imported patch is confirmed or excluded. The server-generated XLSX must contain a spatial distribution map, severity share, disaster-type area chart, patch ledger, source URI/version/feature/checksum lineage, generator identity and role snapshot. Persist its controlled URI, size, SHA256, source patch counts and latest patch timestamp; revalidate before download and embed the current verified report in delivery packages.
+- Any disaster import, replacement or manual review change supersedes the previous current report, updates the task timestamp and retains the historical report entity for audit. Never let a browser-generated table or stale report remain current.
 
 ## Delivery
 

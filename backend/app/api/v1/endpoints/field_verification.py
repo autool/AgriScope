@@ -1,14 +1,18 @@
 """内外业联动核查端点。"""
 
-from typing import Annotated
+from typing import Annotated, Literal
 
-from fastapi import APIRouter, File, Form, Query, Response, UploadFile
+from fastapi import APIRouter, File, Form, Query, Response, UploadFile, status
+from fastapi.responses import FileResponse
 
 from app.api.deps import DatabaseSession
 from app.schemas.field_verification import (
     FieldRematchRequest,
     FieldRematchResponse,
+    FieldReopenRequest,
     FieldResolutionRequest,
+    FieldVerificationArtifactResponse,
+    FieldVerificationArtifactUploadRequest,
     FieldVerificationBatchImportRequest,
     FieldVerificationBatchImportResponse,
     FieldVerificationCreateRequest,
@@ -16,11 +20,15 @@ from app.schemas.field_verification import (
     FieldVerificationListResponse,
     FieldVerificationResponse,
 )
+from app.services.field_verification_artifact_service import (
+    FieldVerificationArtifactService,
+)
 from app.services.field_verification_service import FieldVerificationService
 from app.services.field_workbook_parser import XLSX_MEDIA_TYPE
 
 router = APIRouter(prefix="/api/v1/field-verifications", tags=["内外业联动核查"])
 service = FieldVerificationService()
+artifact_service = FieldVerificationArtifactService()
 
 
 @router.post("/import-csv", response_model=FieldVerificationBatchImportResponse)
@@ -184,3 +192,124 @@ async def resolve_field_verification(
         FieldVerificationResponse: 处置后的外业记录。
     """
     return await service.resolve_record(db, verification_code, request)
+
+
+@router.patch(
+    "/{verification_code}/reopen",
+    response_model=FieldVerificationResponse,
+)
+async def reopen_field_verification(
+    verification_code: str,
+    request: FieldReopenRequest,
+    db: DatabaseSession,
+) -> FieldVerificationResponse:
+    """重新打开已处置外业疑点并回退任务质量门禁。
+
+    Args:
+        verification_code: 外业记录编号。
+        request: 操作人稳定编码和重开依据。
+        db: FastAPI 注入的异步数据库会话。
+
+    Returns:
+        FieldVerificationResponse: 已恢复待处置状态的外业记录。
+    """
+    return await service.reopen_record(db, verification_code, request)
+
+
+@router.post(
+    "/{verification_code}/artifacts",
+    response_model=FieldVerificationArtifactResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+async def upload_field_verification_artifact(
+    verification_code: str,
+    file: Annotated[UploadFile, File(description="现场照片、语音或调查表实体")],
+    artifact_type: Annotated[
+        Literal["photo", "voice", "form"],
+        Form(),
+    ],
+    uploader_code: Annotated[str, Form(min_length=1, max_length=50)],
+    comment: Annotated[str, Form(min_length=2, max_length=500)],
+    db: DatabaseSession,
+) -> FieldVerificationArtifactResponse:
+    """上传并登记可复核的外业实体证据。
+
+    Args:
+        verification_code: 外业记录业务编号。
+        file: 照片、语音或调查表二进制实体。
+        artifact_type: 证据业务类型。
+        uploader_code: 上传人稳定项目用户编码。
+        comment: 证据来源与用途说明。
+        db: FastAPI 注入的异步数据库会话。
+
+    Returns:
+        FieldVerificationArtifactResponse: 已登记实体证据摘要。
+    """
+    metadata = FieldVerificationArtifactUploadRequest(
+        artifact_type=artifact_type,
+        uploader_code=uploader_code,
+        comment=comment,
+    )
+    try:
+        return await artifact_service.upload_artifact(
+            db,
+            verification_code,
+            metadata.artifact_type,
+            metadata.uploader_code,
+            metadata.comment,
+            file.filename or "field-evidence.bin",
+            file.content_type,
+            file.file,
+        )
+    finally:
+        await file.close()
+
+
+@router.get(
+    "/{verification_code}/artifacts/{artifact_code}/download",
+    response_class=FileResponse,
+    responses={
+        200: {
+            "content": {
+                "image/jpeg": {},
+                "image/png": {},
+                "image/webp": {},
+                "audio/wav": {},
+                "audio/mpeg": {},
+                "audio/mp4": {},
+                "audio/ogg": {},
+                "application/pdf": {},
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": {},
+            }
+        }
+    },
+)
+async def download_field_verification_artifact(
+    verification_code: str,
+    artifact_code: str,
+    db: DatabaseSession,
+    operator_code: Annotated[str, Query(min_length=1, max_length=50)],
+) -> FileResponse:
+    """授权下载并重新校验外业实体证据。
+
+    Args:
+        verification_code: 外业记录业务编号。
+        artifact_code: 实体证据业务编号。
+        db: FastAPI 注入的异步数据库会话。
+        operator_code: 下载人稳定项目用户编码。
+
+    Returns:
+        FileResponse: 已通过路径、签名、大小和 SHA-256 复核的文件。
+    """
+    download = await artifact_service.get_artifact_for_download(
+        db,
+        verification_code,
+        artifact_code,
+        operator_code,
+    )
+    return FileResponse(
+        path=download.path,
+        media_type=download.media_type,
+        filename=download.filename,
+        headers={"ETag": f'"{download.checksum_sha256}"'},
+    )

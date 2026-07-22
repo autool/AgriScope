@@ -27,6 +27,7 @@ ROLE_CAPABILITIES: dict[str, tuple[str, ...]] = {
         "view_monitoring_network",
         "view_uav",
         "download_uav_artifacts",
+        "view_field_evidence",
     ),
     "field_inspector": (
         "upload_field_data",
@@ -38,6 +39,7 @@ ROLE_CAPABILITIES: dict[str, tuple[str, ...]] = {
         "view_uav",
         "operate_uav_missions",
         "download_uav_artifacts",
+        "view_field_evidence",
     ),
     "quality_inspector": (
         "run_quality_check",
@@ -47,6 +49,8 @@ ROLE_CAPABILITIES: dict[str, tuple[str, ...]] = {
         "rematch_field_data",
         "resolve_field_issue",
         "review_disaster",
+        "generate_disaster_report",
+        "download_disaster_report",
         "review_change_candidate",
         "rectify_supervision_finding",
         "rollback_plot",
@@ -62,6 +66,7 @@ ROLE_CAPABILITIES: dict[str, tuple[str, ...]] = {
         "view_uav",
         "review_uav_findings",
         "download_uav_artifacts",
+        "view_field_evidence",
     ),
     "project_manager": (
         "manage_project",
@@ -106,16 +111,20 @@ ROLE_CAPABILITIES: dict[str, tuple[str, ...]] = {
         "rematch_field_data",
         "resolve_field_issue",
         "review_disaster",
+        "generate_disaster_report",
+        "download_disaster_report",
         "rollback_plot",
         "manage_thematic_maps",
         "generate_thematic_maps",
         "download_thematic_maps",
         "view_thematic_maps",
+        "view_field_evidence",
     ),
     "client_reviewer": (
         "review_client",
         "download_supervision_report",
         "download_delivery",
+        "download_disaster_report",
         "resolve_review_issue",
         "approve_services",
         "view_services",
@@ -128,6 +137,7 @@ ROLE_CAPABILITIES: dict[str, tuple[str, ...]] = {
         "download_pest_report",
         "view_uav",
         "download_uav_artifacts",
+        "view_field_evidence",
     ),
     "independent_supervisor": (
         "supervise_project",
@@ -141,6 +151,7 @@ ROLE_CAPABILITIES: dict[str, tuple[str, ...]] = {
         "download_pest_report",
         "view_uav",
         "download_uav_artifacts",
+        "view_field_evidence",
     ),
 }
 

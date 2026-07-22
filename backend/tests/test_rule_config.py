@@ -327,7 +327,7 @@ def test_use_field_resolution_creates_immutable_plot_version() -> None:
     dao.get_coordinates.return_value = (126.8, 45.8)
     workbench_dao = AsyncMock()
     workbench_dao.get_plot_by_code.return_value = plot
-    workbench_dao.get_task_by_id.return_value = SimpleNamespace(
+    workbench_dao.get_task_by_id_for_update.return_value = SimpleNamespace(
         id=1,
         project_id=7,
         status="quality_review",
@@ -341,11 +341,15 @@ def test_use_field_resolution_creates_immutable_plot_version() -> None:
         display_name="王海峰",
         role_code="quality_inspector",
     )
+    artifact_dao = AsyncMock()
+    artifact_dao.count_by_record_type.return_value = 1
+    artifact_dao.list_by_verification_ids.return_value = []
     service = FieldVerificationService(
         dao=dao,
         workbench_dao=workbench_dao,
         rule_config_service=AsyncMock(),
         project_user_service=user_service,
+        artifact_dao=artifact_dao,
     )
     db = AsyncMock()
 

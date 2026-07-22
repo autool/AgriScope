@@ -16,6 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.exceptions import NotFoundException, ValidationException
 from app.dao.delivery_dao import DeliveryArchiveState, DeliveryDAO
 from app.dao.workbench_dao import QualityGateSummary, WorkbenchDAO
+from app.models.disaster_report import DisasterReport
 from app.models.supervision import SupervisionReport
 from app.models.thematic_map import ThematicMapProduct
 from app.models.workbench import (
@@ -29,7 +30,11 @@ from app.schemas.delivery import (
     DeliveryManifestItem,
     DeliveryPackageResponse,
 )
+from app.services.disaster_report_service import DisasterReportService
 from app.services.disaster_service import DisasterService
+from app.services.field_verification_artifact_service import (
+    FieldVerificationArtifactService,
+)
 from app.services.imagery_service import ImageryService
 from app.services.project_user_service import ProjectUserService
 from app.services.statistics_service import StatisticsService
@@ -65,6 +70,8 @@ class DeliveryService:
         imagery_service: ImageryService | None = None,
         thematic_map_service: ThematicMapService | None = None,
         supervision_service: SupervisionService | None = None,
+        field_artifact_service: FieldVerificationArtifactService | None = None,
+        disaster_report_service: DisasterReportService | None = None,
     ) -> None:
         """初始化成果交付服务。
 
@@ -77,6 +84,8 @@ class DeliveryService:
             imagery_service: 影像实体与处理产物校验服务。
             thematic_map_service: 专题图实体校验服务。
             supervision_service: 独立监理报告实体校验服务。
+            field_artifact_service: 外业核查实体证据服务。
+            disaster_report_service: 灾害专题报告实体校验服务。
 
         Returns:
             None: 无返回值。
@@ -89,6 +98,12 @@ class DeliveryService:
         self.imagery_service = imagery_service or ImageryService()
         self.thematic_map_service = thematic_map_service or ThematicMapService()
         self.supervision_service = supervision_service or SupervisionService()
+        self.field_artifact_service = (
+            field_artifact_service or FieldVerificationArtifactService()
+        )
+        self.disaster_report_service = (
+            disaster_report_service or DisasterReportService()
+        )
         self.storage_dir = (
             Path(__file__).resolve().parents[2] / "storage" / "deliveries"
         )
@@ -130,6 +145,11 @@ class DeliveryService:
                 archive_state.supervision_report_count,
                 archive_state.supervision_report_latest_at,
                 "独立监理报告",
+            ),
+            "disaster_report": (
+                archive_state.disaster_report_count,
+                archive_state.disaster_report_latest_at,
+                "灾害专题报告",
             ),
             "dataset_asset": (
                 archive_state.dataset_asset_count,
@@ -260,12 +280,22 @@ class DeliveryService:
                 task.id,
             )
         )
+        missing_field_photo_count = (
+            await self.field_artifact_service.count_task_records_missing_photo(
+                db,
+                task.id,
+            )
+        )
         if task.status != "completed":
             generate_blocker = "任务需完成三级审核后才能生成成果包"
         elif open_issue_count > 0:
             generate_blocker = f"仍有 {open_issue_count} 条问题未关闭"
         elif pending_field_count > 0:
             generate_blocker = f"仍有 {pending_field_count} 条外业疑点未处置"
+        elif missing_field_photo_count > 0:
+            generate_blocker = (
+                f"仍有 {missing_field_photo_count} 条外业记录缺少已校验现场照片"
+            )
         else:
             if imagery is None:
                 generate_blocker = "缺少具备实体校验的业务影像"
@@ -327,6 +357,17 @@ class DeliveryService:
         if pending_field_count > 0:
             raise ValidationException(
                 f"仍有 {pending_field_count} 条外业疑点未处置，不能生成成果包"
+            )
+        missing_field_photo_count = (
+            await self.field_artifact_service.count_task_records_missing_photo(
+                db,
+                task.id,
+            )
+        )
+        if missing_field_photo_count > 0:
+            raise ValidationException(
+                f"仍有 {missing_field_photo_count} 条外业记录缺少已校验现场照片，"
+                "不能生成成果包"
             )
         imagery = await self.workbench_dao.get_latest_imagery(db, task.project_id)
         if imagery is None:
@@ -486,6 +527,27 @@ class DeliveryService:
         disasters = await self.disaster_service.get_summary(db, task.task_code)
         quality_issues = await self.dao.get_quality_issues(db, task.id)
         field_rows = await self.dao.get_field_rows(db, task.id)
+        field_artifacts = (
+            await self.field_artifact_service.load_verified_task_artifacts(
+                db,
+                task.id,
+            )
+        )
+        field_import_workbooks = (
+            await self.field_artifact_service.load_verified_import_workbooks(
+                field_rows
+            )
+        )
+        field_artifact_events = await self.field_artifact_service.list_task_events(
+            db,
+            task.id,
+        )
+        field_missing_photo_count = (
+            await self.field_artifact_service.count_task_records_missing_photo(
+                db,
+                task.id,
+            )
+        )
         reviews = await self.workbench_dao.get_reviews(db, task.id)
         quality_gate = await self.workbench_dao.get_quality_gate_summary(
             db,
@@ -497,6 +559,7 @@ class DeliveryService:
         )
         thematic_products = await self.dao.get_thematic_map_products(db, task.id)
         supervision_reports = await self.dao.get_supervision_reports(db, task.id)
+        disaster_reports = await self.dao.get_disaster_reports(db, task.id)
         dataset_assets = await self.dao.get_dataset_assets(
             db,
             task.project_id,
@@ -519,6 +582,9 @@ class DeliveryService:
         supervision_artifacts = await self._load_supervision_artifacts(
             supervision_reports
         )
+        disaster_report_artifacts = await self._load_disaster_report_artifacts(
+            disaster_reports
+        )
         imagery_lineage = await self._build_imagery_lineage(
             imagery,
             imagery_steps,
@@ -529,6 +595,10 @@ class DeliveryService:
             "disasters": disasters,
             "quality_issues": quality_issues,
             "field_rows": field_rows,
+            "field_artifacts": field_artifacts,
+            "field_import_workbooks": field_import_workbooks,
+            "field_artifact_events": field_artifact_events,
+            "field_missing_photo_count": field_missing_photo_count,
             "reviews": reviews,
             "quality_gate": quality_gate,
             "imagery": imagery,
@@ -536,6 +606,7 @@ class DeliveryService:
             "imagery_lineage": imagery_lineage,
             "thematic_artifacts": thematic_artifacts,
             "supervision_artifacts": supervision_artifacts,
+            "disaster_report_artifacts": disaster_report_artifacts,
             "dataset_assets": dataset_assets,
             "archive_state": archive_state,
         }
@@ -602,6 +673,39 @@ class DeliveryService:
                     "format": "JSON",
                     "record_count": None,
                     "description": "独立监理抽样、检查、整改、复检和县区评价报告",
+                    "content": content,
+                    "source_entity_code": report.report_code,
+                    "source_uri": report.file_uri,
+                }
+            )
+        return artifacts
+
+    async def _load_disaster_report_artifacts(
+        self,
+        reports: Sequence[DisasterReport],
+    ) -> list[dict]:
+        """校验并读取待归档灾害专题报告实体。
+
+        Args:
+            reports: 当前有效灾害专题报告序列。
+
+        Returns:
+            list[dict]: 灾害专题报告归档项。
+        """
+        artifacts: list[dict] = []
+        for report in reports:
+            path = await asyncio.to_thread(
+                self.disaster_report_service.verify_report_file,
+                report,
+            )
+            content = await asyncio.to_thread(path.read_bytes)
+            artifacts.append(
+                {
+                    "path": f"disasters/reports/{report.report_code}.xlsx",
+                    "category": "灾害监测专题报告",
+                    "format": "XLSX",
+                    "record_count": report.source_patch_count,
+                    "description": report.report_title,
                     "content": content,
                     "source_entity_code": report.report_code,
                     "source_uri": report.file_uri,
@@ -739,6 +843,24 @@ class DeliveryService:
             }
             for item in source_data["dataset_assets"]
         ]
+        field_evidence_manifest = [
+            {
+                "verification_code": item.verification_code,
+                "artifact_code": item.artifact.artifact_code,
+                "artifact_type": item.artifact.artifact_type,
+                "original_filename": item.artifact.original_filename,
+                "media_type": item.artifact.media_type,
+                "file_uri": item.artifact.file_uri,
+                "file_size_bytes": item.artifact.file_size_bytes,
+                "checksum_sha256": item.artifact.checksum_sha256,
+                "description": item.artifact.description,
+                "uploaded_by": item.artifact.uploaded_by,
+                "uploaded_by_code": item.artifact.uploaded_by_code,
+                "uploaded_by_role": item.artifact.uploaded_by_role,
+                "created_at": item.artifact.created_at,
+            }
+            for item in source_data["field_artifacts"]
+        ]
         archive_index = {
             "schema_version": "delivery-archive-v2",
             "task_code": task.task_code,
@@ -772,9 +894,30 @@ class DeliveryService:
                     ),
                     "count": quality_summary["supervision_report_count"],
                 },
+                "disaster_reports": {
+                    "status": (
+                        "included"
+                        if quality_summary["disaster_report_count"] > 0
+                        else "not_provided"
+                    ),
+                    "count": quality_summary["disaster_report_count"],
+                },
                 "field_evidence": {
                     "status": quality_summary["field_evidence_status"],
-                    "count": quality_summary["field_verification_count"],
+                    "count": (
+                        quality_summary["field_verified_artifact_count"]
+                        + quality_summary["field_import_workbook_count"]
+                    ),
+                    "record_count": quality_summary["field_verification_count"],
+                    "artifact_count": quality_summary[
+                        "field_verified_artifact_count"
+                    ],
+                    "import_workbook_count": quality_summary[
+                        "field_import_workbook_count"
+                    ],
+                    "missing_photo_count": quality_summary[
+                        "field_missing_photo_count"
+                    ],
                 },
                 "disaster_evidence": {
                     "status": quality_summary["disaster_evidence_status"],
@@ -814,6 +957,22 @@ class DeliveryService:
                 len(source_data["field_rows"]),
                 "外业核查点及空间匹配结论",
                 cls._build_field_geojson(source_data["field_rows"]),
+            ),
+            cls._text_entry(
+                "field/evidence_manifest.json",
+                "外业实体证据",
+                "JSON",
+                len(field_evidence_manifest),
+                "现场照片、语音和调查表实体的来源、大小及 SHA-256 清单",
+                cls._json_text(field_evidence_manifest),
+            ),
+            cls._text_entry(
+                "field/evidence_events.json",
+                "外业证据审计",
+                "JSON",
+                len(source_data["field_artifact_events"]),
+                "外业实体证据上传和下载的稳定用户角色事件",
+                cls._json_text(source_data["field_artifact_events"]),
             ),
             cls._text_entry(
                 "quality/quality_issues.json",
@@ -878,8 +1037,62 @@ class DeliveryService:
         for artifact in (
             source_data["thematic_artifacts"]
             + source_data["supervision_artifacts"]
+            + source_data["disaster_report_artifacts"]
         ):
             entries.append(DeliveryArchiveEntry(**artifact))
+        for item in source_data["field_artifacts"]:
+            suffix = Path(item.artifact.original_filename).suffix.lower()
+            content = item.path.read_bytes()
+            if (
+                len(content) != item.artifact.file_size_bytes
+                or hashlib.sha256(content).hexdigest()
+                != item.artifact.checksum_sha256
+            ):
+                raise ValidationException("外业实体证据在归档写入前发生变化")
+            entries.append(
+                DeliveryArchiveEntry(
+                    path=(
+                        f"field/evidence/{item.verification_code}/"
+                        f"{item.artifact.artifact_code}{suffix}"
+                    ),
+                    category="外业实体证据",
+                    format=suffix.removeprefix(".").upper(),
+                    record_count=None,
+                    description=(
+                        f"{item.verification_code} · "
+                        f"{item.artifact.artifact_type} · "
+                        f"{item.artifact.original_filename}"
+                    ),
+                    content=content,
+                    source_entity_code=item.artifact.artifact_code,
+                    source_uri=item.artifact.file_uri,
+                )
+            )
+        for workbook in source_data["field_import_workbooks"]:
+            content = workbook.path.read_bytes()
+            if (
+                len(content) != workbook.file_size_bytes
+                or hashlib.sha256(content).hexdigest() != workbook.checksum_sha256
+            ):
+                raise ValidationException("外业导入工作簿在归档写入前发生变化")
+            entries.append(
+                DeliveryArchiveEntry(
+                    path=(
+                        "field/import_sources/"
+                        f"{workbook.checksum_sha256}.xlsx"
+                    ),
+                    category="外业导入源文件",
+                    format="XLSX",
+                    record_count=None,
+                    description=(
+                        f"{workbook.source_name or '外业导入源'} · "
+                        f"{workbook.source_version or '未标版本'}"
+                    ),
+                    content=content,
+                    source_entity_code=workbook.import_batch_code,
+                    source_uri=workbook.file_uri,
+                )
+            )
         return entries
 
     @staticmethod
@@ -977,6 +1190,8 @@ class DeliveryService:
         """
         issues = source_data["quality_issues"]
         field_rows = source_data["field_rows"]
+        field_artifacts = source_data.get("field_artifacts", [])
+        field_import_workbooks = source_data.get("field_import_workbooks", [])
         quality_gate = source_data["quality_gate"]
         imagery = source_data["imagery"]
         field_count = len(field_rows)
@@ -994,11 +1209,22 @@ class DeliveryService:
             "open_issue_count": sum(issue.status == "open" for issue in issues),
             "resolved_issue_count": sum(issue.status != "open" for issue in issues),
             "field_verification_count": field_count,
+            "field_verified_artifact_count": len(field_artifacts),
+            "field_import_workbook_count": len(field_import_workbooks),
+            "field_missing_photo_count": source_data.get(
+                "field_missing_photo_count",
+                field_count if field_count > 0 else 0,
+            ),
             "pending_field_count": sum(
                 item.resolution_status == "pending" for item, _ in field_rows
             ),
             "field_evidence_status": (
-                "provided" if field_count > 0 else "not_provided"
+                "not_provided"
+                if field_count == 0
+                else "included"
+                if field_artifacts
+                and source_data.get("field_missing_photo_count", 0) == 0
+                else "missing_physical_evidence"
             ),
             "disaster_patch_count": disaster_count,
             "affected_area_ha": source_data["disasters"].affected_area_ha,
@@ -1023,6 +1249,12 @@ class DeliveryService:
             "supervision_report_latest_at": (
                 archive_state.supervision_report_latest_at.isoformat()
                 if archive_state.supervision_report_latest_at
+                else None
+            ),
+            "disaster_report_count": archive_state.disaster_report_count,
+            "disaster_report_latest_at": (
+                archive_state.disaster_report_latest_at.isoformat()
+                if archive_state.disaster_report_latest_at
                 else None
             ),
             "dataset_asset_count": archive_state.dataset_asset_count,
@@ -1130,6 +1362,22 @@ class DeliveryService:
                     "resolution_status": item.resolution_status,
                     "resolution_decision": item.resolution_decision,
                     "captured_at": item.captured_at,
+                    "source_name": getattr(item, "source_name", None),
+                    "source_uri": getattr(item, "source_uri", None),
+                    "source_version": getattr(item, "source_version", None),
+                    "source_checksum_sha256": getattr(
+                        item,
+                        "source_checksum_sha256",
+                        None,
+                    ),
+                    "source_file_uri": getattr(item, "source_file_uri", None),
+                    "source_file_size_bytes": getattr(
+                        item,
+                        "source_file_size_bytes",
+                        None,
+                    ),
+                    "legacy_photo_urls": getattr(item, "photo_urls", []),
+                    "legacy_voice_url": getattr(item, "voice_url", None),
                 },
             }
             for item, geometry in rows
@@ -1189,7 +1437,8 @@ class DeliveryService:
         )
         field_text = (
             f"已纳入 {summary['field_verification_count']} 条外业核查记录，"
-            "待处置记录为 0。"
+            f"嵌入 {summary['field_verified_artifact_count']} 份通过大小、格式和 "
+            "SHA-256 复核的现场实体证据，待处置记录和缺失照片记录均为 0。"
             if summary["field_verification_count"] > 0
             else "本成果包未包含外业核查记录，不作外业一致性结论。"
         )
@@ -1205,9 +1454,13 @@ class DeliveryService:
 - 未关闭问题：{summary['open_issue_count']}
 - 已整改问题：{summary['resolved_issue_count']}
 - 外业核查记录：{summary['field_verification_count']}
+- 外业实体证据：{summary['field_verified_artifact_count']}
+- 外业导入源工作簿：{summary['field_import_workbook_count']}
+- 缺少实体照片：{summary['field_missing_photo_count']}
 - 待处置外业记录：{summary['pending_field_count']}
 - 实体专题图：{summary['thematic_map_count']} 张
 - 独立监理报告：{summary['supervision_report_count']} 份
+- 灾害专题报告：{summary['disaster_report_count']} 份
 - 多源数据资产目录：{summary['dataset_asset_count']} 项
 - 已校验影像处理产物：{summary['imagery_step_count']} 项
 
@@ -1238,7 +1491,8 @@ class DeliveryService:
         """
         statistics = source_data["statistics"]
         field_text = (
-            f"已提供 {summary['field_verification_count']} 条外业核查记录"
+            f"已提供 {summary['field_verification_count']} 条外业核查记录及 "
+            f"{summary['field_verified_artifact_count']} 份校验通过的现场实体证据"
             if summary["field_verification_count"] > 0
             else "未提供外业核查记录，外业文件为空集合"
         )
@@ -1246,6 +1500,11 @@ class DeliveryService:
             f"已提供 {summary['disaster_patch_count']} 个灾害斑块"
             if summary["disaster_patch_count"] > 0
             else "未导入灾害模型成果，灾害文件为空集合"
+        )
+        disaster_report_text = (
+            "已纳入 XLSX 实体报告"
+            if summary["disaster_report_count"] > 0
+            else "未提供"
         )
         return f"""# 遥感监测项目验收报告
 
@@ -1263,9 +1522,12 @@ class DeliveryService:
 - 灾害斑块：{summary['disaster_patch_count']} 个
 - 受灾面积：{summary['affected_area_ha']} 公顷
 - 外业核查：{summary['field_verification_count']} 条
+- 外业实体证据：{summary['field_verified_artifact_count']} 份
+- 外业导入源工作簿：{summary['field_import_workbook_count']} 份
 - 审核及操作记录：{summary['review_record_count']} 条
 - 专题图成果：{summary['thematic_map_count']} 张
 - 独立监理报告：{summary['supervision_report_count']} 份
+- 灾害专题报告：{summary['disaster_report_count']} 份
 - 多源数据资产：{summary['dataset_asset_count']} 项
 - 影像处理产物：{summary['imagery_step_count']} 项
 
@@ -1273,6 +1535,7 @@ class DeliveryService:
 
 - 外业核查：{field_text}
 - 灾害监测：{disaster_text}
+- 灾害专题报告：{disaster_report_text}
 - 业务影像：{summary['imagery_asset_code'] or '未关联'}
 - 专题图：{'已纳入实体成果' if summary['thematic_map_count'] > 0 else '未提供'}
 - 独立监理：{'已纳入实体报告' if summary['supervision_report_count'] > 0 else '未提供'}
@@ -1280,8 +1543,10 @@ class DeliveryService:
 ## 验收结论
 
 本成果包包含最终地块数据、属性、面积统计、完整质量问题清单、审核记录、
-质量报告、影像血缘和数据资产目录。已存在的专题图与独立监理报告以通过大小
-和 SHA-256 复核的原始实体写入；外业、灾害、专题图和监理证据是否存在以上述
+质量报告、影像血缘和数据资产目录。外业照片、语音、调查表、专题图、灾害专题
+报告与独立监理报告均以通过受控路径、格式、大小和 SHA-256 复核的原始实体写入；
+外业、灾害、
+专题图和监理证据是否存在以上述
 专项证据状态为准，不以空集合冒充已完成成果。
 
 文件清单与校验摘要已写入 manifest.json，可进入甲方成果交付和归档环节。

@@ -1,5 +1,6 @@
 """内外业联动核查业务服务。"""
 
+import asyncio
 import json
 import logging
 import secrets
@@ -10,10 +11,14 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.exceptions import NotFoundException, ValidationException
+from app.dao.field_verification_artifact_dao import (
+    FieldVerificationArtifactDAO,
+)
 from app.dao.field_verification_dao import FieldVerificationDAO
 from app.dao.workbench_dao import WorkbenchDAO
 from app.models.workbench import (
     FieldVerification,
+    FieldVerificationArtifact,
     ImageryAsset,
     MonitoringTask,
     PlotVersion,
@@ -24,6 +29,7 @@ from app.models.workbench import (
 from app.schemas.field_verification import (
     FieldRematchRequest,
     FieldRematchResponse,
+    FieldReopenRequest,
     FieldResolutionRequest,
     FieldVerificationBatchImportRequest,
     FieldVerificationBatchImportResponse,
@@ -32,11 +38,21 @@ from app.schemas.field_verification import (
     FieldVerificationListResponse,
     FieldVerificationResponse,
 )
+from app.services.field_verification_artifact_service import (
+    FieldVerificationArtifactService,
+)
 from app.services.field_workbook_parser import FieldVerificationWorkbookParser
 from app.services.project_user_service import ProjectUserService
 from app.services.rule_config_service import RuleConfigService
 
 logger = logging.getLogger(__name__)
+
+FIELD_DECISION_LABELS = {
+    "keep_internal": "保留内业成果",
+    "use_field": "采用外业结论",
+    "compromise": "人工折中方案",
+    "reject_field": "驳回外业结论",
+}
 
 
 class FieldVerificationService:
@@ -49,6 +65,8 @@ class FieldVerificationService:
         rule_config_service: RuleConfigService | None = None,
         project_user_service: ProjectUserService | None = None,
         workbook_parser: FieldVerificationWorkbookParser | None = None,
+        artifact_dao: FieldVerificationArtifactDAO | None = None,
+        artifact_service: FieldVerificationArtifactService | None = None,
     ) -> None:
         """初始化内外业核查服务。
 
@@ -58,6 +76,8 @@ class FieldVerificationService:
             rule_config_service: 项目规则配置服务。
             project_user_service: 项目用户与角色校验服务。
             workbook_parser: Excel 工作簿解析服务。
+            artifact_dao: 外业实体证据 DAO。
+            artifact_service: 外业受控文件存储与复核服务。
 
         Returns:
             None: 无返回值。
@@ -67,12 +87,17 @@ class FieldVerificationService:
         self.rule_config_service = rule_config_service or RuleConfigService()
         self.project_user_service = project_user_service or ProjectUserService()
         self.workbook_parser = workbook_parser or FieldVerificationWorkbookParser()
+        self.artifact_dao = artifact_dao or FieldVerificationArtifactDAO()
+        self.artifact_service = (
+            artifact_service or FieldVerificationArtifactService()
+        )
 
     @staticmethod
     def _to_response(
         record: FieldVerification,
         lon: float,
         lat: float,
+        artifacts: list[FieldVerificationArtifact] | None = None,
     ) -> FieldVerificationResponse:
         """组装外业核查响应。
 
@@ -80,10 +105,12 @@ class FieldVerificationService:
             record: 外业核查 ORM 对象。
             lon: WGS84 经度。
             lat: WGS84 纬度。
+            artifacts: 已通过数据库登记的实体证据列表。
 
         Returns:
             FieldVerificationResponse: 外业核查响应。
         """
+        artifact_items = artifacts or []
         return FieldVerificationResponse(
             verification_code=record.verification_code,
             investigator=record.investigator,
@@ -105,6 +132,12 @@ class FieldVerificationService:
                 "source_checksum_sha256",
                 None,
             ),
+            source_file_uri=getattr(record, "source_file_uri", None),
+            source_file_size_bytes=getattr(
+                record,
+                "source_file_size_bytes",
+                None,
+            ),
             import_batch_code=getattr(record, "import_batch_code", None),
             imported_by=getattr(record, "imported_by", None),
             imported_by_code=getattr(record, "imported_by_code", None),
@@ -122,6 +155,14 @@ class FieldVerificationService:
             resolved_by=record.resolved_by,
             resolved_by_code=record.resolved_by_code,
             resolved_by_role=record.resolved_by_role,
+            verified_artifact_count=len(artifact_items),
+            artifacts=[
+                FieldVerificationArtifactService.to_response(
+                    artifact,
+                    record.verification_code,
+                )
+                for artifact in artifact_items
+            ],
         )
 
     async def list_records(
@@ -142,8 +183,23 @@ class FieldVerificationService:
         if task is None:
             raise NotFoundException(f"未找到任务 {task_code}")
         rows = await self.dao.get_task_records(db, task.id)
+        artifacts = await self.artifact_dao.list_by_verification_ids(
+            db,
+            [row[0].id for row in rows],
+        )
+        artifacts_by_record: dict[int, list[FieldVerificationArtifact]] = {}
+        for artifact in artifacts:
+            artifacts_by_record.setdefault(
+                artifact.field_verification_id,
+                [],
+            ).append(artifact)
         items = [
-            self._to_response(row[0], float(row.lon), float(row.lat))
+            self._to_response(
+                row[0],
+                float(row.lon),
+                float(row.lat),
+                artifacts_by_record.get(row[0].id, []),
+            )
             for row in rows
         ]
         return FieldVerificationListResponse(
@@ -350,6 +406,8 @@ class FieldVerificationService:
         *,
         source_checksum_sha256: str | None = None,
         source_file_name: str | None = None,
+        source_file_uri: str | None = None,
+        source_file_size_bytes: int | None = None,
     ) -> FieldVerificationBatchImportResponse:
         """批量导入外业记录并在一个事务中完成空间匹配。
 
@@ -359,6 +417,8 @@ class FieldVerificationService:
             request: 来源元数据、上传人和外业记录。
             source_checksum_sha256: 可选原始实体文件 SHA256。
             source_file_name: 可选原始实体文件名。
+            source_file_uri: 可选受控原始文件 URI。
+            source_file_size_bytes: 可选原始文件大小。
 
         Returns:
             FieldVerificationBatchImportResponse: 批次和匹配状态统计。
@@ -446,6 +506,8 @@ class FieldVerificationService:
                     source_version=request.source_version,
                     source_record_id=item.source_record_id,
                     source_checksum_sha256=source_checksum,
+                    source_file_uri=source_file_uri,
+                    source_file_size_bytes=source_file_size_bytes,
                     import_batch_code=batch_code,
                     imported_by=uploader.display_name,
                     imported_by_code=uploader.user_code,
@@ -477,6 +539,7 @@ class FieldVerificationService:
                         f"生成 {issue_count} 条疑点；来源 {request.source_name} "
                         f"{request.source_version}；SHA256 {source_checksum}；"
                         f"文件 {source_file_name or '结构化请求'}；"
+                        f"受控实体 {source_file_uri or '未提供'}；"
                         f"{request.comment}"
                     ),
                 ),
@@ -533,6 +596,11 @@ class FieldVerificationService:
             FieldVerificationBatchImportResponse: 导入批次和匹配统计。
         """
         records = self.workbook_parser.parse(filename, content)
+        stored_workbook = await asyncio.to_thread(
+            self.artifact_service.store_import_workbook,
+            filename,
+            content,
+        )
         request = FieldVerificationBatchImportRequest(
             source_name=metadata.source_name,
             source_uri=metadata.source_uri,
@@ -541,13 +609,22 @@ class FieldVerificationService:
             comment=metadata.comment,
             records=records,
         )
-        return await self.import_batch(
-            db,
-            task_code,
-            request,
-            source_checksum_sha256=sha256(content).hexdigest(),
-            source_file_name=filename,
-        )
+        completed = False
+        try:
+            result = await self.import_batch(
+                db,
+                task_code,
+                request,
+                source_checksum_sha256=stored_workbook.checksum_sha256,
+                source_file_name=filename,
+                source_file_uri=stored_workbook.file_uri,
+                source_file_size_bytes=stored_workbook.file_size_bytes,
+            )
+            completed = True
+            return result
+        finally:
+            if not completed and stored_workbook.created_new:
+                stored_workbook.path.unlink(missing_ok=True)
 
     def build_xlsx_template(self) -> bytes:
         """生成外业核查 XLSX 导入模板。
@@ -641,7 +718,10 @@ class FieldVerificationService:
             raise ValidationException("一致记录无需人工处置")
         if record.resolution_status == "resolved":
             raise ValidationException("该外业疑点已经处置")
-        task = await self.workbench_dao.get_task_by_id(db, record.task_id)
+        task = await self.workbench_dao.get_task_by_id_for_update(
+            db,
+            record.task_id,
+        )
         if task is None:
             raise NotFoundException("外业记录关联任务不存在")
         reviewer = await self.project_user_service.require_capability(
@@ -650,9 +730,26 @@ class FieldVerificationService:
             request.reviewer_code,
             "resolve_field_issue",
         )
+        if (
+            await self.artifact_dao.count_by_record_type(
+                db,
+                record.id,
+                "photo",
+            )
+            == 0
+        ):
+            raise ValidationException(
+                "外业疑点闭环前必须上传至少一张通过校验的现场照片"
+            )
 
         plot_changed = False
-        if request.decision in {"use_field", "compromise"} and record.matched_plot_code:
+        final_land_class: str | None = None
+        final_crop_type: str | None = None
+        if request.decision in {"use_field", "compromise"}:
+            if not record.matched_plot_code:
+                raise ValidationException(
+                    "未匹配记录不能采用外业或折中修改，请先重新匹配或驳回"
+                )
             if not await self.workbench_dao.is_plot_assigned_to_task(
                 db,
                 task.id,
@@ -663,49 +760,50 @@ class FieldVerificationService:
                 db,
                 record.matched_plot_code,
             )
-            if plot:
+            if plot is None:
+                raise NotFoundException("外业记录匹配图斑不存在")
+            if request.decision == "use_field":
                 if not record.observed_land_class:
                     raise ValidationException("采用外业结论前必须填写现场地类")
-                target_land_class = (
-                    record.observed_land_class
-                    if request.decision == "use_field" or not plot.land_class
-                    else plot.land_class
-                )
-                target_crop_type = (
-                    record.observed_crop_type
-                    if target_land_class == "耕地"
-                    and (request.decision == "use_field" or not plot.crop_type)
-                    else plot.crop_type if target_land_class == "耕地" else None
-                )
-                plot_changed = (
-                    plot.land_class != target_land_class
-                    or plot.crop_type != target_crop_type
-                )
-                if plot_changed:
-                    plot.land_class = target_land_class
-                    plot.crop_type = target_crop_type
-                    plot.version += 1
-                    plot.updated_at = datetime.now(UTC)
-                    await self.workbench_dao.add_plot_version(
-                        db,
-                        PlotVersion(
-                            plot_code=plot.plot_code,
-                            version=plot.version,
-                            land_class=plot.land_class,
-                            crop_type=plot.crop_type,
-                            planting_mode=plot.planting_mode,
-                            irrigation_condition=plot.irrigation_condition,
-                            interpretation_status=plot.interpretation_status,
-                            geom=plot.geom,
-                            change_summary=(
-                                f"{request.decision} 外业记录 "
-                                f"{verification_code} 的现场结论"
-                            ),
-                            created_by=reviewer.display_name,
-                            created_by_code=reviewer.user_code,
-                            created_by_role=reviewer.role_code,
+                final_land_class = record.observed_land_class
+                final_crop_type = record.observed_crop_type
+            else:
+                final_land_class = request.target_land_class
+                final_crop_type = request.target_crop_type
+            if final_land_class == "耕地" and not final_crop_type:
+                raise ValidationException("最终地类为耕地时必须填写作物类型")
+            if final_land_class != "耕地" and final_crop_type:
+                raise ValidationException("最终地类非耕地时不得填写作物类型")
+            plot_changed = (
+                plot.land_class != final_land_class
+                or plot.crop_type != final_crop_type
+            )
+            if plot_changed:
+                plot.land_class = final_land_class
+                plot.crop_type = final_crop_type
+                plot.version += 1
+                plot.updated_at = datetime.now(UTC)
+                await self.workbench_dao.add_plot_version(
+                    db,
+                    PlotVersion(
+                        plot_code=plot.plot_code,
+                        version=plot.version,
+                        land_class=plot.land_class,
+                        crop_type=plot.crop_type,
+                        planting_mode=plot.planting_mode,
+                        irrigation_condition=plot.irrigation_condition,
+                        interpretation_status=plot.interpretation_status,
+                        geom=plot.geom,
+                        change_summary=(
+                            f"{FIELD_DECISION_LABELS[request.decision]}："
+                            f"外业记录 {verification_code}，最终地类 "
+                            f"{final_land_class}，作物 {final_crop_type or '无'}"
                         ),
-                    )
+                        created_by=reviewer.display_name,
+                        created_by_code=reviewer.user_code,
+                        created_by_role=reviewer.role_code,
+                    ),
+                )
 
         if plot_changed:
             task.status = "interpreting"
@@ -728,6 +826,12 @@ class FieldVerificationService:
             reviewer.role_code,
             request.comment,
         )
+        applied_attribute_summary = (
+            f"最终地类 {final_land_class}；"
+            f"最终作物 {final_crop_type or '无'}；"
+            if final_land_class is not None
+            else "图斑属性 未改写；"
+        )
         await self.workbench_dao.add_review_record(
             db,
             ReviewRecord(
@@ -738,10 +842,115 @@ class FieldVerificationService:
                 reviewer_code=reviewer.user_code,
                 reviewer_role=reviewer.role_code,
                 comment=(
-                    f"{verification_code}: {request.decision} - {request.comment}"
+                    f"{verification_code}："
+                    f"{FIELD_DECISION_LABELS[request.decision]}；"
+                    f"{applied_attribute_summary}"
+                    f"依据 {request.comment}"
                 ),
             ),
         )
         await db.commit()
         lon, lat = await self.dao.get_coordinates(db, record.id)
-        return self._to_response(record, lon, lat)
+        artifacts = await self.artifact_dao.list_by_verification_ids(
+            db,
+            [record.id],
+        )
+        return self._to_response(record, lon, lat, list(artifacts))
+
+    async def reopen_record(
+        self,
+        db: AsyncSession,
+        verification_code: str,
+        request: FieldReopenRequest,
+    ) -> FieldVerificationResponse:
+        """重新打开已处置外业疑点并回退任务质量门禁。
+
+        Args:
+            db: 异步数据库会话。
+            verification_code: 外业记录编号。
+            request: 操作人稳定编码和重新打开依据。
+
+        Returns:
+            FieldVerificationResponse: 已恢复待处置状态的外业记录。
+        """
+        record = await self.dao.get_by_code_for_update(db, verification_code)
+        if record is None:
+            raise NotFoundException(f"未找到外业记录 {verification_code}")
+        if record.match_status == "consistent":
+            raise ValidationException("一致记录不存在可重新打开的疑点")
+        if record.resolution_status != "resolved":
+            raise ValidationException("仅已完成处置的外业疑点可以重新打开")
+        task = await self.workbench_dao.get_task_by_id_for_update(
+            db,
+            record.task_id,
+        )
+        if task is None:
+            raise NotFoundException("外业记录关联任务不存在")
+        operator = await self.project_user_service.require_capability(
+            db,
+            task.project_id,
+            request.operator_code,
+            "resolve_field_issue",
+        )
+        previous_decision = record.resolution_decision
+        previous_comment = record.resolution_comment
+        issue_reopened = await self.dao.reopen_quality_issue(
+            db,
+            record.task_id,
+            verification_code,
+        )
+        if not issue_reopened:
+            await self.workbench_dao.add_quality_issues(
+                db,
+                [
+                    QualityIssue(
+                        task_id=record.task_id,
+                        plot_code=record.matched_plot_code,
+                        rule_code=f"FIELD_{verification_code}",
+                        issue_type="field_verification",
+                        severity="high",
+                        description=(
+                            f"外业记录 {verification_code} 已重新打开，"
+                            "需重新核对现场证据和处置结论"
+                        ),
+                        status="open",
+                        source="auto",
+                        assignee=getattr(task, "assignee", None),
+                    )
+                ],
+            )
+        now = datetime.now(UTC)
+        record.resolution_status = "pending"
+        record.resolution_decision = None
+        record.resolution_comment = None
+        record.resolved_by = None
+        record.resolved_by_code = None
+        record.resolved_by_role = None
+        record.updated_at = now
+        task.status = "interpreting"
+        task.quality_score = None
+        task.updated_at = now
+        await self.workbench_dao.add_review_record(
+            db,
+            ReviewRecord(
+                task_id=record.task_id,
+                review_level="field_verification",
+                action="field_issue_reopened",
+                reviewer=operator.display_name,
+                reviewer_code=operator.user_code,
+                reviewer_role=operator.role_code,
+                comment=(
+                    f"{verification_code}：重新打开；上次决策 "
+                    f"{FIELD_DECISION_LABELS.get(previous_decision or '', '-')}；"
+                    f"上次依据 {previous_comment or '-'}；"
+                    f"重开依据 {request.comment}"
+                ),
+            ),
+        )
+        await db.commit()
+        lon, lat = await self.dao.get_coordinates(db, record.id)
+        artifacts = await self.artifact_dao.list_by_verification_ids(
+            db,
+            [record.id],
+        )
+        return self._to_response(record, lon, lat, list(artifacts))

@@ -4,8 +4,9 @@ import asyncio
 from datetime import UTC, datetime
 from hashlib import sha256
 from io import BytesIO
+from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from openpyxl import Workbook
@@ -136,11 +137,24 @@ def build_service() -> tuple[FieldVerificationService, AsyncMock, AsyncMock]:
         display_name="张强",
         role_code="field_inspector",
     )
+    artifact_service = MagicMock()
+
+    def store_workbook(filename: str, content: bytes) -> SimpleNamespace:
+        return SimpleNamespace(
+            path=Path("/tmp") / filename,
+            file_uri=f"storage://field-evidence/imports/{sha256(content).hexdigest()}.xlsx",
+            file_size_bytes=len(content),
+            checksum_sha256=sha256(content).hexdigest(),
+            created_new=False,
+        )
+
+    artifact_service.store_import_workbook.side_effect = store_workbook
     service = FieldVerificationService(
         dao=dao,
         workbench_dao=workbench_dao,
         rule_config_service=rule_service,
         project_user_service=user_service,
+        artifact_service=artifact_service,
     )
 
     async def match_record(_db, _task, record, _config, _imagery):
@@ -281,7 +295,16 @@ def test_field_xlsx_import_uses_physical_file_checksum() -> None:
 
     assert response.imported_count == 1
     assert response.source_checksum_sha256 == sha256(content).hexdigest()
-    assert dao.create.await_args.args[1].source_record_id == "mobile-xlsx-001"
+    record = dao.create.await_args.args[1]
+    assert record.source_record_id == "mobile-xlsx-001"
+    assert record.source_file_size_bytes == len(content)
+    assert record.source_file_uri.startswith(
+        "storage://field-evidence/imports/"
+    )
+    service.artifact_service.store_import_workbook.assert_called_once_with(
+        "field-verification.xlsx",
+        content,
+    )
     db.commit.assert_awaited_once()
 
 

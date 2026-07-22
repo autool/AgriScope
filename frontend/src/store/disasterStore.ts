@@ -2,6 +2,9 @@ import { defineStore } from 'pinia'
 import { computed, ref } from 'vue'
 
 import {
+  downloadDisasterReport,
+  generateDisasterReport,
+  getDisasterReports,
   getDisasterSummary,
   importDisasterGeoJson,
   updateDisasterPatch,
@@ -11,6 +14,8 @@ import { useUserStore } from '@/store/userStore'
 import { useWorkbenchStore } from '@/store/workbenchStore'
 import type {
   DisasterPatch,
+  DisasterReport,
+  DisasterReportList,
   DisasterGeoJsonImportPayload,
   DisasterGeoJsonImportResult,
   DisasterPatchUpdatePayload,
@@ -22,9 +27,12 @@ export const useDisasterStore = defineStore('disaster', () => {
   const layerStore = useLayerStore()
   const userStore = useUserStore()
   const summaryRef = ref<DisasterSummary | null>(null)
+  const reportsRef = ref<DisasterReportList | null>(null)
   const selectedCodeRef = ref<string | null>(null)
   const loadingRef = ref<boolean>(false)
   const importingRef = ref<boolean>(false)
+  const generatingReportRef = ref<boolean>(false)
+  const downloadingReportCodeRef = ref<string | null>(null)
   const selectedPatchComputed = computed<DisasterPatch | null>(() => (
     summaryRef.value?.items.find(
       (item) => item.patch_code === selectedCodeRef.value,
@@ -37,6 +45,15 @@ export const useDisasterStore = defineStore('disaster', () => {
     workbenchStore.taskEditableComputed
     && userStore.hasCapability('import_disaster')
   ))
+  const canGenerateReportComputed = computed<boolean>(() => (
+    userStore.hasCapability('generate_disaster_report')
+  ))
+  const canDownloadReportComputed = computed<boolean>(() => (
+    userStore.hasCapability('download_disaster_report')
+  ))
+  const currentReportComputed = computed<DisasterReport | null>(() => (
+    reportsRef.value?.items.find((item) => item.is_current) || null
+  ))
 
   /**
    * 加载灾害斑块并同步专题图层。
@@ -48,9 +65,12 @@ export const useDisasterStore = defineStore('disaster', () => {
   const load = async (): Promise<void> => {
     loadingRef.value = true
     try {
-      summaryRef.value = await getDisasterSummary(
-        workbenchStore.taskCodeComputed,
-      )
+      const [summary, reports] = await Promise.all([
+        getDisasterSummary(workbenchStore.taskCodeComputed),
+        getDisasterReports(workbenchStore.taskCodeComputed),
+      ])
+      summaryRef.value = summary
+      reportsRef.value = reports
       layerStore.setDisasterFeatures(summaryRef.value.feature_collection)
       layerStore.setVisibility('disaster', true)
       if (!summaryRef.value.items.some(
@@ -117,16 +137,82 @@ export const useDisasterStore = defineStore('disaster', () => {
     }
   }
 
+  /**
+   * 生成当前任务灾害专题报告。
+   * Args:
+   *   reportTitle: 报告标题。
+   *   comment: 报告生成依据。
+   * Returns:
+   *   Promise<DisasterReport>: 新报告实体摘要。
+   */
+  const generateReport = async (
+    reportTitle: string,
+    comment: string,
+  ): Promise<DisasterReport> => {
+    const user = userStore.currentUserComputed
+    if (!user || !canGenerateReportComputed.value) {
+      throw new Error('当前项目身份无权生成灾害专题报告')
+    }
+    generatingReportRef.value = true
+    try {
+      const report = await generateDisasterReport(
+        {
+          operator_code: user.user_code,
+          report_title: reportTitle,
+          comment,
+        },
+        workbenchStore.taskCodeComputed,
+      )
+      await Promise.all([load(), workbenchStore.refreshOverview()])
+      return report
+    } finally {
+      generatingReportRef.value = false
+    }
+  }
+
+  /**
+   * 下载并复核指定灾害专题报告实体。
+   * Args:
+   *   report: 待下载报告。
+   * Returns:
+   *   Promise<{blob: Blob, filename: string}>: XLSX 实体及文件名。
+   */
+  const downloadReport = async (
+    report: DisasterReport,
+  ): Promise<{ blob: Blob; filename: string }> => {
+    const user = userStore.currentUserComputed
+    if (!user || !canDownloadReportComputed.value) {
+      throw new Error('当前项目身份无权下载灾害专题报告')
+    }
+    downloadingReportCodeRef.value = report.report_code
+    try {
+      return {
+        blob: await downloadDisasterReport(report.report_code, user.user_code),
+        filename: `${report.report_code}.xlsx`,
+      }
+    } finally {
+      downloadingReportCodeRef.value = null
+    }
+  }
+
   return {
     summaryRef,
+    reportsRef,
     selectedCodeRef,
     loadingRef,
     importingRef,
+    generatingReportRef,
+    downloadingReportCodeRef,
     selectedPatchComputed,
     canReviewComputed,
     canImportComputed,
+    canGenerateReportComputed,
+    canDownloadReportComputed,
+    currentReportComputed,
     load,
     updateSelected,
     importGeoJson,
+    generateReport,
+    downloadReport,
   }
 })

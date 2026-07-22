@@ -298,3 +298,59 @@ class DisasterPatchUpdateRequest(BaseModel):
         if not normalized:
             raise ValueError("复核人编码不得为空")
         return normalized
+
+
+class DisasterReportGenerateRequest(BaseModel):
+    """生成灾害监测专题报告请求。"""
+
+    operator_code: str = Field(min_length=1, max_length=50)
+    report_title: str = Field(min_length=2, max_length=200)
+    comment: str = Field(min_length=4, max_length=500)
+
+    model_config = ConfigDict(extra="forbid")
+
+    @field_validator("operator_code", "report_title", "comment")
+    @classmethod
+    def normalize_report_text(cls, value: str) -> str:
+        """清理报告生成操作人、标题和依据。
+
+        Args:
+            value: 原始文本。
+
+        Returns:
+            str: 标准化非空文本。
+        """
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("报告操作人、标题和生成依据不得为空")
+        return normalized
+
+
+class DisasterReportResponse(BaseModel):
+    """灾害监测专题报告实体摘要。"""
+
+    report_code: str
+    report_title: str
+    status: Literal["completed", "superseded", "invalid"]
+    file_size_bytes: int
+    checksum_sha256: str
+    source_patch_count: int
+    source_confirmed_count: int
+    source_excluded_count: int
+    source_latest_updated_at: datetime
+    affected_area_ha: float
+    report_manifest: dict
+    generation_comment: str
+    generated_by: str
+    generated_by_code: str
+    generated_by_role: str
+    generated_at: datetime
+    download_url: str | None
+    is_current: bool
+
+
+class DisasterReportListResponse(BaseModel):
+    """任务灾害专题报告列表。"""
+
+    task_code: str
+    items: list[DisasterReportResponse]

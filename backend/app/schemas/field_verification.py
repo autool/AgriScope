@@ -1,7 +1,7 @@
 """内外业联动核查请求与响应模型。"""
 
 from datetime import datetime
-from typing import Self
+from typing import Literal, Self
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
@@ -281,6 +281,49 @@ class FieldVerificationBatchImportResponse(BaseModel):
     imported_at: datetime
 
 
+class FieldVerificationArtifactUploadRequest(BaseModel):
+    """外业核查受控实体证据上传元数据。"""
+
+    artifact_type: Literal["photo", "voice", "form"]
+    uploader_code: str = Field(min_length=1, max_length=50)
+    comment: str = Field(min_length=2, max_length=500)
+
+    model_config = ConfigDict(extra="forbid")
+
+    @field_validator("uploader_code", "comment")
+    @classmethod
+    def normalize_upload_text(cls, value: str) -> str:
+        """清理上传人编码和证据说明。
+
+        Args:
+            value: 原始表单文本。
+
+        Returns:
+            str: 标准化非空文本。
+        """
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("上传人编码和证据说明不得为空")
+        return normalized
+
+
+class FieldVerificationArtifactResponse(BaseModel):
+    """已通过实体校验的外业核查证据摘要。"""
+
+    artifact_code: str
+    artifact_type: Literal["photo", "voice", "form"]
+    original_filename: str
+    media_type: str
+    file_size_bytes: int
+    checksum_sha256: str
+    description: str
+    uploaded_by: str
+    uploaded_by_code: str
+    uploaded_by_role: str
+    created_at: datetime
+    download_url: str
+
+
 class FieldVerificationResponse(BaseModel):
     """外业核查记录响应。"""
 
@@ -300,6 +343,8 @@ class FieldVerificationResponse(BaseModel):
     source_version: str | None
     source_record_id: str | None
     source_checksum_sha256: str | None
+    source_file_uri: str | None
+    source_file_size_bytes: int | None
     import_batch_code: str | None
     imported_by: str | None
     imported_by_code: str | None
@@ -313,6 +358,8 @@ class FieldVerificationResponse(BaseModel):
     resolved_by: str | None
     resolved_by_code: str | None
     resolved_by_role: str | None
+    verified_artifact_count: int
+    artifacts: list[FieldVerificationArtifactResponse]
 
 
 class FieldVerificationListResponse(BaseModel):
@@ -362,27 +409,18 @@ class FieldRematchRequest(BaseModel):
 class FieldResolutionRequest(BaseModel):
     """外业疑点人工处置请求。"""
 
-    decision: str
-    reviewer_code: str
-    comment: str
+    decision: Literal[
+        "keep_internal",
+        "use_field",
+        "compromise",
+        "reject_field",
+    ]
+    reviewer_code: str = Field(min_length=1, max_length=50)
+    comment: str = Field(min_length=2, max_length=500)
+    target_land_class: str | None = Field(default=None, max_length=50)
+    target_crop_type: str | None = Field(default=None, max_length=50)
 
     model_config = ConfigDict(extra="forbid")
-
-    @field_validator("decision")
-    @classmethod
-    def validate_decision(cls, value: str) -> str:
-        """校验疑点处置决策。
-
-        Args:
-            value: 处置决策。
-
-        Returns:
-            str: 合法处置决策。
-        """
-        allowed = {"keep_internal", "use_field", "compromise", "reject_field"}
-        if value not in allowed:
-            raise ValueError("不支持的处置决策")
-        return value
 
     @field_validator("reviewer_code", "comment")
     @classmethod
@@ -398,4 +436,64 @@ class FieldResolutionRequest(BaseModel):
         normalized = value.strip()
         if not normalized:
             raise ValueError("审核人编码和处置说明不得为空")
+        return normalized
+
+    @field_validator("target_land_class", "target_crop_type", mode="before")
+    @classmethod
+    def normalize_target_text(cls, value: str | None) -> str | None:
+        """清理折中方案目标属性。
+
+        Args:
+            value: 原始目标地类或作物文本。
+
+        Returns:
+            str | None: 标准化文本或 None。
+        """
+        if value is None:
+            return None
+        normalized = value.strip()
+        return normalized or None
+
+    @model_validator(mode="after")
+    def validate_compromise_target(self) -> Self:
+        """校验折中方案必须显式给出合法最终地类和作物。
+
+        Returns:
+            Self: 通过业务规则校验的请求。
+        """
+        if self.decision != "compromise":
+            if self.target_land_class or self.target_crop_type:
+                raise ValueError("仅折中处置可填写最终目标属性")
+            return self
+        if not self.target_land_class:
+            raise ValueError("折中处置必须填写最终地类")
+        if self.target_land_class == "耕地" and not self.target_crop_type:
+            raise ValueError("折中处置最终地类为耕地时必须填写作物类型")
+        if self.target_land_class != "耕地" and self.target_crop_type:
+            raise ValueError("折中处置最终地类非耕地时不得填写作物类型")
+        return self
+
+
+class FieldReopenRequest(BaseModel):
+    """重新打开已处置外业疑点的请求。"""
+
+    operator_code: str = Field(min_length=1, max_length=50)
+    comment: str = Field(min_length=2, max_length=500)
+
+    model_config = ConfigDict(extra="forbid")
+
+    @field_validator("operator_code", "comment")
+    @classmethod
+    def normalize_reopen_text(cls, value: str) -> str:
+        """清理重新打开操作人和依据文本。
+
+        Args:
+            value: 原始表单文本。
+
+        Returns:
+            str: 标准化非空文本。
+        """
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("操作人编码和重新打开依据不得为空")
         return normalized

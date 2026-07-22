@@ -8,6 +8,7 @@ from sqlalchemy import (
     JSON,
     BigInteger,
     Boolean,
+    CheckConstraint,
     Date,
     DateTime,
     ForeignKey,
@@ -390,6 +391,12 @@ class FieldVerification(Base):
     """外业人员采集的现场核查记录。"""
 
     __tablename__ = "field_verifications"
+    __table_args__ = (
+        CheckConstraint(
+            "source_file_size_bytes IS NULL OR source_file_size_bytes > 0",
+            name="ck_field_verification_source_file_size",
+        ),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     task_id: Mapped[int] = mapped_column(
@@ -424,6 +431,11 @@ class FieldVerification(Base):
         String(64),
         nullable=True,
     )
+    source_file_uri: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    source_file_size_bytes: Mapped[int | None] = mapped_column(
+        BigInteger,
+        nullable=True,
+    )
     import_batch_code: Mapped[str | None] = mapped_column(String(80), nullable=True)
     imported_by: Mapped[str | None] = mapped_column(String(100), nullable=True)
     imported_by_code: Mapped[str | None] = mapped_column(String(50), nullable=True)
@@ -449,6 +461,89 @@ class FieldVerification(Base):
         nullable=False,
     )
     updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        nullable=False,
+    )
+
+
+class FieldVerificationArtifact(Base):
+    """外业核查照片、语音和调查表受控实体。"""
+
+    __tablename__ = "field_verification_artifacts"
+    __table_args__ = (
+        UniqueConstraint(
+            "field_verification_id",
+            "checksum_sha256",
+            name="uq_field_verification_artifact_checksum",
+        ),
+        CheckConstraint(
+            "artifact_type IN ('photo', 'voice', 'form')",
+            name="ck_field_verification_artifact_type",
+        ),
+        CheckConstraint(
+            "file_size_bytes > 0",
+            name="ck_field_verification_artifact_size",
+        ),
+        CheckConstraint(
+            "length(checksum_sha256) = 64",
+            name="ck_field_verification_artifact_checksum_length",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    field_verification_id: Mapped[int] = mapped_column(
+        ForeignKey("field_verifications.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    artifact_code: Mapped[str] = mapped_column(
+        String(80),
+        unique=True,
+        nullable=False,
+    )
+    artifact_type: Mapped[str] = mapped_column(String(20), nullable=False)
+    original_filename: Mapped[str] = mapped_column(String(255), nullable=False)
+    media_type: Mapped[str] = mapped_column(String(100), nullable=False)
+    file_uri: Mapped[str] = mapped_column(String(500), nullable=False)
+    file_size_bytes: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    checksum_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    description: Mapped[str] = mapped_column(Text, nullable=False)
+    uploaded_by: Mapped[str] = mapped_column(String(100), nullable=False)
+    uploaded_by_code: Mapped[str] = mapped_column(String(50), nullable=False)
+    uploaded_by_role: Mapped[str] = mapped_column(String(40), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        nullable=False,
+    )
+
+
+class FieldVerificationArtifactEvent(Base):
+    """外业实体证据上传与下载的不可变审计事件。"""
+
+    __tablename__ = "field_verification_artifact_events"
+    __table_args__ = (
+        CheckConstraint(
+            "event_type IN ('uploaded', 'downloaded')",
+            name="ck_field_verification_artifact_event_type",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    field_verification_id: Mapped[int] = mapped_column(
+        ForeignKey("field_verifications.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    artifact_id: Mapped[int | None] = mapped_column(
+        ForeignKey("field_verification_artifacts.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    event_type: Mapped[str] = mapped_column(String(20), nullable=False)
+    detail: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    actor: Mapped[str] = mapped_column(String(100), nullable=False)
+    actor_code: Mapped[str] = mapped_column(String(50), nullable=False)
+    actor_role: Mapped[str] = mapped_column(String(40), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         server_default=func.now(),
         nullable=False,

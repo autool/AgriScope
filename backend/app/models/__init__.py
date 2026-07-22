@@ -1,5 +1,6 @@
 """数据库模型。"""
 
+from app.models.disaster_report import DisasterReport
 from app.models.imagery_fusion import ImageryFusionEvent, ImageryFusionJob
 from app.models.imagery_mosaic import (
     ImageryMosaicEvent,
@@ -51,6 +52,8 @@ from app.models.workbench import (
     DatasetAsset,
     DatasetLineage,
     FieldVerification,
+    FieldVerificationArtifact,
+    FieldVerificationArtifactEvent,
     ImageryAsset,
     MonitoringProject,
     MonitoringTask,
@@ -73,9 +76,12 @@ __all__ = [
     "DatasetLineage",
     "DeviceFault",
     "DeviceTelemetry",
+    "DisasterReport",
     "ExpertConsultation",
     "FarmlandPlot",
     "FieldVerification",
+    "FieldVerificationArtifact",
+    "FieldVerificationArtifactEvent",
     "ImageryAsset",
     "ImageryFusionEvent",
     "ImageryFusionJob",

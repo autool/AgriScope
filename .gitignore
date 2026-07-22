@@ -25,3 +25,5 @@ backend/storage/imagery-fusion/
 backend/storage/change_detection/
 backend/storage/supervision/
 backend/storage/thematic_maps/
+backend/storage/field-evidence/
+backend/storage/disaster-reports/

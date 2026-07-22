@@ -2,9 +2,12 @@
 import { UploadOutlined } from '@ant-design/icons-vue'
 import { Empty, message } from 'ant-design-vue'
 import { storeToRefs } from 'pinia'
-import { onMounted, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 
 import FieldCsvImportModal from '@/components/field/FieldCsvImportModal.vue'
+import FieldEvidencePanel from '@/components/field/FieldEvidencePanel.vue'
+import FieldReopenModal from '@/components/field/FieldReopenModal.vue'
+import FieldResolutionModal from '@/components/field/FieldResolutionModal.vue'
 import { useFieldStore } from '@/store/fieldStore'
 import type {
   FieldResolutionPayload,
@@ -20,26 +23,59 @@ const {
   importingRef,
   listRef,
   loadingRef,
+  reopeningRef,
+  resolvingRef,
   selectedCodeRef,
   selectedRecordComputed,
 } = storeToRefs(fieldStore)
 const importModalOpenRef = ref<boolean>(false)
+const resolutionModalOpenRef = ref<boolean>(false)
+const reopenModalOpenRef = ref<boolean>(false)
+const hasVerifiedPhotoComputed = computed<boolean>(() => (
+  selectedRecordComputed.value?.artifacts.some(
+    (item) => item.artifact_type === 'photo',
+  ) || false
+))
+const resolutionDecisionLabels: Record<string, string> = {
+  keep_internal: '保留内业成果',
+  use_field: '采用外业结论',
+  compromise: '人工折中方案',
+  reject_field: '驳回外业结论',
+}
 
 /**
  * 处置当前外业疑点。
  * Args:
- *   decision: 采用外业或保留内业。
+ *   payload: 完整处置决策、人工依据和可选最终属性。
  * Returns:
  *   Promise<void>: 疑点闭环完成后结束。
  */
 const handleResolve = async (
-  decision: FieldResolutionPayload['decision'],
+  payload: Omit<FieldResolutionPayload, 'reviewer_code'>,
 ): Promise<void> => {
   try {
-    await fieldStore.resolveSelected(decision)
+    await fieldStore.resolveSelected(payload)
+    resolutionModalOpenRef.value = false
     message.success('外业疑点已完成处置并写入审核记录')
   } catch {
     // 请求拦截器已显示安全错误，避免组件事件产生未捕获 Promise。
+  }
+}
+
+/**
+ * 重新打开当前已处置外业疑点。
+ * Args:
+ *   comment: 新证据或上次结论问题说明。
+ * Returns:
+ *   Promise<void>: 问题和任务门禁恢复后结束。
+ */
+const handleReopen = async (comment: string): Promise<void> => {
+  try {
+    await fieldStore.reopenSelected(comment)
+    reopenModalOpenRef.value = false
+    message.success('外业疑点已重新打开，任务已退回解译阶段')
+  } catch {
+    // 请求拦截器已显示安全错误，保留弹窗便于修正。
   }
 }
 
@@ -190,30 +226,60 @@ onMounted(() => { void fieldStore.load() })
         <div><dt>来源版本</dt><dd>{{ selectedRecordComputed.source_version || '--' }}</dd></div>
         <div><dt>来源记录</dt><dd>{{ selectedRecordComputed.source_record_id || '--' }}</dd></div>
         <div><dt>导入批次</dt><dd>{{ selectedRecordComputed.import_batch_code || '--' }}</dd></div>
+        <div><dt>导入文件实体</dt><dd>{{ selectedRecordComputed.source_file_uri ? '已受控保存' : '未提供' }}</dd></div>
         <div><dt>采集时间</dt><dd>{{ selectedRecordComputed.captured_at }}</dd></div>
-        <div><dt>照片证据</dt><dd>{{ selectedRecordComputed.photo_urls.length }} 张</dd></div>
+        <div><dt>历史照片外链</dt><dd>{{ selectedRecordComputed.photo_urls.length }} 条</dd></div>
+        <div><dt>已验证实体</dt><dd>{{ selectedRecordComputed.verified_artifact_count }} 份</dd></div>
       </dl>
-      <div v-if="selectedRecordComputed.resolution_status === 'pending'" class="actions">
+      <FieldEvidencePanel />
+      <a-alert
+        v-if="selectedRecordComputed.resolution_status === 'pending' && !hasVerifiedPhotoComputed"
+        class="evidence-blocker"
+        type="warning"
+        show-icon
+        message="上传现场照片实体后才能处置该疑点"
+      />
+      <div
+        v-if="selectedRecordComputed.resolution_status === 'pending'"
+        class="actions single-action"
+      >
         <a-button
           type="primary"
-          :disabled="!canResolveComputed"
-          @click="handleResolve('use_field')"
+          :disabled="!canResolveComputed || !hasVerifiedPhotoComputed"
+          @click="resolutionModalOpenRef = true"
         >
-          采用外业结论
-        </a-button>
-        <a-button
-          :disabled="!canResolveComputed"
-          @click="handleResolve('keep_internal')"
-        >
-          保留内业成果
+          处置疑点
         </a-button>
       </div>
       <a-alert
-        v-else
+        v-else-if="selectedRecordComputed.resolution_status === 'not_required'"
         type="success"
         show-icon
-        message="该外业记录已完成闭环"
+        message="内外业匹配一致，无需人工处置"
+        description="该记录没有打开的外业质量问题，仅保留现场证据和匹配结果供审核查阅。"
       />
+      <div v-else class="resolution-result">
+        <a-alert
+          type="success"
+          show-icon
+          message="该外业疑点已完成闭环"
+          :description="`处置结论：${resolutionDecisionLabels[selectedRecordComputed.resolution_decision || ''] || selectedRecordComputed.resolution_decision || '--'}`"
+        />
+        <dl>
+          <div><dt>处置依据</dt><dd>{{ selectedRecordComputed.resolution_comment || '--' }}</dd></div>
+          <div><dt>处置人员</dt><dd>{{ selectedRecordComputed.resolved_by || '--' }}</dd></div>
+          <div><dt>人员编码</dt><dd>{{ selectedRecordComputed.resolved_by_code || '--' }}</dd></div>
+          <div><dt>角色快照</dt><dd>{{ selectedRecordComputed.resolved_by_role || '--' }}</dd></div>
+        </dl>
+        <a-button
+          danger
+          block
+          :disabled="!canResolveComputed"
+          @click="reopenModalOpenRef = true"
+        >
+          重新打开
+        </a-button>
+      </div>
     </div>
     <FieldCsvImportModal
       :open="importModalOpenRef"
@@ -222,6 +288,20 @@ onMounted(() => { void fieldStore.load() })
       @submit-csv="handleImport"
       @submit-xlsx="handleImportXlsx"
       @download-xlsx-template="handleDownloadXlsxTemplate"
+    />
+    <FieldResolutionModal
+      :open="resolutionModalOpenRef"
+      :loading="resolvingRef"
+      :record="selectedRecordComputed"
+      @cancel="resolutionModalOpenRef = false"
+      @submit="handleResolve"
+    />
+    <FieldReopenModal
+      :open="reopenModalOpenRef"
+      :loading="reopeningRef"
+      :verification-code="selectedRecordComputed?.verification_code || null"
+      @cancel="reopenModalOpenRef = false"
+      @submit="handleReopen"
     />
   </section>
 </template>
@@ -258,4 +338,9 @@ header strong { font-size: 12px; }
 .source-audit { padding: 7px 8px; margin-top: 8px; background: #f7f9f8; border: 1px solid #e7ece9; border-radius: 5px; }
 .source-audit dd { max-width: 185px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .actions { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; margin-top: 10px; }
+.actions.single-action { grid-template-columns: 1fr; }
+.evidence-blocker { margin-top: 8px; }
+.resolution-result { display: grid; gap: 10px; margin-top: 10px; }
+.resolution-result dl { margin: 0; }
+.resolution-result dd { max-width: 190px; text-align: right; white-space: normal; }
 </style>

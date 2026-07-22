@@ -49,6 +49,25 @@ def build_empty_archive_state() -> DeliveryArchiveState:
     )
 
 
+def build_field_artifact_service(
+    missing_photo_count: int = 0,
+) -> AsyncMock:
+    """构造不含外业实体证据的交付服务替身。
+
+    Args:
+        missing_photo_count: 缺少实体照片的外业记录数。
+
+    Returns:
+        AsyncMock: 已配置统计、实体和事件返回值的替身。
+    """
+    service = AsyncMock()
+    service.count_task_records_missing_photo.return_value = missing_photo_count
+    service.load_verified_task_artifacts.return_value = []
+    service.load_verified_import_workbooks.return_value = []
+    service.list_task_events.return_value = []
+    return service
+
+
 def test_boundary_service_builds_feature_collection() -> None:
     """验证行政区划数据库行可转换为标准 GeoJSON 集合。"""
     dao = AsyncMock()
@@ -155,7 +174,11 @@ def test_delivery_list_exposes_review_gate_and_download_url() -> None:
         asset_code="REAL-IMAGERY-001"
     )
     workbench_dao.get_quality_gate_summary.return_value = build_passing_gate()
-    service = DeliveryService(dao=dao, workbench_dao=workbench_dao)
+    service = DeliveryService(
+        dao=dao,
+        workbench_dao=workbench_dao,
+        field_artifact_service=build_field_artifact_service(),
+    )
 
     response = asyncio.run(service.list_packages(AsyncMock(), "RS-2026-045"))
 
@@ -180,7 +203,11 @@ def test_delivery_list_blocks_task_before_final_review() -> None:
     )
     workbench_dao.count_open_issues.return_value = 0
     workbench_dao.count_pending_field_verifications.return_value = 0
-    service = DeliveryService(dao=dao, workbench_dao=workbench_dao)
+    service = DeliveryService(
+        dao=dao,
+        workbench_dao=workbench_dao,
+        field_artifact_service=build_field_artifact_service(),
+    )
 
     response = asyncio.run(service.list_packages(AsyncMock(), "RS-2026-045"))
 
@@ -209,7 +236,11 @@ def test_delivery_list_marks_outdated_plot_scope_as_stale() -> None:
         asset_code="REAL-IMAGERY-001"
     )
     workbench_dao.get_quality_gate_summary.return_value = build_passing_gate()
-    service = DeliveryService(dao=dao, workbench_dao=workbench_dao)
+    service = DeliveryService(
+        dao=dao,
+        workbench_dao=workbench_dao,
+        field_artifact_service=build_field_artifact_service(),
+    )
 
     response = asyncio.run(service.list_packages(AsyncMock(), "RS-2026-045"))
 
@@ -245,7 +276,11 @@ def test_delivery_list_marks_new_thematic_map_as_stale() -> None:
     workbench_dao.count_pending_field_verifications.return_value = 0
     workbench_dao.get_latest_imagery.return_value = SimpleNamespace(id=3)
     workbench_dao.get_quality_gate_summary.return_value = build_passing_gate()
-    service = DeliveryService(dao=dao, workbench_dao=workbench_dao)
+    service = DeliveryService(
+        dao=dao,
+        workbench_dao=workbench_dao,
+        field_artifact_service=build_field_artifact_service(),
+    )
 
     response = asyncio.run(service.list_packages(AsyncMock(), "RS-2026-045"))
 
@@ -285,12 +320,43 @@ def test_delivery_list_blocks_missing_operational_imagery() -> None:
     workbench_dao.count_open_issues.return_value = 0
     workbench_dao.count_pending_field_verifications.return_value = 0
     workbench_dao.get_latest_imagery.return_value = None
-    service = DeliveryService(dao=dao, workbench_dao=workbench_dao)
+    service = DeliveryService(
+        dao=dao,
+        workbench_dao=workbench_dao,
+        field_artifact_service=build_field_artifact_service(),
+    )
 
     response = asyncio.run(service.list_packages(AsyncMock(), "RS-2026-045"))
 
     assert response.can_generate is False
     assert response.generate_blocker == "缺少具备实体校验的业务影像"
+
+
+def test_delivery_list_blocks_field_records_without_verified_photo() -> None:
+    """验证历史照片 URL 不能冒充成果交付所需的现场实体照片。"""
+    dao = AsyncMock()
+    dao.get_packages.return_value = []
+    dao.get_archive_state.return_value = build_empty_archive_state()
+    workbench_dao = AsyncMock()
+    workbench_dao.get_task_by_code.return_value = SimpleNamespace(
+        id=1,
+        project_id=9,
+        status="completed",
+        total_plots=809,
+        updated_at=datetime(2026, 7, 20, tzinfo=UTC),
+    )
+    workbench_dao.count_open_issues.return_value = 0
+    workbench_dao.count_pending_field_verifications.return_value = 0
+    service = DeliveryService(
+        dao=dao,
+        workbench_dao=workbench_dao,
+        field_artifact_service=build_field_artifact_service(2),
+    )
+
+    response = asyncio.run(service.list_packages(AsyncMock(), "RS-2026-045"))
+
+    assert response.can_generate is False
+    assert response.generate_blocker == "仍有 2 条外业记录缺少已校验现场照片"
 
 
 def test_delivery_list_blocks_incomplete_quality_coverage() -> None:
@@ -316,7 +382,11 @@ def test_delivery_list_blocks_incomplete_quality_coverage() -> None:
         passing_count=800,
         average_score=92.0,
     )
-    service = DeliveryService(dao=dao, workbench_dao=workbench_dao)
+    service = DeliveryService(
+        dao=dao,
+        workbench_dao=workbench_dao,
+        field_artifact_service=build_field_artifact_service(),
+    )
 
     response = asyncio.run(service.list_packages(AsyncMock(), "RS-2026-045"))
 
@@ -439,6 +509,7 @@ def test_delivery_generation_blocks_unresolved_issues() -> None:
         dao=AsyncMock(),
         workbench_dao=workbench_dao,
         project_user_service=user_service,
+        field_artifact_service=build_field_artifact_service(),
     )
 
     with pytest.raises(ValidationException, match="仍有 2 条问题未关闭"):
@@ -482,6 +553,7 @@ def test_delivery_generation_blocks_missing_quality_coverage() -> None:
         dao=AsyncMock(),
         workbench_dao=workbench_dao,
         project_user_service=user_service,
+        field_artifact_service=build_field_artifact_service(),
     )
 
     with pytest.raises(ValidationException, match="800/809"):
@@ -505,11 +577,17 @@ def test_delivery_generation_archives_verified_physical_evidence(
     thematic_path.write_bytes(b"\x89PNG\r\n\x1a\nverified-thematic-map")
     supervision_path = tmp_path / "supervision.json"
     supervision_path.write_text('{"report":"verified"}', encoding="utf-8")
+    disaster_report_path = tmp_path / "disaster-report.xlsx"
+    disaster_report_path.write_bytes(b"PK\x03\x04verified-disaster-report")
     source_path = tmp_path / "source.tif"
     source_path.write_bytes(b"II*\x00source-raster")
     step_path = tmp_path / "step.tif"
     step_path.write_bytes(b"II*\x00processed-raster")
     step_checksum = hashlib.sha256(step_path.read_bytes()).hexdigest()
+    field_photo_path = tmp_path / "field-photo.png"
+    field_photo_path.write_bytes(b"\x89PNG\r\n\x1a\nverified-field-photo")
+    field_workbook_path = tmp_path / "field-import.xlsx"
+    field_workbook_path.write_bytes(b"verified-field-import-workbook")
     archive_state = DeliveryArchiveState(
         thematic_map_count=1,
         thematic_map_latest_at=generated_at,
@@ -519,6 +597,8 @@ def test_delivery_generation_archives_verified_physical_evidence(
         dataset_asset_latest_at=generated_at,
         imagery_step_count=1,
         imagery_step_latest_at=generated_at,
+        disaster_report_count=1,
+        disaster_report_latest_at=generated_at,
     )
     task = SimpleNamespace(
         id=1,
@@ -570,6 +650,14 @@ def test_delivery_generation_archives_verified_physical_evidence(
         report_code="SUP-REPORT-001",
         file_uri="storage://supervision/SUP-REPORT-001.json",
     )
+    disaster_report = SimpleNamespace(
+        report_code="DSRPT-TEST-001",
+        report_title="黑龙江省农业灾害遥感监测专题报告",
+        source_patch_count=3,
+        file_uri=(
+            "storage://disaster-reports/RS-2026-045/DSRPT-TEST-001.xlsx"
+        ),
+    )
     dataset_asset = SimpleNamespace(
         asset_code="DATASET-001",
         asset_name="公开 Sentinel-2 来源目录",
@@ -619,13 +707,44 @@ def test_delivery_generation_archives_verified_physical_evidence(
         affected_area_ha=0,
         feature_collection={"type": "FeatureCollection", "features": []},
     )
+    field_record = SimpleNamespace(
+        verification_code="FV-REAL-001",
+        investigator="张强",
+        observed_land_class="耕地",
+        observed_crop_type="大豆",
+        matched_plot_code="PLOT-001",
+        offset_distance_m=0,
+        match_status="consistent",
+        resolution_status="not_required",
+        resolution_decision=None,
+        captured_at=generated_at,
+    )
+    field_artifact = SimpleNamespace(
+        artifact_code="FIELD-EV-PHOTO-001",
+        artifact_type="photo",
+        original_filename="现场照片.png",
+        media_type="image/png",
+        file_uri=(
+            "storage://field-evidence/FV-REAL-001/FIELD-EV-PHOTO-001.png"
+        ),
+        file_size_bytes=field_photo_path.stat().st_size,
+        checksum_sha256=hashlib.sha256(field_photo_path.read_bytes()).hexdigest(),
+        description="原始终端现场照片",
+        uploaded_by="张强",
+        uploaded_by_code="field-zhang-qiang",
+        uploaded_by_role="field_inspector",
+        created_at=generated_at,
+    )
     dao = AsyncMock()
     dao.get_next_version.return_value = 1
     dao.get_plot_rows.return_value = [plot_row]
     dao.get_quality_issues.return_value = []
-    dao.get_field_rows.return_value = []
+    dao.get_field_rows.return_value = [
+        (field_record, '{"type":"Point","coordinates":[126.6,45.8]}')
+    ]
     dao.get_thematic_map_products.return_value = [thematic_product]
     dao.get_supervision_reports.return_value = [supervision_report]
+    dao.get_disaster_reports.return_value = [disaster_report]
     dao.get_dataset_assets.return_value = [dataset_asset]
     dao.get_imagery_steps.return_value = [imagery_step]
     dao.get_archive_state.return_value = archive_state
@@ -666,6 +785,37 @@ def test_delivery_generation_archives_verified_physical_evidence(
     thematic_service.verify_product_file.return_value = thematic_path
     supervision_service = MagicMock()
     supervision_service.verify_report_file.return_value = supervision_path
+    disaster_report_service = MagicMock()
+    disaster_report_service.verify_report_file.return_value = disaster_report_path
+    field_artifact_service = build_field_artifact_service()
+    field_artifact_service.load_verified_task_artifacts.return_value = [
+        SimpleNamespace(
+            artifact=field_artifact,
+            verification_code="FV-REAL-001",
+            path=field_photo_path,
+        )
+    ]
+    field_artifact_service.load_verified_import_workbooks.return_value = [
+        SimpleNamespace(
+            path=field_workbook_path,
+            file_uri="storage://field-evidence/imports/field-source.xlsx",
+            file_size_bytes=field_workbook_path.stat().st_size,
+            checksum_sha256=hashlib.sha256(
+                field_workbook_path.read_bytes()
+            ).hexdigest(),
+            source_name="省级外业采集 App",
+            source_version="2026-07-23",
+            import_batch_code="FIELD-BATCH-001",
+        )
+    ]
+    field_artifact_service.list_task_events.return_value = [
+        {
+            "verification_code": "FV-REAL-001",
+            "artifact_code": "FIELD-EV-PHOTO-001",
+            "event_type": "uploaded",
+            "actor_code": "field-zhang-qiang",
+        }
+    ]
     service = DeliveryService(
         dao=dao,
         workbench_dao=workbench_dao,
@@ -675,6 +825,8 @@ def test_delivery_generation_archives_verified_physical_evidence(
         imagery_service=imagery_service,
         thematic_map_service=thematic_service,
         supervision_service=supervision_service,
+        disaster_report_service=disaster_report_service,
+        field_artifact_service=field_artifact_service,
     )
     service.storage_dir = tmp_path / "deliveries"
     db = AsyncMock()
@@ -693,9 +845,16 @@ def test_delivery_generation_archives_verified_physical_evidence(
         manifest_payload = json.loads(archive.read("manifest.json"))
         assert "thematic_maps/TM-TEST-001.png" in names
         assert "supervision/SUP-REPORT-001.json" in names
+        assert "disasters/reports/DSRPT-TEST-001.xlsx" in names
         assert "archive/imagery_lineage.json" in names
         assert "archive/dataset_catalog.json" in names
         assert "archive/archive_index.json" in names
+        assert "field/evidence_manifest.json" in names
+        assert "field/evidence_events.json" in names
+        assert (
+            "field/evidence/FV-REAL-001/FIELD-EV-PHOTO-001.png" in names
+        )
+        assert any(name.startswith("field/import_sources/") for name in names)
         for item in manifest_payload["manifest"]:
             if item["path"] == "manifest.json":
                 continue
@@ -704,7 +863,11 @@ def test_delivery_generation_archives_verified_physical_evidence(
             assert item["checksum_sha256"] == hashlib.sha256(content).hexdigest()
     assert response.quality_summary["thematic_map_count"] == 1
     assert response.quality_summary["supervision_report_count"] == 1
+    assert response.quality_summary["disaster_report_count"] == 1
     assert response.quality_summary["imagery_step_count"] == 1
+    assert response.quality_summary["field_verified_artifact_count"] == 1
+    assert response.quality_summary["field_import_workbook_count"] == 1
+    assert response.quality_summary["field_evidence_status"] == "included"
     assert response.is_current is True
     dao.supersede_completed_packages.assert_awaited_once_with(db, task.id)
 

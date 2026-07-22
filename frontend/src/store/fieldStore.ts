@@ -7,16 +7,24 @@ import {
   importFieldVerificationCsv,
   importFieldVerificationXlsx,
   rematchFieldVerifications,
+  reopenFieldVerification,
   resolveFieldVerification,
 } from '@/api/index'
+import {
+  downloadFieldVerificationArtifact,
+  uploadFieldVerificationArtifact,
+} from '@/api/fieldEvidence'
 import { useLayerStore } from '@/store/layerStore'
 import { useUserStore } from '@/store/userStore'
 import { useWorkbenchStore } from '@/store/workbenchStore'
 import type {
   FieldResolutionPayload,
+  FieldReopenPayload,
   FieldVerificationBatchImportPayload,
   FieldVerificationBatchImportResult,
   FieldVerificationFileImportMetadata,
+  FieldVerificationArtifact,
+  FieldVerificationArtifactType,
   FieldVerificationItem,
   FieldVerificationList,
 } from '@/types/workbench'
@@ -29,6 +37,10 @@ export const useFieldStore = defineStore('field', () => {
   const selectedCodeRef = ref<string | null>(null)
   const loadingRef = ref<boolean>(false)
   const importingRef = ref<boolean>(false)
+  const uploadingArtifactRef = ref<boolean>(false)
+  const downloadingArtifactCodeRef = ref<string | null>(null)
+  const resolvingRef = ref<boolean>(false)
+  const reopeningRef = ref<boolean>(false)
   const selectedRecordComputed = computed<FieldVerificationItem | null>(() => (
     listRef.value?.items.find(
       (item) => item.verification_code === selectedCodeRef.value,
@@ -42,6 +54,9 @@ export const useFieldStore = defineStore('field', () => {
   ))
   const canUploadComputed = computed<boolean>(() => (
     userStore.hasCapability('upload_field_data')
+  ))
+  const canViewEvidenceComputed = computed<boolean>(() => (
+    userStore.hasCapability('view_field_evidence')
   ))
 
   const syncLayer = (data: FieldVerificationList): void => {
@@ -167,31 +182,126 @@ export const useFieldStore = defineStore('field', () => {
   })
 
   /**
+   * 为当前外业记录上传一份受控实体证据。
+   * Args:
+   *   file: 原始照片、语音或调查表。
+   *   artifactType: 证据业务类型。
+   *   comment: 证据来源和用途说明。
+   * Returns:
+   *   Promise<FieldVerificationArtifact>: 已通过服务端校验的证据摘要。
+   */
+  const uploadArtifact = async (
+    file: File,
+    artifactType: FieldVerificationArtifactType,
+    comment: string,
+  ): Promise<FieldVerificationArtifact> => {
+    const user = userStore.currentUserComputed
+    const record = selectedRecordComputed.value
+    if (!record) throw new Error('请先选择外业核查记录')
+    if (!user || !canUploadComputed.value) {
+      throw new Error('当前项目身份无权上传外业实体证据')
+    }
+    uploadingArtifactRef.value = true
+    try {
+      const artifact = await uploadFieldVerificationArtifact(
+        record.verification_code,
+        {
+          file,
+          artifact_type: artifactType,
+          uploader_code: user.user_code,
+          comment,
+        },
+      )
+      await Promise.all([load(), workbenchStore.refreshOverview()])
+      return artifact
+    } finally {
+      uploadingArtifactRef.value = false
+    }
+  }
+
+  /**
+   * 下载当前外业记录的一份实体证据。
+   * Args:
+   *   artifact: 待下载证据摘要。
+   * Returns:
+   *   Promise<{blob: Blob, filename: string}>: 原始实体及文件名。
+   */
+  const downloadArtifact = async (
+    artifact: FieldVerificationArtifact,
+  ): Promise<{ blob: Blob; filename: string }> => {
+    const user = userStore.currentUserComputed
+    const record = selectedRecordComputed.value
+    if (!record) throw new Error('请先选择外业核查记录')
+    if (!user || !canViewEvidenceComputed.value) {
+      throw new Error('当前项目身份无权查看外业实体证据')
+    }
+    downloadingArtifactCodeRef.value = artifact.artifact_code
+    try {
+      return {
+        blob: await downloadFieldVerificationArtifact(
+          record.verification_code,
+          artifact.artifact_code,
+          user.user_code,
+        ),
+        filename: artifact.original_filename,
+      }
+    } finally {
+      downloadingArtifactCodeRef.value = null
+    }
+  }
+
+  /**
    * 处置当前外业疑点。
    * Args:
-   *   decision: 处置决策。
+   *   payload: 决策、人工依据和可选折中目标属性。
    * Returns:
    *   Promise<void>: 疑点处置和审计写入完成后结束。
    */
   const resolveSelected = async (
-    decision: FieldResolutionPayload['decision'],
+    payload: Omit<FieldResolutionPayload, 'reviewer_code'>,
   ): Promise<void> => {
     if (!selectedRecordComputed.value) return
     const user = userStore.currentUserComputed
     if (!user || !canResolveComputed.value) {
       throw new Error('当前项目身份无权处置外业疑点')
     }
-    await resolveFieldVerification(
-      selectedRecordComputed.value.verification_code,
-      {
-        decision,
-        reviewer_code: user.user_code,
-        comment: decision === 'use_field'
-          ? '采用外业调查结论修正内业成果'
-          : '复核影像后保留内业成果',
-      },
-    )
-    await Promise.all([load(), workbenchStore.refreshOverview()])
+    resolvingRef.value = true
+    try {
+      await resolveFieldVerification(
+        selectedRecordComputed.value.verification_code,
+        { ...payload, reviewer_code: user.user_code },
+      )
+      await Promise.all([load(), workbenchStore.refreshOverview()])
+    } finally {
+      resolvingRef.value = false
+    }
+  }
+
+  /**
+   * 重新打开当前已处置外业疑点。
+   * Args:
+   *   comment: 新证据或重开原因。
+   * Returns:
+   *   Promise<void>: 问题恢复和任务门禁回退完成后结束。
+   */
+  const reopenSelected = async (comment: string): Promise<void> => {
+    const record = selectedRecordComputed.value
+    const user = userStore.currentUserComputed
+    if (!record) return
+    if (!user || !canResolveComputed.value) {
+      throw new Error('当前项目身份无权重新打开外业疑点')
+    }
+    const payload: FieldReopenPayload = {
+      operator_code: user.user_code,
+      comment,
+    }
+    reopeningRef.value = true
+    try {
+      await reopenFieldVerification(record.verification_code, payload)
+      await Promise.all([load(), workbenchStore.refreshOverview()])
+    } finally {
+      reopeningRef.value = false
+    }
   }
 
   return {
@@ -199,15 +309,23 @@ export const useFieldStore = defineStore('field', () => {
     selectedCodeRef,
     loadingRef,
     importingRef,
+    uploadingArtifactRef,
+    downloadingArtifactCodeRef,
+    resolvingRef,
+    reopeningRef,
     selectedRecordComputed,
     canRematchComputed,
     canResolveComputed,
     canUploadComputed,
+    canViewEvidenceComputed,
     load,
     rematch,
     importCsv,
     importXlsx,
     downloadXlsxTemplate,
+    uploadArtifact,
+    downloadArtifact,
     resolveSelected,
+    reopenSelected,
   }
 })

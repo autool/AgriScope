@@ -178,6 +178,27 @@ class WorkbenchDAO:
         )
         return result.scalar_one_or_none()
 
+    async def get_task_by_id_for_update(
+        self,
+        db: AsyncSession,
+        task_id: int,
+    ) -> MonitoringTask | None:
+        """按主键锁定并查询待执行状态流转的任务。
+
+        Args:
+            db: 异步数据库会话。
+            task_id: 任务主键。
+
+        Returns:
+            MonitoringTask | None: 已加行锁的任务；不存在时返回 None。
+        """
+        result = await db.execute(
+            select(MonitoringTask)
+            .where(MonitoringTask.id == task_id)
+            .with_for_update()
+        )
+        return result.scalar_one_or_none()
+
     async def get_task_by_id(
         self,
         db: AsyncSession,

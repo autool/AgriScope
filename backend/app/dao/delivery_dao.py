@@ -7,6 +7,7 @@ from datetime import datetime
 from sqlalchemy import func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.models.disaster_report import DisasterReport
 from app.models.plot import FarmlandPlot
 from app.models.supervision import SupervisionPlan, SupervisionReport
 from app.models.thematic_map import ThematicMapProduct
@@ -32,6 +33,8 @@ class DeliveryArchiveState:
     dataset_asset_latest_at: datetime | None
     imagery_step_count: int
     imagery_step_latest_at: datetime | None
+    disaster_report_count: int = 0
+    disaster_report_latest_at: datetime | None = None
 
 
 class DeliveryDAO:
@@ -190,6 +193,30 @@ class DeliveryDAO:
         )
         return result.scalars().all()
 
+    async def get_disaster_reports(
+        self,
+        db: AsyncSession,
+        task_id: int,
+    ) -> Sequence[DisasterReport]:
+        """查询任务当前有效灾害专题报告。
+
+        Args:
+            db: 异步数据库会话。
+            task_id: 作业任务主键。
+
+        Returns:
+            Sequence[DisasterReport]: 当前完成报告，正常仅一份。
+        """
+        result = await db.execute(
+            select(DisasterReport)
+            .where(
+                DisasterReport.task_id == task_id,
+                DisasterReport.status == "completed",
+            )
+            .order_by(DisasterReport.generated_at.desc())
+        )
+        return result.scalars().all()
+
     async def get_dataset_assets(
         self,
         db: AsyncSession,
@@ -282,6 +309,17 @@ class DeliveryDAO:
                 .where(SupervisionPlan.task_id == task_id)
             )
         ).one()
+        disaster_report_row = (
+            await db.execute(
+                select(
+                    func.count(DisasterReport.id),
+                    func.max(DisasterReport.generated_at),
+                ).where(
+                    DisasterReport.task_id == task_id,
+                    DisasterReport.status == "completed",
+                )
+            )
+        ).one()
         dataset_row = (
             await db.execute(
                 select(
@@ -316,6 +354,8 @@ class DeliveryDAO:
             thematic_map_latest_at=thematic_row[1],
             supervision_report_count=int(supervision_row[0] or 0),
             supervision_report_latest_at=supervision_row[1],
+            disaster_report_count=int(disaster_report_row[0] or 0),
+            disaster_report_latest_at=disaster_report_row[1],
             dataset_asset_count=int(dataset_row[0] or 0),
             dataset_asset_latest_at=dataset_row[1],
             imagery_step_count=int(imagery_row[0] or 0),

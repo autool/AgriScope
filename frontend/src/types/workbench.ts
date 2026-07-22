@@ -751,6 +751,8 @@ export interface FieldVerificationItem extends Record<string, unknown> {
   source_version: string | null
   source_record_id: string | null
   source_checksum_sha256: string | null
+  source_file_uri: string | null
+  source_file_size_bytes: number | null
   import_batch_code: string | null
   imported_by: string | null
   imported_by_code: string | null
@@ -764,6 +766,32 @@ export interface FieldVerificationItem extends Record<string, unknown> {
   resolved_by: string | null
   resolved_by_code: string | null
   resolved_by_role: UserRoleCode | null
+  verified_artifact_count: number
+  artifacts: FieldVerificationArtifact[]
+}
+
+export type FieldVerificationArtifactType = 'photo' | 'voice' | 'form'
+
+export interface FieldVerificationArtifact {
+  artifact_code: string
+  artifact_type: FieldVerificationArtifactType
+  original_filename: string
+  media_type: string
+  file_size_bytes: number
+  checksum_sha256: string
+  description: string
+  uploaded_by: string
+  uploaded_by_code: string
+  uploaded_by_role: UserRoleCode
+  created_at: string
+  download_url: string
+}
+
+export interface FieldVerificationArtifactUploadPayload {
+  artifact_type: FieldVerificationArtifactType
+  uploader_code: string
+  comment: string
+  file: File
 }
 
 export interface FieldVerificationImportItem {
@@ -816,9 +844,22 @@ export interface FieldRematchPayload {
   operator_code: string
 }
 
+export type FieldResolutionDecision =
+  | 'keep_internal'
+  | 'use_field'
+  | 'compromise'
+  | 'reject_field'
+
 export interface FieldResolutionPayload {
-  decision: 'keep_internal' | 'use_field' | 'compromise' | 'reject_field'
+  decision: FieldResolutionDecision
   reviewer_code: string
+  comment: string
+  target_land_class?: string | null
+  target_crop_type?: string | null
+}
+
+export interface FieldReopenPayload {
+  operator_code: string
   comment: string
 }
 
@@ -949,6 +990,38 @@ export interface DisasterSummary {
   by_type: Array<{ label: string; patch_count: number; area_ha: number; percentage: number }>
   items: DisasterPatch[]
   feature_collection: GeoJsonFeatureCollection
+}
+
+export interface DisasterReportGeneratePayload {
+  operator_code: string
+  report_title: string
+  comment: string
+}
+
+export interface DisasterReport {
+  report_code: string
+  report_title: string
+  status: 'completed' | 'superseded' | 'invalid'
+  file_size_bytes: number
+  checksum_sha256: string
+  source_patch_count: number
+  source_confirmed_count: number
+  source_excluded_count: number
+  source_latest_updated_at: string
+  affected_area_ha: number
+  report_manifest: Record<string, unknown>
+  generation_comment: string
+  generated_by: string
+  generated_by_code: string
+  generated_by_role: UserRoleCode
+  generated_at: string
+  download_url: string | null
+  is_current: boolean
+}
+
+export interface DisasterReportList {
+  task_code: string
+  items: DisasterReport[]
 }
 
 export interface PlotVersionList {

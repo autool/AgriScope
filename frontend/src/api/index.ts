@@ -15,8 +15,12 @@ import type {
   DisasterPatchUpdatePayload,
   DisasterGeoJsonImportPayload,
   DisasterGeoJsonImportResult,
+  DisasterReport,
+  DisasterReportGeneratePayload,
+  DisasterReportList,
   DisasterSummary,
   FieldRematchPayload,
+  FieldReopenPayload,
   FieldResolutionPayload,
   FieldVerificationBatchImportPayload,
   FieldVerificationBatchImportResult,
@@ -449,6 +453,20 @@ export const resolveFieldVerification = (
 )
 
 /**
+ * 重新打开已处置外业疑点并回退任务门禁。
+ * @param {string} verificationCode 外业记录编号。
+ * @param {object} payload 操作人稳定编码和重开依据。
+ * @returns {Promise<object>} 恢复待处置状态的外业记录。
+ */
+export const reopenFieldVerification = (
+  verificationCode: string,
+  payload: FieldReopenPayload,
+) => request.patch<FieldVerificationItem>(
+  `/v1/field-verifications/${verificationCode}/reopen`,
+  payload,
+)
+
+/**
  * 执行任务三级审核动作。
  * @param {string} taskCode 作业任务编号。
  * @param {object} payload 审核动作、审核人、意见和问题类型。
@@ -598,6 +616,45 @@ export const updateDisasterPatch = (
   taskCode: string = 'RS-2026-045',
 ) => request.patch<DisasterPatch>(`/v1/disasters/${patchCode}`, payload, {
   params: { task_code: taskCode },
+})
+
+/**
+ * 查询任务灾害监测专题报告及实体状态。
+ * @param {string} taskCode 作业任务编号。
+ * @returns {Promise<object>} 当前和历史专题报告列表。
+ */
+export const getDisasterReports = (taskCode: string = 'RS-2026-045') =>
+  request.get<DisasterReportList>('/v1/disasters/reports', {
+    params: { task_code: taskCode },
+  })
+
+/**
+ * 通过全部斑块复核门禁后生成 XLSX 灾害专题报告。
+ * @param {object} payload 报告标题、操作人和生成依据。
+ * @param {string} taskCode 作业任务编号。
+ * @returns {Promise<object>} 新生成报告实体摘要。
+ */
+export const generateDisasterReport = (
+  payload: DisasterReportGeneratePayload,
+  taskCode: string = 'RS-2026-045',
+) => request.post<DisasterReport>('/v1/disasters/reports', payload, {
+  params: { task_code: taskCode },
+  timeout: 120_000,
+})
+
+/**
+ * 下载并触发灾害专题报告实体复核与稳定用户审计。
+ * @param {string} reportCode 报告编号。
+ * @param {string} requesterCode 下载人稳定用户编码。
+ * @returns {Promise<Blob>} 已验证 XLSX 实体。
+ */
+export const downloadDisasterReport = (
+  reportCode: string,
+  requesterCode: string,
+) => request.get<Blob>(`/v1/disasters/reports/${reportCode}/download`, {
+  params: { requester_code: requesterCode },
+  responseType: 'blob',
+  timeout: 120_000,
 })
 
 /**
