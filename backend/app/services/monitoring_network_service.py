@@ -1,30 +1,45 @@
 """田间监测网络、设备故障和病虫害预警业务服务。"""
 
+import asyncio
 import hashlib
+import io
 import json
-from datetime import UTC, datetime
+import mimetypes
+import os
+from collections.abc import Sequence
+from dataclasses import dataclass
+from datetime import UTC, date, datetime
 from decimal import Decimal
+from pathlib import Path
+from typing import BinaryIO
 
+from openpyxl import Workbook
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.config import settings
 from app.core.exceptions import NotFoundException, ValidationException
 from app.dao.monitoring_network_dao import (
     AlertRecord,
     AssessmentRecord,
+    ConsultationRecord,
     DeviceRecord,
     FaultRecord,
     MonitoringNetworkDAO,
+    ReportAssessmentRecord,
     TelemetryRecord,
 )
 from app.models.monitoring_network import (
     DeviceFault,
     DeviceTelemetry,
+    ExpertConsultation,
     MonitoringDevice,
     MonitoringEvent,
     MonitoringStation,
     PestAlert,
     PestAssessment,
     PestModelVersion,
+    PestReport,
+    PestReportItem,
 )
 from app.models.workbench import MonitoringProject, ProjectUser
 from app.schemas.monitoring_network import (
@@ -36,6 +51,9 @@ from app.schemas.monitoring_network import (
     AssessmentReviewRequest,
     DeviceCreateRequest,
     DeviceResponse,
+    ExpertConsultationAnswerRequest,
+    ExpertConsultationCreateRequest,
+    ExpertConsultationResponse,
     FaultCreateRequest,
     FaultResolveRequest,
     FaultResponse,
@@ -43,12 +61,40 @@ from app.schemas.monitoring_network import (
     MonitoringOverviewResponse,
     PestModelCreateRequest,
     PestModelResponse,
+    PestReportCreateRequest,
+    PestReportItemResponse,
+    PestReportResponse,
+    PestReportReviewRequest,
+    PestReportReviseRequest,
+    PestReportSubmitRequest,
     StationCreateRequest,
     StationResponse,
     TelemetryCreateRequest,
     TelemetryResponse,
 )
 from app.services.project_user_service import ProjectUserService
+
+
+@dataclass(frozen=True)
+class StoredEvidence:
+    """已写入受控目录的专家会商证据。"""
+
+    path: Path
+    uri: str
+    filename: str
+    file_size_bytes: int
+    checksum_sha256: str
+    created_new: bool
+
+
+@dataclass(frozen=True)
+class ReportDownload:
+    """校验通过的病虫害报告下载信息。"""
+
+    path: Path
+    filename: str
+    media_type: str
+    checksum_sha256: str
 
 
 class MonitoringNetworkService:
@@ -58,18 +104,24 @@ class MonitoringNetworkService:
         self,
         dao: MonitoringNetworkDAO | None = None,
         user_service: ProjectUserService | None = None,
+        storage_root: Path | None = None,
     ) -> None:
         """初始化田间监测业务服务。
 
         Args:
             dao: 监测网络 DAO。
             user_service: 项目身份服务。
+            storage_root: 病虫害报告和会商证据受控目录。
 
         Returns:
             None: 无返回值。
         """
         self.dao = dao or MonitoringNetworkDAO()
         self.user_service = user_service or ProjectUserService()
+        self.storage_root = (
+            storage_root
+            or Path(__file__).resolve().parents[2] / "storage" / "monitoring-reports"
+        ).resolve()
 
     async def _require_project(
         self,
@@ -355,6 +407,311 @@ class MonitoringNetworkService:
             created_at=alert.created_at,
         )
 
+    @staticmethod
+    def _consultation_response(
+        record: ConsultationRecord,
+    ) -> ExpertConsultationResponse:
+        """转换专家会商响应。
+
+        Args:
+            record: 带报告编号的会商记录。
+
+        Returns:
+            ExpertConsultationResponse: 会商响应。
+        """
+        item = record.consultation
+        return ExpertConsultationResponse(
+            report_code=record.report_code,
+            consultation_code=item.consultation_code,
+            question=item.question,
+            status=item.status,
+            requested_by=item.requested_by,
+            requested_by_code=item.requested_by_code,
+            requested_by_role=item.requested_by_role,
+            requested_at=item.requested_at,
+            expert_organization=item.expert_organization,
+            expert_title=item.expert_title,
+            response=item.response,
+            evidence_uri=item.evidence_uri,
+            evidence_filename=item.evidence_filename,
+            evidence_size_bytes=item.evidence_size_bytes,
+            evidence_sha256=item.evidence_sha256,
+            answered_by=item.answered_by,
+            answered_by_code=item.answered_by_code,
+            answered_by_role=item.answered_by_role,
+            answered_at=item.answered_at,
+        )
+
+    async def _report_response(
+        self,
+        db: AsyncSession,
+        report: PestReport,
+    ) -> PestReportResponse:
+        """查询报告台账和会商后转换完整响应。
+
+        Args:
+            db: 异步数据库会话。
+            report: 报告模型。
+
+        Returns:
+            PestReportResponse: 完整报告响应。
+        """
+        items = list(await self.dao.list_report_items(db, report.id))
+        consultations = await self.dao.list_consultation_records(
+            db,
+            report.project_id,
+            report.id,
+        )
+        return PestReportResponse(
+            report_code=report.report_code,
+            report_title=report.report_title,
+            scope_level=report.scope_level,
+            region_code=report.region_code,
+            region_name=report.region_name,
+            period_start=report.period_start,
+            period_end=report.period_end,
+            summary=report.summary,
+            conclusion=report.conclusion,
+            status=report.status,
+            revision_number=report.revision_number,
+            assessment_count=report.assessment_count,
+            alert_count=report.alert_count,
+            snapshot_at=report.snapshot_at,
+            file_uri=report.file_uri,
+            original_filename=report.original_filename,
+            file_size_bytes=report.file_size_bytes,
+            checksum_sha256=report.checksum_sha256,
+            created_by=report.created_by,
+            created_by_code=report.created_by_code,
+            created_by_role=report.created_by_role,
+            last_review_comment=report.last_review_comment,
+            approved_by=report.approved_by,
+            approved_by_code=report.approved_by_code,
+            approved_by_role=report.approved_by_role,
+            approved_at=report.approved_at,
+            created_at=report.created_at,
+            updated_at=report.updated_at,
+            items=[
+                PestReportItemResponse(
+                    assessment_code=item.assessment_code,
+                    district_code=item.district_code,
+                    district_name=item.district_name,
+                    snapshot=item.snapshot or {},
+                )
+                for item in items
+            ],
+            consultation_count=len(consultations),
+            open_consultation_count=sum(
+                item.consultation.status == "open" for item in consultations
+            ),
+            download_url=(
+                f"/api/v1/monitoring-network/reports/{report.report_code}/download"
+                if report.status == "approved" and report.file_uri
+                else None
+            ),
+        )
+
+    async def _prepare_report_records(
+        self,
+        db: AsyncSession,
+        project_id: int,
+        scope_level: str,
+        region_code: str,
+        period_start: date,
+        period_end: date,
+        assessment_codes: list[str],
+    ) -> tuple[str, list[ReportAssessmentRecord], int, datetime]:
+        """校验报告行政范围、周期和人工批准识别结果。
+
+        Args:
+            db: 异步数据库会话。
+            project_id: 项目主键。
+            scope_level: 报告行政层级。
+            region_code: 行政区编码。
+            period_start: 报告开始日期。
+            period_end: 报告结束日期。
+            assessment_codes: 显式识别编号。
+
+        Returns:
+            tuple[str, list[ReportAssessmentRecord], int, datetime]: 区域名称、
+                已验证识别记录、告警数和快照时间。
+        """
+        boundary_level = {
+            "province": "province",
+            "prefecture": "city",
+            "county": "district",
+        }[scope_level]
+        boundary = await self.dao.get_region_boundary(
+            db,
+            project_id,
+            region_code,
+            boundary_level,
+        )
+        if boundary is None:
+            raise ValidationException("报告行政区编码与申报层级不匹配")
+        records = await self.dao.get_report_assessment_records(
+            db,
+            project_id,
+            assessment_codes,
+        )
+        record_map = {
+            item.assessment.assessment_code: item
+            for item in records
+        }
+        missing_codes = [code for code in assessment_codes if code not in record_map]
+        if missing_codes:
+            raise ValidationException(f"未找到识别结果 {missing_codes[0]}")
+        ordered = [record_map[code] for code in assessment_codes]
+        for record in ordered:
+            assessment = record.assessment
+            station = record.station
+            if assessment.status != "approved":
+                raise ValidationException(
+                    f"识别结果 {assessment.assessment_code} 尚未人工批准"
+                )
+            if station is None:
+                raise ValidationException(
+                    f"识别结果 {assessment.assessment_code} 未关联具有行政位置的设备"
+                )
+            observed_date = assessment.observed_at.date()
+            if not period_start <= observed_date <= period_end:
+                raise ValidationException(
+                    f"识别结果 {assessment.assessment_code} 不在报告周期内"
+                )
+            matched_code = {
+                "province": station.province_code,
+                "prefecture": station.city_code,
+                "county": station.district_code,
+            }[scope_level]
+            if matched_code != region_code:
+                raise ValidationException(
+                    f"识别结果 {assessment.assessment_code} 不属于报告行政范围"
+                )
+        return (
+            boundary.boundary_name,
+            ordered,
+            sum(item.alert is not None for item in ordered),
+            datetime.now(UTC),
+        )
+
+    @staticmethod
+    def _report_items(
+        report_id: int,
+        records: Sequence[ReportAssessmentRecord],
+    ) -> list[PestReportItem]:
+        """把已验证识别记录固化为报告台账快照。
+
+        Args:
+            report_id: 报告主键。
+            records: 已验证识别记录。
+
+        Returns:
+            list[PestReportItem]: 不可变台账条目。
+        """
+        return [
+            PestReportItem(
+                report_id=report_id,
+                assessment_id=record.assessment.id,
+                assessment_code=record.assessment.assessment_code,
+                district_code=record.station.district_code,
+                district_name=record.station.district_name,
+                snapshot={
+                    "observed_at": record.assessment.observed_at.isoformat(),
+                    "station_code": record.station.station_code,
+                    "station_name": record.station.station_name,
+                    "city_code": record.station.city_code,
+                    "city_name": record.station.city_name,
+                    "district_code": record.station.district_code,
+                    "district_name": record.station.district_name,
+                    "model_code": record.model_code,
+                    "model_version": record.model_version,
+                    "target_name": record.assessment.target_name,
+                    "prediction_label": record.assessment.prediction_label,
+                    "confidence": float(record.assessment.confidence),
+                    "prediction_basis": record.assessment.prediction_basis,
+                    "input_uri": record.assessment.input_uri,
+                    "input_sha256": record.assessment.input_sha256,
+                    "reviewed_by_code": record.assessment.reviewed_by_code,
+                    "alert_code": record.alert.alert_code if record.alert else None,
+                    "risk_level": record.alert.risk_level if record.alert else None,
+                    "alert_status": record.alert.status if record.alert else None,
+                },
+            )
+            for record in records
+            if record.station is not None
+        ]
+
+    @staticmethod
+    def _write_atomic(path: Path, content: bytes) -> None:
+        """通过临时文件原子写入报告实体。
+
+        Args:
+            path: 最终路径。
+            content: 文件字节。
+
+        Returns:
+            None: 无返回值。
+        """
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+        try:
+            temporary.write_bytes(content)
+            os.replace(temporary, path)
+        finally:
+            temporary.unlink(missing_ok=True)
+
+    def _store_evidence_sync(
+        self,
+        consultation_code: str,
+        original_filename: str,
+        file_object: BinaryIO,
+    ) -> StoredEvidence:
+        """流式保存专家会商实体并计算服务端校验值。
+
+        Args:
+            consultation_code: 会商编号。
+            original_filename: 原始文件名。
+            file_object: 上传文件流。
+
+        Returns:
+            StoredEvidence: 受控实体证据。
+        """
+        safe_name = Path(original_filename).name
+        suffix = Path(safe_name).suffix.lower()
+        if suffix not in {".pdf", ".docx", ".xlsx", ".jpg", ".jpeg", ".png", ".zip"}:
+            raise ValidationException("会商证据仅支持 PDF、Office、图片或 ZIP")
+        digest = hashlib.sha256()
+        content = io.BytesIO()
+        file_size = 0
+        while chunk := file_object.read(1024 * 1024):
+            file_size += len(chunk)
+            if file_size > settings.max_consultation_evidence_bytes:
+                raise ValidationException("会商证据超过允许大小")
+            digest.update(chunk)
+            content.write(chunk)
+        if file_size <= 0:
+            raise ValidationException("会商证据文件不能为空")
+        checksum = digest.hexdigest()
+        relative_path = (
+            Path("consultations") / consultation_code / f"{checksum}{suffix}"
+        )
+        final_path = (self.storage_root / relative_path).resolve()
+        if self.storage_root not in final_path.parents:
+            raise ValidationException("会商证据路径越界")
+        created_new = not final_path.exists()
+        if created_new:
+            self._write_atomic(final_path, content.getvalue())
+        elif final_path.stat().st_size != file_size:
+            raise ValidationException("既有会商证据大小与校验值冲突")
+        return StoredEvidence(
+            path=final_path,
+            uri=f"storage://monitoring-reports/{relative_path.as_posix()}",
+            filename=safe_name,
+            file_size_bytes=file_size,
+            checksum_sha256=checksum,
+            created_new=created_new,
+        )
+
     async def get_overview(
         self,
         db: AsyncSession,
@@ -385,6 +742,8 @@ class MonitoringNetworkService:
         models = list(await self.dao.list_model_versions(db, project.id))
         assessments = await self.dao.list_assessment_records(db, project.id)
         alerts = await self.dao.list_alert_records(db, project.id)
+        reports = list(await self.dao.list_reports(db, project.id))
+        consultations = await self.dao.list_consultation_records(db, project.id)
         events = list(await self.dao.list_events(db, project.id))
         telemetry_count = await self.dao.count_telemetry(db, project.id)
         return MonitoringOverviewResponse(
@@ -406,6 +765,13 @@ class MonitoringNetworkService:
             pending_alert_count=sum(
                 record.alert.status == "pending" for record in alerts
             ),
+            report_count=len(reports),
+            pending_report_count=sum(
+                report.status not in {"approved", "draft"} for report in reports
+            ),
+            open_consultation_count=sum(
+                record.consultation.status == "open" for record in consultations
+            ),
             stations=[self._station_response(item) for item in stations],
             devices=[self._device_response(item) for item in devices],
             telemetry=[self._telemetry_response(item) for item in telemetry],
@@ -413,6 +779,13 @@ class MonitoringNetworkService:
             models=[self._model_response(item) for item in models],
             assessments=[self._assessment_response(item) for item in assessments],
             alerts=[self._alert_response(item) for item in alerts],
+            reports=[
+                await self._report_response(db, report)
+                for report in reports
+            ],
+            consultations=[
+                self._consultation_response(item) for item in consultations
+            ],
             events=[
                 MonitoringEventResponse(
                     entity_type=item.entity_type,
@@ -1207,3 +1580,697 @@ class MonitoringNetworkService:
             item for item in records if item.alert.alert_code == alert.alert_code
         )
         return self._alert_response(record)
+
+    async def create_report(
+        self,
+        db: AsyncSession,
+        project_code: str,
+        request: PestReportCreateRequest,
+    ) -> PestReportResponse:
+        """从已人工批准识别结果创建病虫害报告草稿。
+
+        Args:
+            db: 异步数据库会话。
+            project_code: 项目编号。
+            request: 报告范围、周期、内容和识别编号。
+
+        Returns:
+            PestReportResponse: 已创建报告草稿。
+        """
+        project = await self._require_project(db, project_code)
+        user = await self.user_service.require_capability(
+            db,
+            project.id,
+            request.operator_code,
+            "manage_pest_reports",
+        )
+        if await self.dao.get_report_by_code(db, project.id, request.report_code):
+            raise ValidationException("报告编号已存在")
+        region_name, records, alert_count, snapshot_at = (
+            await self._prepare_report_records(
+                db,
+                project.id,
+                request.scope_level,
+                request.region_code,
+                request.period_start,
+                request.period_end,
+                request.assessment_codes,
+            )
+        )
+        report = await self.dao.add_report(
+            db,
+            PestReport(
+                project_id=project.id,
+                report_code=request.report_code,
+                report_title=request.report_title.strip(),
+                scope_level=request.scope_level,
+                region_code=request.region_code.strip(),
+                region_name=region_name,
+                period_start=request.period_start,
+                period_end=request.period_end,
+                summary=request.summary.strip(),
+                conclusion=request.conclusion.strip(),
+                status="draft",
+                revision_number=1,
+                assessment_count=len(records),
+                alert_count=alert_count,
+                snapshot_at=snapshot_at,
+                created_by=user.display_name,
+                created_by_code=user.user_code,
+                created_by_role=user.role_code,
+            ),
+        )
+        await self.dao.replace_report_items(
+            db,
+            report.id,
+            self._report_items(report.id, records),
+        )
+        await self.dao.add_event(
+            db,
+            self._event(
+                project.id,
+                "pest_report",
+                report.report_code,
+                "report_created",
+                {
+                    "scope_level": report.scope_level,
+                    "region_code": report.region_code,
+                    "assessment_count": report.assessment_count,
+                    "alert_count": report.alert_count,
+                    "revision_number": report.revision_number,
+                },
+                user,
+            ),
+        )
+        await db.commit()
+        return await self._report_response(db, report)
+
+    async def revise_report(
+        self,
+        db: AsyncSession,
+        project_code: str,
+        report_code: str,
+        request: PestReportReviseRequest,
+    ) -> PestReportResponse:
+        """修订草稿或退回后的报告并重建显式台账快照。
+
+        Args:
+            db: 异步数据库会话。
+            project_code: 项目编号。
+            report_code: 报告编号。
+            request: 修订内容、依据和操作人。
+
+        Returns:
+            PestReportResponse: 修订后报告。
+        """
+        project = await self._require_project(db, project_code)
+        user = await self.user_service.require_capability(
+            db,
+            project.id,
+            request.operator_code,
+            "manage_pest_reports",
+        )
+        report = await self.dao.get_report_by_code(
+            db,
+            project.id,
+            report_code,
+            for_update=True,
+        )
+        if report is None:
+            raise NotFoundException("未找到病虫害报告")
+        if report.status not in {"draft", "returned"}:
+            raise ValidationException("只有草稿或退回报告可以修订")
+        region_name, records, alert_count, snapshot_at = (
+            await self._prepare_report_records(
+                db,
+                project.id,
+                request.scope_level,
+                request.region_code,
+                request.period_start,
+                request.period_end,
+                request.assessment_codes,
+            )
+        )
+        previous_status = report.status
+        report.report_title = request.report_title.strip()
+        report.scope_level = request.scope_level
+        report.region_code = request.region_code.strip()
+        report.region_name = region_name
+        report.period_start = request.period_start
+        report.period_end = request.period_end
+        report.summary = request.summary.strip()
+        report.conclusion = request.conclusion.strip()
+        report.status = "draft"
+        report.revision_number += 1
+        report.assessment_count = len(records)
+        report.alert_count = alert_count
+        report.snapshot_at = snapshot_at
+        report.file_uri = None
+        report.original_filename = None
+        report.file_size_bytes = None
+        report.checksum_sha256 = None
+        report.approved_by = None
+        report.approved_by_code = None
+        report.approved_by_role = None
+        report.approved_at = None
+        report.last_review_comment = request.revision_comment.strip()
+        await self.dao.replace_report_items(
+            db,
+            report.id,
+            self._report_items(report.id, records),
+        )
+        await self.dao.add_event(
+            db,
+            self._event(
+                project.id,
+                "pest_report",
+                report.report_code,
+                "report_revised",
+                {
+                    "previous_status": previous_status,
+                    "revision_number": report.revision_number,
+                    "assessment_count": report.assessment_count,
+                    "comment": request.revision_comment.strip(),
+                },
+                user,
+            ),
+        )
+        await db.commit()
+        return await self._report_response(db, report)
+
+    async def create_consultation(
+        self,
+        db: AsyncSession,
+        project_code: str,
+        report_code: str,
+        request: ExpertConsultationCreateRequest,
+    ) -> ExpertConsultationResponse:
+        """为草稿或退回报告发起专家会商。
+
+        Args:
+            db: 异步数据库会话。
+            project_code: 项目编号。
+            report_code: 报告编号。
+            request: 会商编号、问题和操作人。
+
+        Returns:
+            ExpertConsultationResponse: 待答复会商。
+        """
+        project = await self._require_project(db, project_code)
+        user = await self.user_service.require_capability(
+            db,
+            project.id,
+            request.operator_code,
+            "manage_pest_reports",
+        )
+        report = await self.dao.get_report_by_code(
+            db,
+            project.id,
+            report_code,
+            for_update=True,
+        )
+        if report is None:
+            raise NotFoundException("未找到病虫害报告")
+        if report.status not in {"draft", "returned"}:
+            raise ValidationException("只有草稿或退回报告可以发起会商")
+        if await self.dao.get_consultation_by_code(
+            db,
+            project.id,
+            request.consultation_code,
+        ):
+            raise ValidationException("会商编号已存在")
+        consultation = await self.dao.add_consultation(
+            db,
+            ExpertConsultation(
+                project_id=project.id,
+                report_id=report.id,
+                consultation_code=request.consultation_code,
+                question=request.question.strip(),
+                status="open",
+                requested_by=user.display_name,
+                requested_by_code=user.user_code,
+                requested_by_role=user.role_code,
+            ),
+        )
+        await self.dao.add_event(
+            db,
+            self._event(
+                project.id,
+                "pest_report",
+                report.report_code,
+                "expert_consultation_requested",
+                {
+                    "consultation_code": consultation.consultation_code,
+                    "question": consultation.question,
+                },
+                user,
+            ),
+        )
+        await db.commit()
+        return self._consultation_response(
+            ConsultationRecord(
+                consultation=consultation,
+                report_code=report.report_code,
+            )
+        )
+
+    async def answer_consultation(
+        self,
+        db: AsyncSession,
+        project_code: str,
+        consultation_code: str,
+        request: ExpertConsultationAnswerRequest,
+        evidence_filename: str,
+        evidence_file: BinaryIO,
+    ) -> ExpertConsultationResponse:
+        """上传会商答复实体并登记稳定答复人身份。
+
+        Args:
+            db: 异步数据库会话。
+            project_code: 项目编号。
+            consultation_code: 会商编号。
+            request: 专家单位、职称、答复和操作人。
+            evidence_filename: 实体证据原始文件名。
+            evidence_file: 上传文件流。
+
+        Returns:
+            ExpertConsultationResponse: 已答复会商。
+        """
+        project = await self._require_project(db, project_code)
+        user = await self.user_service.require_capability(
+            db,
+            project.id,
+            request.operator_code,
+            "answer_pest_consultation",
+        )
+        consultation = await self.dao.get_consultation_by_code(
+            db,
+            project.id,
+            consultation_code,
+            for_update=True,
+        )
+        if consultation is None:
+            raise NotFoundException("未找到专家会商")
+        if consultation.status != "open":
+            raise ValidationException("专家会商已经答复")
+        report = await self.dao.get_report_by_id(
+            db,
+            project.id,
+            consultation.report_id,
+        )
+        if report is None or report.status not in {"draft", "returned"}:
+            raise ValidationException("报告已进入审核，不能补登记会商答复")
+        stored = await asyncio.to_thread(
+            self._store_evidence_sync,
+            consultation.consultation_code,
+            evidence_filename,
+            evidence_file,
+        )
+        committed = False
+        try:
+            consultation.status = "answered"
+            consultation.expert_organization = request.expert_organization.strip()
+            consultation.expert_title = request.expert_title.strip()
+            consultation.response = request.response.strip()
+            consultation.evidence_uri = stored.uri
+            consultation.evidence_filename = stored.filename
+            consultation.evidence_size_bytes = stored.file_size_bytes
+            consultation.evidence_sha256 = stored.checksum_sha256
+            consultation.answered_by = user.display_name
+            consultation.answered_by_code = user.user_code
+            consultation.answered_by_role = user.role_code
+            consultation.answered_at = datetime.now(UTC)
+            await self.dao.add_event(
+                db,
+                self._event(
+                    project.id,
+                    "pest_report",
+                    report.report_code,
+                    "expert_consultation_answered",
+                    {
+                        "consultation_code": consultation.consultation_code,
+                        "evidence_sha256": stored.checksum_sha256,
+                        "expert_organization": consultation.expert_organization,
+                        "expert_title": consultation.expert_title,
+                    },
+                    user,
+                ),
+            )
+            await db.commit()
+            committed = True
+        finally:
+            if not committed and stored.created_new:
+                stored.path.unlink(missing_ok=True)
+        return self._consultation_response(
+            ConsultationRecord(
+                consultation=consultation,
+                report_code=report.report_code,
+            )
+        )
+
+    async def submit_report(
+        self,
+        db: AsyncSession,
+        project_code: str,
+        report_code: str,
+        request: PestReportSubmitRequest,
+    ) -> PestReportResponse:
+        """提交报告并由县级审核阶段开始流转。
+
+        Args:
+            db: 异步数据库会话。
+            project_code: 项目编号。
+            report_code: 报告编号。
+            request: 提交说明和操作人。
+
+        Returns:
+            PestReportResponse: 已进入县级审核的报告。
+        """
+        project = await self._require_project(db, project_code)
+        user = await self.user_service.require_capability(
+            db,
+            project.id,
+            request.operator_code,
+            "manage_pest_reports",
+        )
+        report = await self.dao.get_report_by_code(
+            db,
+            project.id,
+            report_code,
+            for_update=True,
+        )
+        if report is None:
+            raise NotFoundException("未找到病虫害报告")
+        if report.status not in {"draft", "returned"}:
+            raise ValidationException("当前报告状态不能提交")
+        consultations = await self.dao.list_consultation_records(
+            db,
+            project.id,
+            report.id,
+        )
+        if any(item.consultation.status == "open" for item in consultations):
+            raise ValidationException("存在未答复专家会商，不能提交审核")
+        if report.assessment_count <= 0:
+            raise ValidationException("报告没有显式识别台账，不能提交")
+        previous_status = report.status
+        report.status = "county_review"
+        report.last_review_comment = request.comment.strip()
+        await self.dao.add_event(
+            db,
+            self._event(
+                project.id,
+                "pest_report",
+                report.report_code,
+                "report_submitted",
+                {
+                    "previous_status": previous_status,
+                    "next_status": report.status,
+                    "revision_number": report.revision_number,
+                    "comment": request.comment.strip(),
+                },
+                user,
+            ),
+        )
+        await db.commit()
+        return await self._report_response(db, report)
+
+    @staticmethod
+    def _build_report_workbook(
+        report: PestReport,
+        items: Sequence[PestReportItem],
+        consultations: Sequence[ConsultationRecord],
+        events: Sequence[MonitoringEvent],
+    ) -> bytes:
+        """生成包含摘要、识别台账、审核和会商证据的 XLSX。
+
+        Args:
+            report: 已通过省级审核的报告。
+            items: 显式识别台账。
+            consultations: 专家会商记录。
+            events: 报告审核事件。
+
+        Returns:
+            bytes: Excel 实体字节。
+        """
+        workbook = Workbook()
+        summary_sheet = workbook.active
+        summary_sheet.title = "报告摘要"
+        summary_rows = [
+            ("报告编号", report.report_code),
+            ("报告标题", report.report_title),
+            ("行政层级", report.scope_level),
+            ("行政区域", f"{report.region_name}（{report.region_code}）"),
+            ("监测周期", f"{report.period_start} 至 {report.period_end}"),
+            ("版本", report.revision_number),
+            ("识别结果数", report.assessment_count),
+            ("关联告警数", report.alert_count),
+            ("摘要", report.summary),
+            ("结论与建议", report.conclusion),
+            ("批准人", report.approved_by or ""),
+            ("批准人编码", report.approved_by_code or ""),
+            ("批准时间", report.approved_at.isoformat() if report.approved_at else ""),
+        ]
+        for row in summary_rows:
+            summary_sheet.append(row)
+        summary_sheet.column_dimensions["A"].width = 18
+        summary_sheet.column_dimensions["B"].width = 90
+
+        ledger = workbook.create_sheet("识别台账")
+        ledger.append([
+            "识别编号",
+            "地级区域",
+            "县区",
+            "观测时间",
+            "模型版本",
+            "对象",
+            "预测结论",
+            "置信度",
+            "风险等级",
+            "告警状态",
+            "输入 SHA-256",
+            "人工复核人编码",
+        ])
+        for item in items:
+            snapshot = item.snapshot or {}
+            ledger.append([
+                item.assessment_code,
+                snapshot.get("city_name", ""),
+                item.district_name,
+                snapshot.get("observed_at", ""),
+                f"{snapshot.get('model_code', '')}:{snapshot.get('model_version', '')}",
+                snapshot.get("target_name", ""),
+                snapshot.get("prediction_label", ""),
+                snapshot.get("confidence", ""),
+                snapshot.get("risk_level", ""),
+                snapshot.get("alert_status", ""),
+                snapshot.get("input_sha256", ""),
+                snapshot.get("reviewed_by_code", ""),
+            ])
+
+        audit = workbook.create_sheet("审核与会商")
+        audit.append([
+            "类型",
+            "编号/动作",
+            "人员",
+            "角色/单位",
+            "时间",
+            "依据/答复",
+            "证据 SHA-256",
+        ])
+        for event in reversed(events):
+            audit.append([
+                "审核事件",
+                event.event_type,
+                event.actor,
+                event.actor_role,
+                event.created_at.isoformat(),
+                json.dumps(event.detail or {}, ensure_ascii=False),
+                "",
+            ])
+        for record in reversed(consultations):
+            item = record.consultation
+            audit.append([
+                "专家会商",
+                item.consultation_code,
+                item.answered_by or item.requested_by,
+                item.expert_organization or item.requested_by_role,
+                (item.answered_at or item.requested_at).isoformat(),
+                item.response or item.question,
+                item.evidence_sha256 or "",
+            ])
+        content = io.BytesIO()
+        workbook.save(content)
+        return content.getvalue()
+
+    async def review_report(
+        self,
+        db: AsyncSession,
+        project_code: str,
+        report_code: str,
+        request: PestReportReviewRequest,
+    ) -> PestReportResponse:
+        """执行县、市、省分级审核，省级通过后生成实体报告。
+
+        Args:
+            db: 异步数据库会话。
+            project_code: 项目编号。
+            report_code: 报告编号。
+            request: 审核动作、依据和稳定用户。
+
+        Returns:
+            PestReportResponse: 审核后报告。
+        """
+        project = await self._require_project(db, project_code)
+        report = await self.dao.get_report_by_code(
+            db,
+            project.id,
+            report_code,
+            for_update=True,
+        )
+        if report is None:
+            raise NotFoundException("未找到病虫害报告")
+        stage = {
+            "county_review": ("review_county_pest_report", "prefecture_review"),
+            "prefecture_review": ("review_prefecture_pest_report", "province_review"),
+            "province_review": ("review_province_pest_report", "approved"),
+        }.get(report.status)
+        if stage is None:
+            raise ValidationException("当前报告状态不允许审核")
+        user = await self.user_service.require_capability(
+            db,
+            project.id,
+            request.operator_code,
+            stage[0],
+        )
+        previous_status = report.status
+        report.last_review_comment = request.comment.strip()
+        report.status = "returned" if request.action == "return" else stage[1]
+        if report.status == "approved":
+            report.approved_by = user.display_name
+            report.approved_by_code = user.user_code
+            report.approved_by_role = user.role_code
+            report.approved_at = datetime.now(UTC)
+        await self.dao.add_event(
+            db,
+            self._event(
+                project.id,
+                "pest_report",
+                report.report_code,
+                (
+                    "report_returned"
+                    if request.action == "return"
+                    else "report_approved_stage"
+                ),
+                {
+                    "previous_status": previous_status,
+                    "next_status": report.status,
+                    "comment": request.comment.strip(),
+                    "revision_number": report.revision_number,
+                },
+                user,
+            ),
+        )
+        generated_path: Path | None = None
+        if report.status == "approved":
+            items = list(await self.dao.list_report_items(db, report.id))
+            consultations = await self.dao.list_consultation_records(
+                db,
+                project.id,
+                report.id,
+            )
+            events = [
+                item
+                for item in await self.dao.list_events(db, project.id, limit=500)
+                if item.entity_type == "pest_report"
+                and item.entity_code == report.report_code
+            ]
+            content = self._build_report_workbook(
+                report,
+                items,
+                consultations,
+                events,
+            )
+            checksum = hashlib.sha256(content).hexdigest()
+            filename = f"{report.report_code}-v{report.revision_number}.xlsx"
+            relative_path = Path("reports") / report.report_code / filename
+            generated_path = (self.storage_root / relative_path).resolve()
+            if self.storage_root not in generated_path.parents:
+                raise ValidationException("报告实体路径越界")
+            await asyncio.to_thread(self._write_atomic, generated_path, content)
+            report.file_uri = (
+                f"storage://monitoring-reports/{relative_path.as_posix()}"
+            )
+            report.original_filename = filename
+            report.file_size_bytes = len(content)
+            report.checksum_sha256 = checksum
+        committed = False
+        try:
+            await db.commit()
+            committed = True
+        finally:
+            if not committed and generated_path is not None:
+                generated_path.unlink(missing_ok=True)
+        return await self._report_response(db, report)
+
+    def _verify_report_file(self, report: PestReport) -> Path:
+        """复核报告受控路径、大小和 SHA-256。
+
+        Args:
+            report: 已批准报告。
+
+        Returns:
+            Path: 校验通过的实体路径。
+        """
+        prefix = "storage://monitoring-reports/"
+        if not report.file_uri or not report.file_uri.startswith(prefix):
+            raise ValidationException("报告实体地址不受控")
+        path = (self.storage_root / report.file_uri.removeprefix(prefix)).resolve()
+        if self.storage_root not in path.parents or not path.is_file():
+            raise ValidationException("报告实体不存在或路径越界")
+        if path.stat().st_size != report.file_size_bytes:
+            raise ValidationException("报告实体大小校验失败")
+        digest = hashlib.sha256(path.read_bytes()).hexdigest()
+        if digest != report.checksum_sha256:
+            raise ValidationException("报告实体 SHA-256 校验失败")
+        return path
+
+    async def get_report_download(
+        self,
+        db: AsyncSession,
+        project_code: str,
+        report_code: str,
+        operator_code: str,
+    ) -> ReportDownload:
+        """鉴权并复核实体后返回病虫害报告下载信息。
+
+        Args:
+            db: 异步数据库会话。
+            project_code: 项目编号。
+            report_code: 报告编号。
+            operator_code: 当前项目用户编码。
+
+        Returns:
+            ReportDownload: 下载实体信息。
+        """
+        project = await self._require_project(db, project_code)
+        await self.user_service.require_capability(
+            db,
+            project.id,
+            operator_code,
+            "download_pest_report",
+        )
+        report = await self.dao.get_report_by_code(db, project.id, report_code)
+        if report is None:
+            raise NotFoundException("未找到病虫害报告")
+        if report.status != "approved" or not report.original_filename:
+            raise ValidationException("报告尚未通过省级审核")
+        path = await asyncio.to_thread(self._verify_report_file, report)
+        return ReportDownload(
+            path=path,
+            filename=report.original_filename,
+            media_type=(
+                mimetypes.guess_type(report.original_filename)[0]
+                or "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            ),
+            checksum_sha256=report.checksum_sha256 or "",
+        )

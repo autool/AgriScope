@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { message } from 'ant-design-vue'
 import type { UploadProps } from 'ant-design-vue'
-import { ref, shallowRef } from 'vue'
+import { ref, shallowRef, watch } from 'vue'
 
 import type {
   AircraftUploadMetadata,
@@ -11,10 +11,11 @@ import type {
   UavPolygon,
 } from '@/types/uav'
 
-defineProps<{
+const props = defineProps<{
   aircraft: UavAircraft[]
   missions: UavMission[]
   selectedMissionCode: string | null
+  draftBoundary: UavPolygon | null
   canManageAircraft: boolean
   canManageMissions: boolean
   loading: boolean
@@ -55,6 +56,10 @@ const resolutionRef = ref<number | null>(null)
 const forwardOverlapRef = ref<number | null>(null)
 const sideOverlapRef = ref<number | null>(null)
 const weatherNoteRef = ref<string>('')
+
+watch(() => props.draftBoundary, (boundary) => {
+  if (boundary) boundaryJsonRef.value = JSON.stringify(boundary)
+}, { deep: true, immediate: true })
 
 const beforeCertificateUpload: UploadProps['beforeUpload'] = (file) => {
   certificateFileRef.value = file
@@ -139,6 +144,7 @@ const submitMission = (): void => {
     <header>
       <div><small>AIRCRAFT & MISSIONS</small><h3>航空器与飞行任务</h3></div>
       <a-space>
+        <a-tag v-if="draftBoundary" color="purple">范围草稿</a-tag>
         <a-button size="small" :disabled="!canManageAircraft" @click="aircraftModalOpenRef = true">登记航空器</a-button>
         <a-button
           size="small"
@@ -200,7 +206,7 @@ const submitMission = (): void => {
       <div class="form-grid">
         <label><span>任务编号</span><a-input v-model:value="missionCodeRef" /></label><label><span>任务名称</span><a-input v-model:value="missionNameRef" /></label>
         <label><span>航空器</span><a-select v-model:value="missionAircraftRef" :options="aircraft.filter(item => item.status === 'active').map(item => ({ value: item.aircraft_code, label: `${item.aircraft_name} · ${item.aircraft_code}` }))" /></label><label><span>县区编码</span><a-input v-model:value="districtCodeRef" /></label>
-        <label class="wide"><span>WGS84 飞行范围 GeoJSON Polygon</span><a-textarea v-model:value="boundaryJsonRef" :rows="4" placeholder="必须完整位于申报县区真实边界内" /></label>
+        <label class="wide"><span>WGS84 飞行范围 GeoJSON Polygon</span><a-textarea v-model:value="boundaryJsonRef" :rows="4" placeholder="请先在地图绘制；服务端将验证完整位于申报县区真实边界内" /></label>
         <label><span>飞手姓名</span><a-input v-model:value="pilotNameRef" /></label><label><span>飞手资质编号</span><a-input v-model:value="pilotLicenseNumberRef" /></label>
         <label class="wide"><span>飞手执照/资质实体</span><a-upload :before-upload="beforePilotLicenseUpload" :max-count="1"><a-button>选择 PDF 或图片实体</a-button></a-upload></label>
         <label><span>计划开始</span><a-input v-model:value="plannedStartRef" placeholder="ISO 8601，必须含时区" /></label><label><span>计划结束</span><a-input v-model:value="plannedEndRef" placeholder="ISO 8601，必须含时区" /></label>

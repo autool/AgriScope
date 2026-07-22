@@ -2,6 +2,8 @@ import request from '@/api/request'
 import type {
   AlertCreatePayload,
   AssessmentCreatePayload,
+  ConsultationAnswerMetadata,
+  ConsultationCreatePayload,
   DeviceCreatePayload,
   FaultCreatePayload,
   FaultResolvePayload,
@@ -10,12 +12,16 @@ import type {
   MonitoringStation,
   PestAlert,
   PestAssessment,
+  PestReport,
+  PestReportCreatePayload,
+  PestReportRevisePayload,
   PestModelCreatePayload,
   PestModelVersion,
   StationCreatePayload,
   TelemetryCreatePayload,
   DeviceFault,
   DeviceTelemetry,
+  ExpertConsultation,
 } from '@/types/monitoringNetwork'
 
 const projectQuery = (projectCode: string) => ({ project_code: projectCode })
@@ -132,4 +138,93 @@ export const deliverPestAlert = (
     operator_code: operatorCode,
   },
   { params: projectQuery(projectCode) },
+)
+
+export const createPestReport = (
+  projectCode: string,
+  payload: PestReportCreatePayload,
+) => request.post<PestReport>(
+  '/v1/monitoring-network/reports',
+  payload,
+  { params: projectQuery(projectCode) },
+)
+
+export const revisePestReport = (
+  projectCode: string,
+  reportCode: string,
+  payload: PestReportRevisePayload,
+) => request.patch<PestReport>(
+  `/v1/monitoring-network/reports/${encodeURIComponent(reportCode)}`,
+  payload,
+  { params: projectQuery(projectCode) },
+)
+
+export const createExpertConsultation = (
+  projectCode: string,
+  reportCode: string,
+  payload: ConsultationCreatePayload,
+) => request.post<ExpertConsultation>(
+  `/v1/monitoring-network/reports/${encodeURIComponent(reportCode)}/consultations`,
+  payload,
+  { params: projectQuery(projectCode) },
+)
+
+export const answerExpertConsultation = (
+  projectCode: string,
+  consultationCode: string,
+  file: File,
+  metadata: ConsultationAnswerMetadata,
+  operatorCode: string,
+) => {
+  const formData = new FormData()
+  formData.append('evidence_file', file)
+  formData.append('expert_organization', metadata.expertOrganization)
+  formData.append('expert_title', metadata.expertTitle)
+  formData.append('response', metadata.response)
+  formData.append('operator_code', operatorCode)
+  return request.post<ExpertConsultation>(
+    `/v1/monitoring-network/consultations/${encodeURIComponent(consultationCode)}/answer`,
+    formData,
+    {
+      params: projectQuery(projectCode),
+      headers: { 'Content-Type': 'multipart/form-data' },
+      timeout: 300_000,
+    },
+  )
+}
+
+export const submitPestReport = (
+  projectCode: string,
+  reportCode: string,
+  comment: string,
+  operatorCode: string,
+) => request.post<PestReport>(
+  `/v1/monitoring-network/reports/${encodeURIComponent(reportCode)}/submit`,
+  { comment, operator_code: operatorCode },
+  { params: projectQuery(projectCode) },
+)
+
+export const reviewPestReport = (
+  projectCode: string,
+  reportCode: string,
+  action: 'approve' | 'return',
+  comment: string,
+  operatorCode: string,
+) => request.post<PestReport>(
+  `/v1/monitoring-network/reports/${encodeURIComponent(reportCode)}/review`,
+  { action, comment, operator_code: operatorCode },
+  { params: projectQuery(projectCode) },
+)
+
+export const downloadPestReport = (
+  projectCode: string,
+  reportCode: string,
+  operatorCode: string,
+) => request.get<Blob>(
+  `/v1/monitoring-network/reports/${encodeURIComponent(reportCode)}/download`,
+  {
+    params: { ...projectQuery(projectCode), operator_code: operatorCode },
+    responseType: 'blob',
+    timeout: 300_000,
+  },
 )

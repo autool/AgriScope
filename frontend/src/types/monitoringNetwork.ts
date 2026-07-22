@@ -10,6 +10,14 @@ export type DeviceType =
 export type DeviceStatus = 'online' | 'offline' | 'abnormal' | 'maintenance' | 'retired'
 export type FaultSeverity = 'minor' | 'major' | 'critical'
 export type RiskLevel = 'low' | 'medium' | 'high' | 'critical'
+export type PestReportScope = 'province' | 'prefecture' | 'county'
+export type PestReportStatus =
+  | 'draft'
+  | 'county_review'
+  | 'prefecture_review'
+  | 'province_review'
+  | 'returned'
+  | 'approved'
 
 export interface MonitoringStation {
   station_code: string
@@ -164,6 +172,70 @@ export interface PestAlert {
   created_at: string
 }
 
+export interface PestReportItem {
+  assessment_code: string
+  district_code: string
+  district_name: string
+  snapshot: Record<string, unknown>
+}
+
+export interface ExpertConsultation {
+  report_code: string
+  consultation_code: string
+  question: string
+  status: 'open' | 'answered'
+  requested_by: string
+  requested_by_code: string
+  requested_by_role: string
+  requested_at: string
+  expert_organization: string | null
+  expert_title: string | null
+  response: string | null
+  evidence_uri: string | null
+  evidence_filename: string | null
+  evidence_size_bytes: number | null
+  evidence_sha256: string | null
+  answered_by: string | null
+  answered_by_code: string | null
+  answered_by_role: string | null
+  answered_at: string | null
+}
+
+export interface PestReport {
+  report_code: string
+  report_title: string
+  scope_level: PestReportScope
+  region_code: string
+  region_name: string
+  period_start: string
+  period_end: string
+  summary: string
+  conclusion: string
+  status: PestReportStatus
+  revision_number: number
+  assessment_count: number
+  alert_count: number
+  snapshot_at: string
+  file_uri: string | null
+  original_filename: string | null
+  file_size_bytes: number | null
+  checksum_sha256: string | null
+  created_by: string
+  created_by_code: string
+  created_by_role: string
+  last_review_comment: string | null
+  approved_by: string | null
+  approved_by_code: string | null
+  approved_by_role: string | null
+  approved_at: string | null
+  created_at: string
+  updated_at: string
+  items: PestReportItem[]
+  consultation_count: number
+  open_consultation_count: number
+  download_url: string | null
+}
+
 export interface MonitoringEvent {
   entity_type: string
   entity_code: string
@@ -185,6 +257,9 @@ export interface MonitoringOverview {
   active_model_count: number
   pending_assessment_count: number
   pending_alert_count: number
+  report_count: number
+  pending_report_count: number
+  open_consultation_count: number
   stations: MonitoringStation[]
   devices: MonitoringDevice[]
   telemetry: DeviceTelemetry[]
@@ -192,6 +267,8 @@ export interface MonitoringOverview {
   models: PestModelVersion[]
   assessments: PestAssessment[]
   alerts: PestAlert[]
+  reports: PestReport[]
+  consultations: ExpertConsultation[]
   events: MonitoringEvent[]
 }
 
@@ -300,4 +377,36 @@ export interface AlertCreatePayload {
   channels: Array<'platform' | 'sms' | 'email' | 'mobile'>
   recipients: string[]
   operator_code: string
+}
+
+export interface PestReportCreatePayload {
+  report_code: string
+  report_title: string
+  scope_level: PestReportScope
+  region_code: string
+  period_start: string
+  period_end: string
+  summary: string
+  conclusion: string
+  assessment_codes: string[]
+  operator_code: string
+}
+
+export interface PestReportRevisePayload extends Omit<
+  PestReportCreatePayload,
+  'report_code'
+> {
+  revision_comment: string
+}
+
+export interface ConsultationCreatePayload {
+  consultation_code: string
+  question: string
+  operator_code: string
+}
+
+export interface ConsultationAnswerMetadata {
+  expertOrganization: string
+  expertTitle: string
+  response: string
 }

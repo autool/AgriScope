@@ -3,19 +3,22 @@
 from collections.abc import Sequence
 from dataclasses import dataclass
 
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased
 
 from app.models.monitoring_network import (
     DeviceFault,
     DeviceTelemetry,
+    ExpertConsultation,
     MonitoringDevice,
     MonitoringEvent,
     MonitoringStation,
     PestAlert,
     PestAssessment,
     PestModelVersion,
+    PestReport,
+    PestReportItem,
 )
 from app.models.workbench import AdministrativeBoundary, MonitoringProject
 
@@ -72,6 +75,25 @@ class AlertRecord:
 
     alert: PestAlert
     assessment_code: str
+
+
+@dataclass(frozen=True)
+class ReportAssessmentRecord:
+    """报告候选识别结果及行政区、模型和告警上下文。"""
+
+    assessment: PestAssessment
+    station: MonitoringStation | None
+    model_code: str
+    model_version: str
+    alert: PestAlert | None
+
+
+@dataclass(frozen=True)
+class ConsultationRecord:
+    """带报告编号的专家会商记录。"""
+
+    consultation: ExpertConsultation
+    report_code: str
 
 
 class MonitoringNetworkDAO:
@@ -741,6 +763,301 @@ class MonitoringNetworkDAO:
         )
         return [
             AlertRecord(alert=row[0], assessment_code=str(row[1]))
+            for row in result
+        ]
+
+    async def get_region_boundary(
+        self,
+        db: AsyncSession,
+        project_id: int,
+        boundary_code: str,
+        boundary_level: str,
+    ) -> AdministrativeBoundary | None:
+        """按项目、层级和编码查询真实行政边界。
+
+        Args:
+            db: 异步数据库会话。
+            project_id: 项目主键。
+            boundary_code: 行政区编码。
+            boundary_level: 行政区层级。
+
+        Returns:
+            AdministrativeBoundary | None: 行政区边界或空值。
+        """
+        result = await db.execute(
+            select(AdministrativeBoundary).where(
+                AdministrativeBoundary.project_id == project_id,
+                AdministrativeBoundary.boundary_code == boundary_code,
+                AdministrativeBoundary.boundary_level == boundary_level,
+            )
+        )
+        return result.scalar_one_or_none()
+
+    async def get_report_assessment_records(
+        self,
+        db: AsyncSession,
+        project_id: int,
+        assessment_codes: list[str],
+    ) -> list[ReportAssessmentRecord]:
+        """查询报告显式选择的识别结果及行政区、模型和告警上下文。
+
+        Args:
+            db: 异步数据库会话。
+            project_id: 项目主键。
+            assessment_codes: 识别编号列表。
+
+        Returns:
+            list[ReportAssessmentRecord]: 报告候选记录。
+        """
+        result = await db.execute(
+            select(
+                PestAssessment,
+                MonitoringStation,
+                PestModelVersion.model_code,
+                PestModelVersion.model_version,
+                PestAlert,
+            )
+            .join(
+                PestModelVersion,
+                PestModelVersion.id == PestAssessment.model_version_id,
+            )
+            .outerjoin(
+                MonitoringDevice,
+                MonitoringDevice.id == PestAssessment.device_id,
+            )
+            .outerjoin(
+                MonitoringStation,
+                MonitoringStation.id == MonitoringDevice.station_id,
+            )
+            .outerjoin(PestAlert, PestAlert.assessment_id == PestAssessment.id)
+            .where(
+                PestAssessment.project_id == project_id,
+                PestAssessment.assessment_code.in_(assessment_codes),
+            )
+        )
+        return [
+            ReportAssessmentRecord(
+                assessment=row[0],
+                station=row[1],
+                model_code=str(row[2]),
+                model_version=str(row[3]),
+                alert=row[4],
+            )
+            for row in result
+        ]
+
+    async def get_report_by_code(
+        self,
+        db: AsyncSession,
+        project_id: int,
+        report_code: str,
+        *,
+        for_update: bool = False,
+    ) -> PestReport | None:
+        """查询病虫害报告并可锁定审核状态。
+
+        Args:
+            db: 异步数据库会话。
+            project_id: 项目主键。
+            report_code: 报告编号。
+            for_update: 是否加行锁。
+
+        Returns:
+            PestReport | None: 报告或空值。
+        """
+        statement = select(PestReport).where(
+            PestReport.project_id == project_id,
+            PestReport.report_code == report_code,
+        )
+        if for_update:
+            statement = statement.with_for_update()
+        result = await db.execute(statement)
+        return result.scalar_one_or_none()
+
+    async def get_report_by_id(
+        self,
+        db: AsyncSession,
+        project_id: int,
+        report_id: int,
+    ) -> PestReport | None:
+        """按主键和项目查询病虫害报告。
+
+        Args:
+            db: 异步数据库会话。
+            project_id: 项目主键。
+            report_id: 报告主键。
+
+        Returns:
+            PestReport | None: 报告或空值。
+        """
+        result = await db.execute(
+            select(PestReport).where(
+                PestReport.project_id == project_id,
+                PestReport.id == report_id,
+            )
+        )
+        return result.scalar_one_or_none()
+
+    async def add_report(
+        self,
+        db: AsyncSession,
+        report: PestReport,
+    ) -> PestReport:
+        """新增报告草稿。
+
+        Args:
+            db: 异步数据库会话。
+            report: 报告模型。
+
+        Returns:
+            PestReport: 已刷新报告。
+        """
+        db.add(report)
+        await db.flush()
+        await db.refresh(report)
+        return report
+
+    async def list_reports(
+        self,
+        db: AsyncSession,
+        project_id: int,
+    ) -> Sequence[PestReport]:
+        """查询项目病虫害报告。
+
+        Args:
+            db: 异步数据库会话。
+            project_id: 项目主键。
+
+        Returns:
+            Sequence[PestReport]: 报告列表。
+        """
+        result = await db.execute(
+            select(PestReport)
+            .where(PestReport.project_id == project_id)
+            .order_by(PestReport.updated_at.desc(), PestReport.report_code)
+        )
+        return result.scalars().all()
+
+    async def replace_report_items(
+        self,
+        db: AsyncSession,
+        report_id: int,
+        items: list[PestReportItem],
+    ) -> None:
+        """原子替换报告显式识别台账。
+
+        Args:
+            db: 异步数据库会话。
+            report_id: 报告主键。
+            items: 新台账条目。
+
+        Returns:
+            None: 无返回值。
+        """
+        await db.execute(
+            delete(PestReportItem).where(PestReportItem.report_id == report_id)
+        )
+        db.add_all(items)
+        await db.flush()
+
+    async def list_report_items(
+        self,
+        db: AsyncSession,
+        report_id: int,
+    ) -> Sequence[PestReportItem]:
+        """查询报告识别台账。
+
+        Args:
+            db: 异步数据库会话。
+            report_id: 报告主键。
+
+        Returns:
+            Sequence[PestReportItem]: 台账条目。
+        """
+        result = await db.execute(
+            select(PestReportItem)
+            .where(PestReportItem.report_id == report_id)
+            .order_by(PestReportItem.assessment_code)
+        )
+        return result.scalars().all()
+
+    async def get_consultation_by_code(
+        self,
+        db: AsyncSession,
+        project_id: int,
+        consultation_code: str,
+        *,
+        for_update: bool = False,
+    ) -> ExpertConsultation | None:
+        """查询专家会商并可锁定答复状态。
+
+        Args:
+            db: 异步数据库会话。
+            project_id: 项目主键。
+            consultation_code: 会商编号。
+            for_update: 是否加行锁。
+
+        Returns:
+            ExpertConsultation | None: 会商记录或空值。
+        """
+        statement = select(ExpertConsultation).where(
+            ExpertConsultation.project_id == project_id,
+            ExpertConsultation.consultation_code == consultation_code,
+        )
+        if for_update:
+            statement = statement.with_for_update()
+        result = await db.execute(statement)
+        return result.scalar_one_or_none()
+
+    async def add_consultation(
+        self,
+        db: AsyncSession,
+        consultation: ExpertConsultation,
+    ) -> ExpertConsultation:
+        """新增专家会商问题。
+
+        Args:
+            db: 异步数据库会话。
+            consultation: 会商模型。
+
+        Returns:
+            ExpertConsultation: 已刷新会商。
+        """
+        db.add(consultation)
+        await db.flush()
+        await db.refresh(consultation)
+        return consultation
+
+    async def list_consultation_records(
+        self,
+        db: AsyncSession,
+        project_id: int,
+        report_id: int | None = None,
+    ) -> list[ConsultationRecord]:
+        """查询项目或指定报告专家会商。
+
+        Args:
+            db: 异步数据库会话。
+            project_id: 项目主键。
+            report_id: 可选报告主键。
+
+        Returns:
+            list[ConsultationRecord]: 会商记录。
+        """
+        statement = (
+            select(ExpertConsultation, PestReport.report_code)
+            .join(PestReport, PestReport.id == ExpertConsultation.report_id)
+            .where(ExpertConsultation.project_id == project_id)
+            .order_by(ExpertConsultation.requested_at.desc())
+        )
+        if report_id is not None:
+            statement = statement.where(ExpertConsultation.report_id == report_id)
+        result = await db.execute(statement)
+        return [
+            ConsultationRecord(
+                consultation=row[0],
+                report_code=str(row[1]),
+            )
             for row in result
         ]
 

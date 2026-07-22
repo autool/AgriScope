@@ -3,12 +3,15 @@
 from app.models.monitoring_network import (
     DeviceFault,
     DeviceTelemetry,
+    ExpertConsultation,
     MonitoringDevice,
     MonitoringEvent,
     MonitoringStation,
     PestAlert,
     PestAssessment,
     PestModelVersion,
+    PestReport,
+    PestReportItem,
 )
 from app.models.plot import Base, FarmlandPlot
 from app.models.service_sharing import (
@@ -60,6 +63,7 @@ __all__ = [
     "DatasetLineage",
     "DeviceFault",
     "DeviceTelemetry",
+    "ExpertConsultation",
     "FarmlandPlot",
     "FieldVerification",
     "ImageryAsset",
@@ -71,6 +75,8 @@ __all__ = [
     "PestAlert",
     "PestAssessment",
     "PestModelVersion",
+    "PestReport",
+    "PestReportItem",
     "ProductionBatch",
     "ProductionAuditEvent",
     "ProjectRuleConfig",

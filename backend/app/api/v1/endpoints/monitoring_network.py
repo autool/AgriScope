@@ -1,8 +1,10 @@
 """田间监测网络、病虫害识别复核与告警 API。"""
 
 from typing import Annotated
+from urllib.parse import quote
 
-from fastapi import APIRouter, Query, status
+from fastapi import APIRouter, File, Form, Query, UploadFile, status
+from fastapi.responses import FileResponse
 
 from app.api.deps import DatabaseSession
 from app.schemas.monitoring_network import (
@@ -14,12 +16,20 @@ from app.schemas.monitoring_network import (
     AssessmentReviewRequest,
     DeviceCreateRequest,
     DeviceResponse,
+    ExpertConsultationAnswerRequest,
+    ExpertConsultationCreateRequest,
+    ExpertConsultationResponse,
     FaultCreateRequest,
     FaultResolveRequest,
     FaultResponse,
     MonitoringOverviewResponse,
     PestModelCreateRequest,
     PestModelResponse,
+    PestReportCreateRequest,
+    PestReportResponse,
+    PestReportReviewRequest,
+    PestReportReviseRequest,
+    PestReportSubmitRequest,
     StationCreateRequest,
     StationResponse,
     TelemetryCreateRequest,
@@ -288,3 +298,207 @@ async def deliver_pest_alert(
         AlertResponse: 已送达告警。
     """
     return await service.deliver_alert(db, project_code, alert_code, request)
+
+
+@router.post(
+    "/reports",
+    response_model=PestReportResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+async def create_pest_report(
+    request: PestReportCreateRequest,
+    db: DatabaseSession,
+    project_code: Annotated[str, Query(min_length=1, max_length=50)] = "RS-2026",
+) -> PestReportResponse:
+    """从已批准识别结果创建病虫害报告草稿。
+
+    Args:
+        request: 报告范围、周期、内容和显式识别编号。
+        db: 异步数据库会话。
+        project_code: 项目编号。
+
+    Returns:
+        PestReportResponse: 已创建报告。
+    """
+    return await service.create_report(db, project_code, request)
+
+
+@router.patch("/reports/{report_code}", response_model=PestReportResponse)
+async def revise_pest_report(
+    report_code: str,
+    request: PestReportReviseRequest,
+    db: DatabaseSession,
+    project_code: Annotated[str, Query(min_length=1, max_length=50)] = "RS-2026",
+) -> PestReportResponse:
+    """修订草稿或退回后的病虫害报告。
+
+    Args:
+        report_code: 报告编号。
+        request: 修订内容和依据。
+        db: 异步数据库会话。
+        project_code: 项目编号。
+
+    Returns:
+        PestReportResponse: 修订后报告。
+    """
+    return await service.revise_report(db, project_code, report_code, request)
+
+
+@router.post(
+    "/reports/{report_code}/consultations",
+    response_model=ExpertConsultationResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+async def create_expert_consultation(
+    report_code: str,
+    request: ExpertConsultationCreateRequest,
+    db: DatabaseSession,
+    project_code: Annotated[str, Query(min_length=1, max_length=50)] = "RS-2026",
+) -> ExpertConsultationResponse:
+    """为草稿或退回报告发起专家会商。
+
+    Args:
+        report_code: 报告编号。
+        request: 会商问题和操作人。
+        db: 异步数据库会话。
+        project_code: 项目编号。
+
+    Returns:
+        ExpertConsultationResponse: 待答复会商。
+    """
+    return await service.create_consultation(
+        db,
+        project_code,
+        report_code,
+        request,
+    )
+
+
+@router.post(
+    "/consultations/{consultation_code}/answer",
+    response_model=ExpertConsultationResponse,
+)
+async def answer_expert_consultation(
+    consultation_code: str,
+    db: DatabaseSession,
+    evidence_file: Annotated[UploadFile, File(description="专家会商答复实体证据")],
+    expert_organization: Annotated[str, Form(min_length=2, max_length=200)],
+    expert_title: Annotated[str, Form(min_length=2, max_length=120)],
+    response: Annotated[str, Form(min_length=8, max_length=10_000)],
+    operator_code: Annotated[str, Form(min_length=1, max_length=50)],
+    project_code: Annotated[str, Query(min_length=1, max_length=50)] = "RS-2026",
+) -> ExpertConsultationResponse:
+    """上传实体证据并登记专家会商答复。
+
+    Args:
+        consultation_code: 会商编号。
+        db: 异步数据库会话。
+        evidence_file: 答复实体证据。
+        expert_organization: 专家所在单位。
+        expert_title: 专家职称或专业身份。
+        response: 会商答复。
+        operator_code: 稳定项目用户编码。
+        project_code: 项目编号。
+
+    Returns:
+        ExpertConsultationResponse: 已答复会商。
+    """
+    request = ExpertConsultationAnswerRequest(
+        expert_organization=expert_organization,
+        expert_title=expert_title,
+        response=response,
+        operator_code=operator_code,
+    )
+    return await service.answer_consultation(
+        db,
+        project_code,
+        consultation_code,
+        request,
+        evidence_file.filename or "consultation-evidence.pdf",
+        evidence_file.file,
+    )
+
+
+@router.post(
+    "/reports/{report_code}/submit",
+    response_model=PestReportResponse,
+)
+async def submit_pest_report(
+    report_code: str,
+    request: PestReportSubmitRequest,
+    db: DatabaseSession,
+    project_code: Annotated[str, Query(min_length=1, max_length=50)] = "RS-2026",
+) -> PestReportResponse:
+    """提交报告进入县级审核。
+
+    Args:
+        report_code: 报告编号。
+        request: 提交说明和操作人。
+        db: 异步数据库会话。
+        project_code: 项目编号。
+
+    Returns:
+        PestReportResponse: 已提交报告。
+    """
+    return await service.submit_report(db, project_code, report_code, request)
+
+
+@router.post(
+    "/reports/{report_code}/review",
+    response_model=PestReportResponse,
+)
+async def review_pest_report(
+    report_code: str,
+    request: PestReportReviewRequest,
+    db: DatabaseSession,
+    project_code: Annotated[str, Query(min_length=1, max_length=50)] = "RS-2026",
+) -> PestReportResponse:
+    """执行县级、地级或省级审核与退回。
+
+    Args:
+        report_code: 报告编号。
+        request: 审核动作、依据和操作人。
+        db: 异步数据库会话。
+        project_code: 项目编号。
+
+    Returns:
+        PestReportResponse: 审核后报告。
+    """
+    return await service.review_report(db, project_code, report_code, request)
+
+
+@router.get("/reports/{report_code}/download")
+async def download_pest_report(
+    report_code: str,
+    db: DatabaseSession,
+    operator_code: Annotated[str, Query(min_length=1, max_length=50)],
+    project_code: Annotated[str, Query(min_length=1, max_length=50)] = "RS-2026",
+) -> FileResponse:
+    """复核实体大小和 SHA-256 后下载报告台账。
+
+    Args:
+        report_code: 报告编号。
+        db: 异步数据库会话。
+        operator_code: 当前项目用户编码。
+        project_code: 项目编号。
+
+    Returns:
+        FileResponse: 校验通过的 XLSX 报告。
+    """
+    download = await service.get_report_download(
+        db,
+        project_code,
+        report_code,
+        operator_code,
+    )
+    return FileResponse(
+        download.path,
+        media_type=download.media_type,
+        headers={
+            "ETag": f'"{download.checksum_sha256}"',
+            "Content-Disposition": (
+                "attachment; filename*=UTF-8''"
+                f"{quote(download.filename)}"
+            ),
+        },
+    )

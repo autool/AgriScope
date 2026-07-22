@@ -2,6 +2,8 @@ import { defineStore } from 'pinia'
 import { computed, ref } from 'vue'
 
 import {
+  answerExpertConsultation,
+  createExpertConsultation,
   createDeviceFault,
   createDeviceTelemetry,
   createMonitoringDevice,
@@ -9,21 +11,30 @@ import {
   createPestAlert,
   createPestAssessment,
   createPestModel,
+  createPestReport,
+  downloadPestReport,
   deliverPestAlert,
   getMonitoringOverview,
   resolveDeviceFault,
+  revisePestReport,
+  reviewPestReport as reviewPestReportApi,
   reviewPestAssessment,
+  submitPestReport,
 } from '@/api/monitoringNetwork'
 import { useUserStore } from '@/store/userStore'
 import { useWorkbenchStore } from '@/store/workbenchStore'
 import type {
   AlertCreatePayload,
   AssessmentCreatePayload,
+  ConsultationAnswerMetadata,
+  ConsultationCreatePayload,
   DeviceCreatePayload,
   FaultCreatePayload,
   FaultResolvePayload,
   MonitoringOverview,
   PestModelCreatePayload,
+  PestReportCreatePayload,
+  PestReportRevisePayload,
   StationCreatePayload,
   TelemetryCreatePayload,
 } from '@/types/monitoringNetwork'
@@ -52,6 +63,24 @@ export const useMonitoringNetworkStore = defineStore('monitoringNetwork', () => 
   ))
   const canDeliverAlertComputed = computed<boolean>(() => (
     userStore.hasCapability('deliver_pest_alert')
+  ))
+  const canManageReportsComputed = computed<boolean>(() => (
+    userStore.hasCapability('manage_pest_reports')
+  ))
+  const canReviewCountyReportComputed = computed<boolean>(() => (
+    userStore.hasCapability('review_county_pest_report')
+  ))
+  const canReviewPrefectureReportComputed = computed<boolean>(() => (
+    userStore.hasCapability('review_prefecture_pest_report')
+  ))
+  const canReviewProvinceReportComputed = computed<boolean>(() => (
+    userStore.hasCapability('review_province_pest_report')
+  ))
+  const canAnswerConsultationComputed = computed<boolean>(() => (
+    userStore.hasCapability('answer_pest_consultation')
+  ))
+  const canDownloadReportComputed = computed<boolean>(() => (
+    userStore.hasCapability('download_pest_report')
   ))
 
   const requireUserCode = (): string => {
@@ -175,6 +204,82 @@ export const useMonitoringNetworkStore = defineStore('monitoringNetwork', () => 
     requireUserCode(),
   ))
 
+  const createReport = async (
+    payload: Omit<PestReportCreatePayload, 'operator_code'>,
+  ): Promise<void> => mutate(() => createPestReport(
+    workbenchStore.projectCodeComputed,
+    { ...payload, operator_code: requireUserCode() },
+  ))
+
+  const reviseReport = async (
+    reportCode: string,
+    payload: Omit<PestReportRevisePayload, 'operator_code'>,
+  ): Promise<void> => mutate(() => revisePestReport(
+    workbenchStore.projectCodeComputed,
+    reportCode,
+    { ...payload, operator_code: requireUserCode() },
+  ))
+
+  const requestConsultation = async (
+    reportCode: string,
+    payload: Omit<ConsultationCreatePayload, 'operator_code'>,
+  ): Promise<void> => mutate(() => createExpertConsultation(
+    workbenchStore.projectCodeComputed,
+    reportCode,
+    { ...payload, operator_code: requireUserCode() },
+  ))
+
+  const answerConsultation = async (
+    consultationCode: string,
+    file: File,
+    metadata: ConsultationAnswerMetadata,
+  ): Promise<void> => mutate(() => answerExpertConsultation(
+    workbenchStore.projectCodeComputed,
+    consultationCode,
+    file,
+    metadata,
+    requireUserCode(),
+  ))
+
+  const submitReport = async (
+    reportCode: string,
+    comment: string,
+  ): Promise<void> => mutate(() => submitPestReport(
+    workbenchStore.projectCodeComputed,
+    reportCode,
+    comment,
+    requireUserCode(),
+  ))
+
+  const reviewReport = async (
+    reportCode: string,
+    action: 'approve' | 'return',
+    comment: string,
+  ): Promise<void> => mutate(() => reviewPestReportApi(
+    workbenchStore.projectCodeComputed,
+    reportCode,
+    action,
+    comment,
+    requireUserCode(),
+  ))
+
+  const downloadReport = async (
+    reportCode: string,
+    filename: string,
+  ): Promise<void> => {
+    const blob = await downloadPestReport(
+      workbenchStore.projectCodeComputed,
+      reportCode,
+      requireUserCode(),
+    )
+    const url = URL.createObjectURL(blob)
+    const link = document.createElement('a')
+    link.href = url
+    link.download = filename
+    link.click()
+    URL.revokeObjectURL(url)
+  }
+
   return {
     overviewRef,
     loadingRef,
@@ -185,6 +290,12 @@ export const useMonitoringNetworkStore = defineStore('monitoringNetwork', () => 
     canManageModelsComputed,
     canReviewComputed,
     canDeliverAlertComputed,
+    canManageReportsComputed,
+    canReviewCountyReportComputed,
+    canReviewPrefectureReportComputed,
+    canReviewProvinceReportComputed,
+    canAnswerConsultationComputed,
+    canDownloadReportComputed,
     load,
     registerStation,
     registerDevice,
@@ -196,5 +307,12 @@ export const useMonitoringNetworkStore = defineStore('monitoringNetwork', () => 
     reviewAssessment,
     createAlert,
     deliverAlert,
+    createReport,
+    reviseReport,
+    requestConsultation,
+    answerConsultation,
+    submitReport,
+    reviewReport,
+    downloadReport,
   }
 })

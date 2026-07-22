@@ -84,6 +84,7 @@ declare module 'vue' {
     MonitoringResourcePanel: typeof import('./src/components/monitoring/MonitoringResourcePanel.vue')['default']
     OlViewer: typeof import('./src/components/OlViewer.vue')['default']
     PestIntelligencePanel: typeof import('./src/components/monitoring/PestIntelligencePanel.vue')['default']
+    PestReportLedgerPanel: typeof import('./src/components/monitoring/PestReportLedgerPanel.vue')['default']
     PlotCreateModal: typeof import('./src/components/editing/PlotCreateModal.vue')['default']
     PlotHistoryActionModal: typeof import('./src/components/editing/PlotHistoryActionModal.vue')['default']
     PlotMergeModal: typeof import('./src/components/editing/PlotMergeModal.vue')['default']
@@ -118,6 +119,7 @@ declare module 'vue' {
     UavArtifactPanel: typeof import('./src/components/uav/UavArtifactPanel.vue')['default']
     UavAuditPanel: typeof import('./src/components/uav/UavAuditPanel.vue')['default']
     UavFindingPanel: typeof import('./src/components/uav/UavFindingPanel.vue')['default']
+    UavMissionMap: typeof import('./src/components/uav/UavMissionMap.vue')['default']
     UserIdentitySwitcher: typeof import('./src/components/layout/UserIdentitySwitcher.vue')['default']
     WorkspaceHeader: typeof import('./src/components/workbench/WorkspaceHeader.vue')['default']
   }

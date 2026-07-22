@@ -1,11 +1,12 @@
 """田间监测站、设备遥测、故障和病虫害预警模型。"""
 
-from datetime import datetime
+from datetime import date, datetime
 from decimal import Decimal
 
 from sqlalchemy import (
     JSON,
     BigInteger,
+    Date,
     DateTime,
     ForeignKey,
     Integer,
@@ -394,6 +395,144 @@ class PestAlert(Base):
         server_default=func.now(),
         onupdate=func.now(),
         nullable=False,
+    )
+
+
+class PestReport(Base):
+    """保存病虫害监测报告、三级审核状态和实体台账。"""
+
+    __tablename__ = "pest_reports"
+    __table_args__ = (
+        UniqueConstraint("project_id", "report_code", name="uq_pest_report_code"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    project_id: Mapped[int] = mapped_column(
+        ForeignKey("monitoring_projects.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    report_code: Mapped[str] = mapped_column(String(80), nullable=False)
+    report_title: Mapped[str] = mapped_column(String(240), nullable=False)
+    scope_level: Mapped[str] = mapped_column(String(20), nullable=False)
+    region_code: Mapped[str] = mapped_column(String(50), nullable=False)
+    region_name: Mapped[str] = mapped_column(String(100), nullable=False)
+    period_start: Mapped[date] = mapped_column(Date, nullable=False)
+    period_end: Mapped[date] = mapped_column(Date, nullable=False)
+    summary: Mapped[str] = mapped_column(Text, nullable=False)
+    conclusion: Mapped[str] = mapped_column(Text, nullable=False)
+    status: Mapped[str] = mapped_column(String(30), nullable=False, default="draft")
+    revision_number: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    assessment_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    alert_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    snapshot_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+    )
+    file_uri: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    original_filename: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    file_size_bytes: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    checksum_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    created_by: Mapped[str] = mapped_column(String(100), nullable=False)
+    created_by_code: Mapped[str] = mapped_column(String(50), nullable=False)
+    created_by_role: Mapped[str] = mapped_column(String(40), nullable=False)
+    last_review_comment: Mapped[str | None] = mapped_column(Text, nullable=True)
+    approved_by: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    approved_by_code: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    approved_by_role: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    approved_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        nullable=False,
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
+    )
+
+
+class PestReportItem(Base):
+    """保存报告显式纳入识别结果及不可变业务快照。"""
+
+    __tablename__ = "pest_report_items"
+    __table_args__ = (
+        UniqueConstraint(
+            "report_id",
+            "assessment_id",
+            name="uq_pest_report_assessment",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    report_id: Mapped[int] = mapped_column(
+        ForeignKey("pest_reports.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    assessment_id: Mapped[int] = mapped_column(
+        ForeignKey("pest_assessments.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    assessment_code: Mapped[str] = mapped_column(String(80), nullable=False)
+    district_code: Mapped[str] = mapped_column(String(50), nullable=False)
+    district_name: Mapped[str] = mapped_column(String(100), nullable=False)
+    snapshot: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        nullable=False,
+    )
+
+
+class ExpertConsultation(Base):
+    """保存报告专家会商问题、答复实体和稳定身份审计。"""
+
+    __tablename__ = "expert_consultations"
+    __table_args__ = (
+        UniqueConstraint(
+            "project_id",
+            "consultation_code",
+            name="uq_expert_consultation_code",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    project_id: Mapped[int] = mapped_column(
+        ForeignKey("monitoring_projects.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    report_id: Mapped[int] = mapped_column(
+        ForeignKey("pest_reports.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    consultation_code: Mapped[str] = mapped_column(String(80), nullable=False)
+    question: Mapped[str] = mapped_column(Text, nullable=False)
+    status: Mapped[str] = mapped_column(String(30), nullable=False, default="open")
+    requested_by: Mapped[str] = mapped_column(String(100), nullable=False)
+    requested_by_code: Mapped[str] = mapped_column(String(50), nullable=False)
+    requested_by_role: Mapped[str] = mapped_column(String(40), nullable=False)
+    requested_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        nullable=False,
+    )
+    expert_organization: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    expert_title: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    response: Mapped[str | None] = mapped_column(Text, nullable=True)
+    evidence_uri: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    evidence_filename: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    evidence_size_bytes: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    evidence_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    answered_by: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    answered_by_code: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    answered_by_role: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    answered_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
     )
 
 

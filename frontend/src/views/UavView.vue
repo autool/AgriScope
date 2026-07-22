@@ -7,6 +7,7 @@ import UavAircraftMissionPanel from '@/components/uav/UavAircraftMissionPanel.vu
 import UavArtifactPanel from '@/components/uav/UavArtifactPanel.vue'
 import UavAuditPanel from '@/components/uav/UavAuditPanel.vue'
 import UavFindingPanel from '@/components/uav/UavFindingPanel.vue'
+import UavMissionMap from '@/components/uav/UavMissionMap.vue'
 import { useUavStore } from '@/store/uavStore'
 import { useUserStore } from '@/store/userStore'
 import type {
@@ -15,6 +16,7 @@ import type {
   MissionUploadMetadata,
   UavFindingCreatePayload,
   UavMissionAction,
+  UavPolygon,
 } from '@/types/uav'
 
 const uavStore = useUavStore()
@@ -30,6 +32,8 @@ const {
   overviewRef,
 } = storeToRefs(uavStore)
 const selectedMissionCodeRef = ref<string | null>(null)
+const draftBoundaryRef = ref<UavPolygon | null>(null)
+const pickedCoordinateRef = ref<{ lon: number; lat: number } | null>(null)
 const selectedMissionComputed = computed(() => (
   overviewRef.value?.missions.find(
     (item) => item.mission_code === selectedMissionCodeRef.value,
@@ -65,9 +69,11 @@ watch(() => overviewRef.value?.missions, (missions) => {
 const runAction = async (
   action: () => Promise<void>,
   successMessage: string,
+  afterSuccess?: () => void,
 ): Promise<void> => {
   try {
     await action()
+    afterSuccess?.()
     message.success(successMessage)
   } catch {
     // 请求层已统一展示后端安全错误信息，避免未处理 Promise。
@@ -91,6 +97,7 @@ const handleCreateMission = (
   void runAction(
     () => uavStore.createMission(file, metadata),
     '飞行任务已通过真实县界校验并创建',
+    () => { draftBoundaryRef.value = null },
   )
 }
 
@@ -124,6 +131,7 @@ const handleCreateFinding = (
   void runAction(
     () => uavStore.createFinding(missionCode, payload),
     '空间疑点已绑定任务实体成果并进入复核队列',
+    () => { pickedCoordinateRef.value = null },
   )
 }
 
@@ -158,43 +166,61 @@ const handleDownload = (artifactCode: string, filename: string): void => {
       <span><small>AUDIT</small><strong>{{ overviewRef?.events.length || 0 }}</strong><em>不可变事件</em></span>
     </section>
     <a-spin :spinning="loadingRef" class="workspace-spin">
-      <div class="workspace-stack">
-        <section class="workspace-grid">
-          <UavAircraftMissionPanel
-            :aircraft="overviewRef?.aircraft || []"
-            :missions="overviewRef?.missions || []"
-            :selected-mission-code="selectedMissionComputed?.mission_code || null"
-            :can-manage-aircraft="canManageAircraftComputed"
-            :can-manage-missions="canManageMissionsComputed"
-            :loading="mutatingRef"
-            @select-mission="selectedMissionCodeRef = $event"
-            @register-aircraft="handleRegisterAircraft"
-            @create-mission="handleCreateMission"
-          />
-          <UavArtifactPanel
-            :mission="selectedMissionComputed"
-            :artifacts="overviewRef?.artifacts || []"
-            :can-operate="canOperateComputed"
-            :can-review="canReviewComputed"
-            :can-download="canDownloadComputed"
-            :loading="mutatingRef"
-            @upload-artifact="handleUploadArtifact"
-            @transition="handleTransition"
-            @download="handleDownload"
-          />
-          <UavFindingPanel
-            :mission="selectedMissionComputed"
-            :artifacts="overviewRef?.artifacts || []"
-            :findings="overviewRef?.findings || []"
-            :can-operate="canOperateComputed"
-            :can-review="canReviewComputed"
-            :loading="mutatingRef"
-            @create-finding="handleCreateFinding"
-            @review-finding="handleReviewFinding"
-          />
-        </section>
-        <UavAuditPanel :events="overviewRef?.events || []" />
-      </div>
+      <section class="workspace-grid">
+        <UavMissionMap
+          class="map-slot"
+          :missions="overviewRef?.missions || []"
+          :findings="overviewRef?.findings || []"
+          :selected-mission-code="selectedMissionComputed?.mission_code || null"
+          :draft-boundary="draftBoundaryRef"
+          :picked-coordinate="pickedCoordinateRef"
+          :can-plan="canManageMissionsComputed"
+          :can-register-finding="canOperateComputed"
+          @select-mission="selectedMissionCodeRef = $event"
+          @boundary-drawn="draftBoundaryRef = $event"
+          @boundary-cleared="draftBoundaryRef = null"
+          @finding-coordinate-picked="pickedCoordinateRef = $event"
+          @finding-coordinate-cleared="pickedCoordinateRef = null"
+        />
+        <UavAircraftMissionPanel
+          class="aircraft-slot"
+          :aircraft="overviewRef?.aircraft || []"
+          :missions="overviewRef?.missions || []"
+          :selected-mission-code="selectedMissionComputed?.mission_code || null"
+          :draft-boundary="draftBoundaryRef"
+          :can-manage-aircraft="canManageAircraftComputed"
+          :can-manage-missions="canManageMissionsComputed"
+          :loading="mutatingRef"
+          @select-mission="selectedMissionCodeRef = $event"
+          @register-aircraft="handleRegisterAircraft"
+          @create-mission="handleCreateMission"
+        />
+        <UavArtifactPanel
+          class="artifact-slot"
+          :mission="selectedMissionComputed"
+          :artifacts="overviewRef?.artifacts || []"
+          :can-operate="canOperateComputed"
+          :can-review="canReviewComputed"
+          :can-download="canDownloadComputed"
+          :loading="mutatingRef"
+          @upload-artifact="handleUploadArtifact"
+          @transition="handleTransition"
+          @download="handleDownload"
+        />
+        <UavFindingPanel
+          class="finding-slot"
+          :mission="selectedMissionComputed"
+          :artifacts="overviewRef?.artifacts || []"
+          :findings="overviewRef?.findings || []"
+          :picked-coordinate="pickedCoordinateRef"
+          :can-operate="canOperateComputed"
+          :can-review="canReviewComputed"
+          :loading="mutatingRef"
+          @create-finding="handleCreateFinding"
+          @review-finding="handleReviewFinding"
+        />
+        <UavAuditPanel class="audit-slot" :events="overviewRef?.events || []" />
+      </section>
     </a-spin>
   </div>
 </template>
@@ -208,7 +234,11 @@ const handleDownload = (artifactCode: string, filename: string): void => {
 .summary-strip em { font-size: 8px; font-style: normal; color: #77867e; }
 .workspace-spin { min-height: 0; }
 .workspace-spin :deep(.ant-spin-container) { height: 100%; min-height: 0; }
-.workspace-stack { display: grid; grid-template-rows: minmax(0, 1fr) 142px; gap: 9px; height: 100%; min-height: 0; }
-.workspace-grid { display: grid; grid-template-columns: minmax(330px, .9fr) minmax(400px, 1.05fr) minmax(420px, 1.1fr); gap: 9px; min-height: 0; }
-@media (max-width: 1320px) { .workspace-stack { overflow: auto; } .workspace-grid { grid-template-columns: 1fr 1fr; min-height: 760px; } .workspace-grid > :last-child { grid-column: 1 / -1; min-height: 430px; } }
+.workspace-grid { display: grid; grid-template-rows: minmax(0, 1fr) minmax(220px, .72fr); grid-template-columns: minmax(430px, 1.15fr) minmax(330px, .9fr) minmax(360px, 1fr); gap: 9px; height: 100%; min-height: 0; }
+.map-slot { grid-row: 1 / 3; grid-column: 1; }
+.aircraft-slot { grid-row: 1; grid-column: 2; }
+.artifact-slot { grid-row: 1; grid-column: 3; }
+.finding-slot { grid-row: 2; grid-column: 2; }
+.audit-slot { grid-row: 2; grid-column: 3; }
+@media (max-width: 1320px) { .workspace-grid { grid-template-rows: 520px 620px 430px; grid-template-columns: 1fr 1fr; min-height: 1570px; overflow: auto; } .map-slot { grid-row: 1; grid-column: 1 / -1; } .aircraft-slot { grid-row: 2; grid-column: 1; } .artifact-slot { grid-row: 2; grid-column: 2; } .finding-slot { grid-row: 3; grid-column: 1; } .audit-slot { grid-row: 3; grid-column: 2; } }
 </style>

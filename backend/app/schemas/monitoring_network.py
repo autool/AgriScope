@@ -1,7 +1,7 @@
 """田间监测网络、病虫害识别复核与告警协议。"""
 
 import re
-from datetime import datetime
+from datetime import date, datetime
 from typing import Literal, Self
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -23,6 +23,8 @@ TargetType = Literal["pest", "disease"]
 ReviewDecision = Literal["approve", "reject"]
 RiskLevel = Literal["low", "medium", "high", "critical"]
 AlertChannel = Literal["platform", "sms", "email", "mobile"]
+ReportScopeLevel = Literal["province", "prefecture", "county"]
+ReportReviewAction = Literal["approve", "return"]
 
 
 def normalize_checksum(value: str) -> str:
@@ -430,6 +432,118 @@ class AlertDeliverRequest(BaseModel):
         return normalize_checksum(value)
 
 
+class PestReportCreateRequest(BaseModel):
+    """创建病虫害监测报告草稿和显式识别台账。"""
+
+    report_code: str = Field(min_length=1, max_length=80, pattern=r"^[A-Za-z0-9_-]+$")
+    report_title: str = Field(min_length=4, max_length=240)
+    scope_level: ReportScopeLevel
+    region_code: str = Field(min_length=1, max_length=50)
+    period_start: date
+    period_end: date
+    summary: str = Field(min_length=10, max_length=10_000)
+    conclusion: str = Field(min_length=10, max_length=10_000)
+    assessment_codes: list[str] = Field(min_length=1, max_length=500)
+    operator_code: str = Field(min_length=1, max_length=50)
+
+    model_config = ConfigDict(extra="forbid")
+
+    @model_validator(mode="after")
+    def validate_report(self) -> Self:
+        """校验报告周期和显式识别编号。
+
+        Returns:
+            Self: 校验后的报告请求。
+        """
+        if self.period_end < self.period_start:
+            raise ValueError("报告结束日期不得早于开始日期")
+        normalized = [item.strip() for item in self.assessment_codes]
+        if any(not item for item in normalized):
+            raise ValueError("识别编号不得为空")
+        if len(normalized) != len(set(normalized)):
+            raise ValueError("报告识别编号不得重复")
+        self.assessment_codes = normalized
+        return self
+
+
+class PestReportReviseRequest(BaseModel):
+    """修订草稿或退回后的病虫害报告。"""
+
+    report_title: str = Field(min_length=4, max_length=240)
+    scope_level: ReportScopeLevel
+    region_code: str = Field(min_length=1, max_length=50)
+    period_start: date
+    period_end: date
+    summary: str = Field(min_length=10, max_length=10_000)
+    conclusion: str = Field(min_length=10, max_length=10_000)
+    assessment_codes: list[str] = Field(min_length=1, max_length=500)
+    revision_comment: str = Field(min_length=8, max_length=2000)
+    operator_code: str = Field(min_length=1, max_length=50)
+
+    model_config = ConfigDict(extra="forbid")
+
+    @model_validator(mode="after")
+    def validate_report(self) -> Self:
+        """校验修订周期和显式识别编号。
+
+        Returns:
+            Self: 校验后的修订请求。
+        """
+        if self.period_end < self.period_start:
+            raise ValueError("报告结束日期不得早于开始日期")
+        normalized = [item.strip() for item in self.assessment_codes]
+        if any(not item for item in normalized):
+            raise ValueError("识别编号不得为空")
+        if len(normalized) != len(set(normalized)):
+            raise ValueError("报告识别编号不得重复")
+        self.assessment_codes = normalized
+        return self
+
+
+class PestReportSubmitRequest(BaseModel):
+    """提交报告进入县级审核。"""
+
+    comment: str = Field(min_length=4, max_length=2000)
+    operator_code: str = Field(min_length=1, max_length=50)
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class PestReportReviewRequest(BaseModel):
+    """执行县、市、省分级审核或退回。"""
+
+    action: ReportReviewAction
+    comment: str = Field(min_length=4, max_length=2000)
+    operator_code: str = Field(min_length=1, max_length=50)
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class ExpertConsultationCreateRequest(BaseModel):
+    """对报告发起专家会商问题。"""
+
+    consultation_code: str = Field(
+        min_length=1,
+        max_length=80,
+        pattern=r"^[A-Za-z0-9_-]+$",
+    )
+    question: str = Field(min_length=8, max_length=5000)
+    operator_code: str = Field(min_length=1, max_length=50)
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class ExpertConsultationAnswerRequest(BaseModel):
+    """登记会商专家答复和实体证据元数据。"""
+
+    expert_organization: str = Field(min_length=2, max_length=200)
+    expert_title: str = Field(min_length=2, max_length=120)
+    response: str = Field(min_length=8, max_length=10_000)
+    operator_code: str = Field(min_length=1, max_length=50)
+
+    model_config = ConfigDict(extra="forbid")
+
+
 class StationResponse(BaseModel):
     """田间监测站响应。"""
 
@@ -597,6 +711,76 @@ class AlertResponse(BaseModel):
     created_at: datetime
 
 
+class PestReportItemResponse(BaseModel):
+    """病虫害报告识别台账条目。"""
+
+    assessment_code: str
+    district_code: str
+    district_name: str
+    snapshot: dict
+
+
+class ExpertConsultationResponse(BaseModel):
+    """专家会商问题和答复证据。"""
+
+    report_code: str
+    consultation_code: str
+    question: str
+    status: str
+    requested_by: str
+    requested_by_code: str
+    requested_by_role: str
+    requested_at: datetime
+    expert_organization: str | None
+    expert_title: str | None
+    response: str | None
+    evidence_uri: str | None
+    evidence_filename: str | None
+    evidence_size_bytes: int | None
+    evidence_sha256: str | None
+    answered_by: str | None
+    answered_by_code: str | None
+    answered_by_role: str | None
+    answered_at: datetime | None
+
+
+class PestReportResponse(BaseModel):
+    """病虫害报告、三级审核和实体台账响应。"""
+
+    report_code: str
+    report_title: str
+    scope_level: str
+    region_code: str
+    region_name: str
+    period_start: date
+    period_end: date
+    summary: str
+    conclusion: str
+    status: str
+    revision_number: int
+    assessment_count: int
+    alert_count: int
+    snapshot_at: datetime
+    file_uri: str | None
+    original_filename: str | None
+    file_size_bytes: int | None
+    checksum_sha256: str | None
+    created_by: str
+    created_by_code: str
+    created_by_role: str
+    last_review_comment: str | None
+    approved_by: str | None
+    approved_by_code: str | None
+    approved_by_role: str | None
+    approved_at: datetime | None
+    created_at: datetime
+    updated_at: datetime
+    items: list[PestReportItemResponse]
+    consultation_count: int
+    open_consultation_count: int
+    download_url: str | None
+
+
 class MonitoringEventResponse(BaseModel):
     """监测网络不可变审计事件响应。"""
 
@@ -622,6 +806,9 @@ class MonitoringOverviewResponse(BaseModel):
     active_model_count: int
     pending_assessment_count: int
     pending_alert_count: int
+    report_count: int
+    pending_report_count: int
+    open_consultation_count: int
     stations: list[StationResponse]
     devices: list[DeviceResponse]
     telemetry: list[TelemetryResponse]
@@ -629,4 +816,6 @@ class MonitoringOverviewResponse(BaseModel):
     models: list[PestModelResponse]
     assessments: list[AssessmentResponse]
     alerts: list[AlertResponse]
+    reports: list[PestReportResponse]
+    consultations: list[ExpertConsultationResponse]
     events: list[MonitoringEventResponse]

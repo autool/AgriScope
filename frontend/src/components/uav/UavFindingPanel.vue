@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { message } from 'ant-design-vue'
-import { computed, ref } from 'vue'
+import { computed, ref, watch } from 'vue'
 
 import type { UavArtifact, UavFinding, UavFindingCreatePayload, UavMission } from '@/types/uav'
 
@@ -8,6 +8,7 @@ const props = defineProps<{
   mission: UavMission | null
   artifacts: UavArtifact[]
   findings: UavFinding[]
+  pickedCoordinate: { lon: number; lat: number } | null
   canOperate: boolean
   canReview: boolean
   loading: boolean
@@ -31,6 +32,12 @@ const longitudeRef = ref<number | null>(null)
 const latitudeRef = ref<number | null>(null)
 const plotCodeRef = ref<string>('')
 const descriptionRef = ref<string>('')
+
+watch(() => props.pickedCoordinate, (coordinate) => {
+  if (!coordinate) return
+  longitudeRef.value = coordinate.lon
+  latitudeRef.value = coordinate.lat
+}, { deep: true, immediate: true })
 
 const missionArtifactsComputed = computed(() => (
   props.mission
@@ -92,14 +99,17 @@ const submitReview = (): void => {
   <section class="finding-panel">
     <header>
       <div><small>SPATIAL FINDINGS</small><h3>空间疑点与人工复核</h3></div>
-      <a-button
-        size="small"
-        type="primary"
-        :disabled="!mission || !canOperate || !['captured', 'processed'].includes(mission.status) || !missionArtifactsComputed.length"
-        @click="findingModalOpenRef = true"
-      >
-        登记疑点
-      </a-button>
+      <a-space size="small">
+        <a-tag v-if="pickedCoordinate" color="purple">地图坐标已拾取</a-tag>
+        <a-button
+          size="small"
+          type="primary"
+          :disabled="!mission || !canOperate || !['captured', 'processed'].includes(mission.status) || !missionArtifactsComputed.length"
+          @click="findingModalOpenRef = true"
+        >
+          登记疑点
+        </a-button>
+      </a-space>
     </header>
     <a-alert
       v-if="mission"

@@ -14,6 +14,7 @@ class Settings(BaseSettings):
     log_level: str = "INFO"
     max_imagery_upload_bytes: int = 10 * 1024 * 1024 * 1024
     max_uav_upload_bytes: int = 2 * 1024 * 1024 * 1024
+    max_consultation_evidence_bytes: int = 50 * 1024 * 1024
     change_preview_max_dimension: int = Field(default=1400, ge=256, le=4096)
     imagery_quicklook_max_dimension: int = Field(default=1400, ge=256, le=4096)
     service_health_private_host_allowlist: str = ""

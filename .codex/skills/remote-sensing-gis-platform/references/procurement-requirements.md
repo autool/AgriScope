@@ -136,6 +136,15 @@ the platform has persisted evidence and executable workflows.
   Reusing an idempotency key with a different canonical payload is rejected. New active
   model versions supersede but do not delete prior evidence, and only a stable authorized
   human review can make an assessment eligible for alert creation.
+- The implemented pest-report contract builds province, prefecture, or county reports
+  only from explicitly selected human-approved assessments inside the persisted reporting
+  period and real administrative scope. Open expert consultations block submission;
+  answers require controlled PDF, Office, image, or ZIP artifacts with server-computed
+  size and SHA-256. County quality inspection, prefecture project management, and province
+  client review are capability-gated server transitions with immutable events. Province
+  approval atomically produces a checksum-backed XLSX electronic ledger containing the
+  report summary, assessment evidence, review trail, and consultation evidence, and the
+  artifact is revalidated before download.
 - The implemented UAV contract persists aircraft and sensor identity, aircraft
   certificates, pilot licences, district-contained WGS84 flight Polygons, missions,
   controlled physical artifacts, spatial findings, human review, and immutable events.
@@ -143,9 +152,12 @@ the platform has persisted evidence and executable workflows.
   orthomosaics must cover the mission boundary and satisfy the planned resolution.
   Capture completion requires raw imagery plus a flight log, processing completion
   requires a qualifying orthomosaic, and review completion requires no pending findings.
-  Downloads revalidate controlled path, size, and SHA-256. This is not evidence that
-  mobile collection, live flight-control integration, expert consultation,
-  province-wide report workflows, or 10,000-device scale testing are complete.
+  The TypeScript workbench provides an OpenLayers planning map with current imagery
+  tiles, real administrative boundaries, mission Polygon drawing, task selection, and
+  finding-coordinate picking while retaining all authoritative spatial validation on
+  the server. Downloads revalidate controlled path, size, and SHA-256. These implemented
+  contracts are not evidence that mobile collection, live flight-control integration,
+  long-term archival retention, or 10,000-device scale testing are complete.
 
 ## Official sources
 

@@ -1,7 +1,8 @@
 """田间监测网络与病虫害预警业务测试。"""
 
 import asyncio
-from datetime import UTC, datetime
+import hashlib
+from datetime import UTC, date, datetime
 from decimal import Decimal
 from types import SimpleNamespace
 from unittest.mock import ANY, AsyncMock
@@ -10,18 +11,31 @@ import pytest
 from pydantic import ValidationError
 
 from app.core.exceptions import ValidationException
-from app.dao.monitoring_network_dao import AlertRecord
+from app.dao.monitoring_network_dao import (
+    AlertRecord,
+    ConsultationRecord,
+    ReportAssessmentRecord,
+)
 from app.models.monitoring_network import (
     DeviceTelemetry,
+    ExpertConsultation,
     MonitoringDevice,
+    MonitoringEvent,
+    MonitoringStation,
     PestAlert,
     PestAssessment,
     PestModelVersion,
+    PestReport,
+    PestReportItem,
 )
 from app.schemas.monitoring_network import (
     AlertCreateRequest,
     AlertDeliverRequest,
+    ExpertConsultationAnswerRequest,
     PestModelCreateRequest,
+    PestReportCreateRequest,
+    PestReportReviewRequest,
+    PestReportSubmitRequest,
     StationCreateRequest,
     TelemetryCreateRequest,
 )
@@ -119,6 +133,67 @@ def build_assessment(status: str = "approved") -> PestAssessment:
         submitted_by="外业核查员",
         submitted_by_code="field-wang-qiang",
         submitted_by_role="field_inspector",
+        created_at=now,
+        updated_at=now,
+    )
+
+
+def build_station() -> MonitoringStation:
+    """构造带完整行政区上下文的监测站。"""
+    now = datetime.now(UTC)
+    return MonitoringStation(
+        id=3,
+        project_id=7,
+        station_code="HLJ-STATION-001",
+        station_name="水稻病虫监测站",
+        province_code="230000",
+        province_name="黑龙江省",
+        city_code="230100",
+        city_name="哈尔滨市",
+        district_code="230102",
+        district_name="道里区",
+        longitude=Decimal("126.6"),
+        latitude=Decimal("45.8"),
+        station_type="pest",
+        owner_department="黑龙江省农业农村厅",
+        source_name="农业监测建设项目",
+        source_uri="storage://monitoring/station.json",
+        source_version="2026-01",
+        evidence_uri="storage://monitoring/station.jpg",
+        evidence_size_bytes=1024,
+        evidence_sha256="a" * 64,
+        status="active",
+        registered_by="赵志远",
+        registered_by_code="manager-zhao-zhiyuan",
+        registered_by_role="project_manager",
+        created_at=now,
+        updated_at=now,
+    )
+
+
+def build_report(status: str = "draft") -> PestReport:
+    """构造病虫害报告。"""
+    now = datetime.now(UTC)
+    return PestReport(
+        id=61,
+        project_id=7,
+        report_code="PEST-REPORT-001",
+        report_title="哈尔滨市病虫害监测报告",
+        scope_level="prefecture",
+        region_code="230100",
+        region_name="哈尔滨市",
+        period_start=date(2026, 7, 1),
+        period_end=date(2026, 7, 31),
+        summary="本期监测覆盖真实站点和人工批准识别结果。",
+        conclusion="建议结合告警送达情况开展现场复核和防控。",
+        status=status,
+        revision_number=1,
+        assessment_count=1,
+        alert_count=1,
+        snapshot_at=now,
+        created_by="赵志远",
+        created_by_code="manager-zhao-zhiyuan",
+        created_by_role="project_manager",
         created_at=now,
         updated_at=now,
     )
@@ -423,3 +498,252 @@ def test_deliver_alert_persists_receipt_and_identity() -> None:
     assert response.delivery_receipt_sha256 == "e" * 64
     assert response.delivered_by_code == "manager-zhao-zhiyuan"
     db.commit.assert_awaited_once()
+
+
+def test_report_rejects_unapproved_assessment() -> None:
+    """验证报告只能显式纳入已人工批准且属于申报区域的识别结果。"""
+    assessment = build_assessment("pending_review")
+    assessment.observed_at = datetime(2026, 7, 15, 8, 0, tzinfo=UTC)
+    dao = AsyncMock()
+    dao.get_project_by_code.return_value = build_project()
+    dao.get_report_by_code.return_value = None
+    dao.get_region_boundary.return_value = SimpleNamespace(
+        boundary_name="哈尔滨市"
+    )
+    dao.get_report_assessment_records.return_value = [
+        ReportAssessmentRecord(
+            assessment=assessment,
+            station=build_station(),
+            model_code="PEST-RICE",
+            model_version="1.0.0",
+            alert=None,
+        )
+    ]
+    user_service = AsyncMock()
+    user_service.require_capability.return_value = build_user()
+    service = MonitoringNetworkService(dao=dao, user_service=user_service)
+    request = PestReportCreateRequest(
+        report_code="PEST-REPORT-001",
+        report_title="哈尔滨市病虫害监测报告",
+        scope_level="prefecture",
+        region_code="230100",
+        period_start=date(2026, 7, 1),
+        period_end=date(2026, 7, 31),
+        summary="本期监测覆盖真实站点和识别结果。",
+        conclusion="建议开展现场复核并形成防控闭环。",
+        assessment_codes=["ASSESS-001"],
+        operator_code="manager-zhao-zhiyuan",
+    )
+
+    with pytest.raises(ValidationException, match="尚未人工批准"):
+        asyncio.run(service.create_report(AsyncMock(), "RS-2026", request))
+
+
+def test_report_submit_blocks_open_consultation() -> None:
+    """验证未答复专家会商会阻断报告提交。"""
+    report = build_report()
+    consultation = ExpertConsultation(
+        id=71,
+        project_id=7,
+        report_id=report.id,
+        consultation_code="CONSULT-001",
+        question="请研判本期高风险识别是否需要扩大外业调查范围。",
+        status="open",
+        requested_by="赵志远",
+        requested_by_code="manager-zhao-zhiyuan",
+        requested_by_role="project_manager",
+        requested_at=datetime.now(UTC),
+    )
+    dao = AsyncMock()
+    dao.get_project_by_code.return_value = build_project()
+    dao.get_report_by_code.return_value = report
+    dao.list_consultation_records.return_value = [
+        ConsultationRecord(
+            consultation=consultation,
+            report_code=report.report_code,
+        )
+    ]
+    user_service = AsyncMock()
+    user_service.require_capability.return_value = build_user()
+    service = MonitoringNetworkService(dao=dao, user_service=user_service)
+    request = PestReportSubmitRequest(
+        comment="报告内容和识别台账已复核，申请进入分级审核。",
+        operator_code="manager-zhao-zhiyuan",
+    )
+
+    with pytest.raises(ValidationException, match="未答复专家会商"):
+        asyncio.run(
+            service.submit_report(
+                AsyncMock(),
+                "RS-2026",
+                report.report_code,
+                request,
+            )
+        )
+
+
+def test_county_report_review_advances_to_prefecture() -> None:
+    """验证县级审核通过后只能进入地级审核而不能直接完成。"""
+    report = build_report("county_review")
+    dao = AsyncMock()
+    dao.get_project_by_code.return_value = build_project()
+    dao.get_report_by_code.return_value = report
+    dao.list_report_items.return_value = []
+    dao.list_consultation_records.return_value = []
+    user_service = AsyncMock()
+    user_service.require_capability.return_value = build_user("quality_inspector")
+    service = MonitoringNetworkService(dao=dao, user_service=user_service)
+    request = PestReportReviewRequest(
+        action="approve",
+        comment="县级监测范围、识别台账和会商结论核验通过。",
+        operator_code="quality-wang-haifeng",
+    )
+
+    response = asyncio.run(
+        service.review_report(
+            AsyncMock(),
+            "RS-2026",
+            report.report_code,
+            request,
+        )
+    )
+
+    assert response.status == "prefecture_review"
+    user_service.require_capability.assert_awaited_once_with(
+        ANY,
+        7,
+        "quality-wang-haifeng",
+        "review_county_pest_report",
+    )
+
+
+def test_province_report_review_generates_checksum_workbook(tmp_path) -> None:
+    """验证省级通过会生成可复核 SHA-256 的 XLSX 电子台账。"""
+    report = build_report("province_review")
+    item = PestReportItem(
+        id=81,
+        report_id=report.id,
+        assessment_id=31,
+        assessment_code="ASSESS-001",
+        district_code="230102",
+        district_name="道里区",
+        snapshot={
+            "city_name": "哈尔滨市",
+            "observed_at": "2026-07-15T08:00:00+00:00",
+            "model_code": "PEST-RICE",
+            "model_version": "1.0.0",
+            "target_name": "稻飞虱",
+            "prediction_label": "高风险",
+            "confidence": 0.91,
+            "risk_level": "high",
+            "alert_status": "delivered",
+            "input_sha256": "c" * 64,
+            "reviewed_by_code": "quality-wang-haifeng",
+        },
+        created_at=datetime.now(UTC),
+    )
+    dao = AsyncMock()
+    dao.get_project_by_code.return_value = build_project()
+    dao.get_report_by_code.return_value = report
+    dao.list_report_items.return_value = [item]
+    dao.list_consultation_records.return_value = []
+    dao.list_events.return_value = [
+        MonitoringEvent(
+            id=91,
+            project_id=7,
+            entity_type="pest_report",
+            entity_code=report.report_code,
+            event_type="report_approved_stage",
+            detail={"next_status": "approved"},
+            actor="农业农村厅审核代表",
+            actor_code="client-agri-dept",
+            actor_role="client_reviewer",
+            created_at=datetime.now(UTC),
+        )
+    ]
+    user_service = AsyncMock()
+    user_service.require_capability.return_value = build_user("client_reviewer")
+    service = MonitoringNetworkService(
+        dao=dao,
+        user_service=user_service,
+        storage_root=tmp_path,
+    )
+    db = AsyncMock()
+    request = PestReportReviewRequest(
+        action="approve",
+        comment="省级审核确认报告范围、结论和台账证据完整。",
+        operator_code="client-agri-dept",
+    )
+
+    response = asyncio.run(
+        service.review_report(
+            db,
+            "RS-2026",
+            report.report_code,
+            request,
+        )
+    )
+
+    assert response.status == "approved"
+    assert response.original_filename == "PEST-REPORT-001-v1.xlsx"
+    assert response.checksum_sha256 is not None
+    generated = tmp_path / "reports" / report.report_code / response.original_filename
+    assert generated.is_file()
+    assert generated.read_bytes().startswith(b"PK")
+    assert (
+        hashlib.sha256(generated.read_bytes()).hexdigest()
+        == response.checksum_sha256
+    )
+
+
+def test_answer_consultation_persists_server_checksum(tmp_path) -> None:
+    """验证专家答复实体由服务端计算大小和 SHA-256。"""
+    import io
+
+    report = build_report()
+    consultation = ExpertConsultation(
+        id=71,
+        project_id=7,
+        report_id=report.id,
+        consultation_code="CONSULT-001",
+        question="请研判是否需要扩大外业调查范围。",
+        status="open",
+        requested_by="赵志远",
+        requested_by_code="manager-zhao-zhiyuan",
+        requested_by_role="project_manager",
+        requested_at=datetime.now(UTC),
+    )
+    dao = AsyncMock()
+    dao.get_project_by_code.return_value = build_project()
+    dao.get_consultation_by_code.return_value = consultation
+    dao.get_report_by_id.return_value = report
+    user_service = AsyncMock()
+    user_service.require_capability.return_value = build_user("quality_inspector")
+    service = MonitoringNetworkService(
+        dao=dao,
+        user_service=user_service,
+        storage_root=tmp_path,
+    )
+    request = ExpertConsultationAnswerRequest(
+        expert_organization="黑龙江省植保技术单位",
+        expert_title="高级农艺师",
+        response="建议扩大重点县区灯诱和田间踏查范围，并保留原始调查表。",
+        operator_code="quality-wang-haifeng",
+    )
+    evidence = b"%PDF-1.7\nreal consultation evidence\n"
+
+    response = asyncio.run(
+        service.answer_consultation(
+            AsyncMock(),
+            "RS-2026",
+            consultation.consultation_code,
+            request,
+            "consultation.pdf",
+            io.BytesIO(evidence),
+        )
+    )
+
+    assert response.status == "answered"
+    assert response.evidence_size_bytes == len(evidence)
+    assert response.evidence_sha256 == hashlib.sha256(evidence).hexdigest()
+    assert response.answered_by_code == "manager-zhao-zhiyuan"
