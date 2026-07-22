@@ -32,6 +32,7 @@ from app.models.service_sharing import (
     ServiceUsageEvent,
     SharedService,
 )
+from app.models.statistics_report import StatisticsReport
 from app.models.supervision import (
     SupervisionCountyEvaluation,
     SupervisionEvent,
@@ -48,6 +49,7 @@ from app.models.thematic_map import (
     ThematicMapTemplate,
 )
 from app.models.uav import UavAircraft, UavArtifact, UavEvent, UavFinding, UavMission
+from app.models.vector_export import VectorExportPackage
 from app.models.workbench import (
     DatasetAsset,
     DatasetLineage,
@@ -113,6 +115,7 @@ __all__ = [
     "ServiceHealthCheck",
     "ServiceUsageEvent",
     "SharedService",
+    "StatisticsReport",
     "SupervisionCountyEvaluation",
     "SupervisionEvent",
     "SupervisionFinding",
@@ -130,6 +133,7 @@ __all__ = [
     "UavEvent",
     "UavFinding",
     "UavMission",
+    "VectorExportPackage",
     "WorkPackage",
     "WorkPackagePlot",
 ]

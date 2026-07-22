@@ -23,6 +23,9 @@ from app.schemas.delivery import DeliveryGenerateRequest
 from app.services.boundary_service import BoundaryService
 from app.services.delivery_service import DeliveryService
 from app.services.project_user_service import ProjectUserService
+from app.services.statistics_report_service import StatisticsReportService
+from app.services.vector_export_renderer import VectorExportRenderer
+from app.services.vector_export_service import VectorExportService
 
 
 def build_passing_gate(total_count: int = 809) -> QualityGateSummary:
@@ -579,6 +582,52 @@ def test_delivery_generation_archives_verified_physical_evidence(
     supervision_path.write_text('{"report":"verified"}', encoding="utf-8")
     disaster_report_path = tmp_path / "disaster-report.xlsx"
     disaster_report_path.write_bytes(b"PK\x03\x04verified-disaster-report")
+    statistics_report_root = tmp_path / "statistics-reports"
+    statistics_report_root.mkdir()
+    statistics_xlsx = b"PK\x03\x04verified-statistics-xlsx"
+    statistics_pdf = b"%PDF-1.4 verified-statistics-pdf"
+    statistics_manifest = {
+        "schema_version": "statistics-report-v1",
+        "report_code": "STRPT-TEST-001",
+        "report_title": "黑龙江省农作物种植面积监测统计报告",
+        "version": 1,
+        "task": {
+            "task_code": "RS-2026-045",
+            "task_name": "黑龙江省遥感监测",
+            "monitor_year": 2026,
+            "task_plot_count": 1,
+            "task_updated_at_snapshot": datetime(
+                2026,
+                7,
+                20,
+                tzinfo=UTC,
+            ).isoformat(),
+        },
+        "history_snapshot": {"count": 0, "latest_updated_at": None},
+        "statistics_snapshot": {"total_plot_count": 1},
+        "files": [
+            {
+                "path": "STRPT-TEST-001.xlsx",
+                "format": "XLSX",
+                "file_size_bytes": len(statistics_xlsx),
+                "checksum_sha256": hashlib.sha256(statistics_xlsx).hexdigest(),
+            },
+            {
+                "path": "STRPT-TEST-001.pdf",
+                "format": "PDF",
+                "file_size_bytes": len(statistics_pdf),
+                "checksum_sha256": hashlib.sha256(statistics_pdf).hexdigest(),
+            },
+        ],
+    }
+    statistics_report_path = statistics_report_root / "STRPT-TEST-001.zip"
+    with ZipFile(statistics_report_path, "w") as archive:
+        archive.writestr("STRPT-TEST-001.xlsx", statistics_xlsx)
+        archive.writestr("STRPT-TEST-001.pdf", statistics_pdf)
+        archive.writestr(
+            "manifest.json",
+            json.dumps(statistics_manifest, ensure_ascii=False),
+        )
     source_path = tmp_path / "source.tif"
     source_path.write_bytes(b"II*\x00source-raster")
     step_path = tmp_path / "step.tif"
@@ -599,6 +648,10 @@ def test_delivery_generation_archives_verified_physical_evidence(
         imagery_step_latest_at=generated_at,
         disaster_report_count=1,
         disaster_report_latest_at=generated_at,
+        statistics_report_count=1,
+        statistics_report_latest_at=generated_at,
+        vector_export_count=1,
+        vector_export_latest_at=generated_at,
     )
     task = SimpleNamespace(
         id=1,
@@ -658,6 +711,28 @@ def test_delivery_generation_archives_verified_physical_evidence(
             "storage://disaster-reports/RS-2026-045/DSRPT-TEST-001.xlsx"
         ),
     )
+    statistics_report = SimpleNamespace(
+        id=21,
+        task_id=task.id,
+        report_code="STRPT-TEST-001",
+        report_title="黑龙江省农作物种植面积监测统计报告",
+        version=1,
+        status="completed",
+        task_plot_count=1,
+        task_updated_at_snapshot=task.updated_at,
+        history_snapshot_count=0,
+        history_latest_updated_at=None,
+        bundle_uri="storage://statistics-reports/STRPT-TEST-001.zip",
+        bundle_size_bytes=statistics_report_path.stat().st_size,
+        bundle_checksum_sha256=hashlib.sha256(
+            statistics_report_path.read_bytes()
+        ).hexdigest(),
+        xlsx_size_bytes=len(statistics_xlsx),
+        xlsx_checksum_sha256=hashlib.sha256(statistics_xlsx).hexdigest(),
+        pdf_size_bytes=len(statistics_pdf),
+        pdf_checksum_sha256=hashlib.sha256(statistics_pdf).hexdigest(),
+        report_manifest=statistics_manifest,
+    )
     dataset_asset = SimpleNamespace(
         asset_code="DATASET-001",
         asset_name="公开 Sentinel-2 来源目录",
@@ -694,6 +769,46 @@ def test_delivery_generation_archives_verified_physical_evidence(
         irrigation_condition="irrigated",
         interpretation_status="interpreted",
         version=1,
+    )
+    vector_export_root = tmp_path / "vector-exports"
+    vector_export_root.mkdir()
+    vector_content, vector_manifest = VectorExportRenderer.build_archive(
+        [plot_row],
+        ["geojson", "shapefile", "kml", "filegdb"],
+        [],
+        [],
+        task,
+        1,
+        "VEXP-TEST-001",
+        "黑龙江省任务矢量成果",
+        1,
+        generated_at,
+        SimpleNamespace(
+            display_name="赵志远",
+            user_code="manager-zhao-zhiyuan",
+            role_code="project_manager",
+        ),
+        "交付归档测试",
+    )
+    vector_export_path = vector_export_root / "VEXP-TEST-001.zip"
+    vector_export_path.write_bytes(vector_content)
+    vector_export_package = SimpleNamespace(
+        id=31,
+        task_id=task.id,
+        export_code="VEXP-TEST-001",
+        export_title="黑龙江省任务矢量成果",
+        version=1,
+        status="completed",
+        formats=["geojson", "shapefile", "kml", "filegdb"],
+        district_codes=[],
+        land_classes=[],
+        feature_count=1,
+        task_plot_count=1,
+        task_updated_at_snapshot=task.updated_at,
+        file_uri="storage://vector-exports/VEXP-TEST-001.zip",
+        file_size_bytes=vector_export_path.stat().st_size,
+        checksum_sha256=hashlib.sha256(vector_content).hexdigest(),
+        export_manifest=vector_manifest,
     )
     statistics = SimpleNamespace(
         by_village=[],
@@ -745,6 +860,8 @@ def test_delivery_generation_archives_verified_physical_evidence(
     dao.get_thematic_map_products.return_value = [thematic_product]
     dao.get_supervision_reports.return_value = [supervision_report]
     dao.get_disaster_reports.return_value = [disaster_report]
+    dao.get_statistics_reports.return_value = [statistics_report]
+    dao.get_vector_exports.return_value = [vector_export_package]
     dao.get_dataset_assets.return_value = [dataset_asset]
     dao.get_imagery_steps.return_value = [imagery_step]
     dao.get_archive_state.return_value = archive_state
@@ -787,6 +904,18 @@ def test_delivery_generation_archives_verified_physical_evidence(
     supervision_service.verify_report_file.return_value = supervision_path
     disaster_report_service = MagicMock()
     disaster_report_service.verify_report_file.return_value = disaster_report_path
+    statistics_report_dao = AsyncMock()
+    statistics_report_dao.get_history_state.return_value = (0, None)
+    statistics_report_service = StatisticsReportService(
+        dao=statistics_report_dao,
+        storage_root=statistics_report_root,
+    )
+    vector_export_dao = AsyncMock()
+    vector_export_dao.count_features.return_value = 1
+    vector_export_service = VectorExportService(
+        dao=vector_export_dao,
+        storage_root=vector_export_root,
+    )
     field_artifact_service = build_field_artifact_service()
     field_artifact_service.load_verified_task_artifacts.return_value = [
         SimpleNamespace(
@@ -826,6 +955,8 @@ def test_delivery_generation_archives_verified_physical_evidence(
         thematic_map_service=thematic_service,
         supervision_service=supervision_service,
         disaster_report_service=disaster_report_service,
+        statistics_report_service=statistics_report_service,
+        vector_export_service=vector_export_service,
         field_artifact_service=field_artifact_service,
     )
     service.storage_dir = tmp_path / "deliveries"
@@ -846,6 +977,23 @@ def test_delivery_generation_archives_verified_physical_evidence(
         assert "thematic_maps/TM-TEST-001.png" in names
         assert "supervision/SUP-REPORT-001.json" in names
         assert "disasters/reports/DSRPT-TEST-001.xlsx" in names
+        assert (
+            "statistics/reports/STRPT-TEST-001/STRPT-TEST-001.xlsx" in names
+        )
+        assert "statistics/reports/STRPT-TEST-001/STRPT-TEST-001.pdf" in names
+        assert "statistics/reports/STRPT-TEST-001/manifest.json" in names
+        assert any(
+            name.startswith("vector/exports/VEXP-TEST-001/geojson/")
+            for name in names
+        )
+        assert any(
+            name.startswith("vector/exports/VEXP-TEST-001/shapefile/")
+            for name in names
+        )
+        assert any(
+            name.startswith("vector/exports/VEXP-TEST-001/filegdb/")
+            for name in names
+        )
         assert "archive/imagery_lineage.json" in names
         assert "archive/dataset_catalog.json" in names
         assert "archive/archive_index.json" in names
@@ -864,6 +1012,8 @@ def test_delivery_generation_archives_verified_physical_evidence(
     assert response.quality_summary["thematic_map_count"] == 1
     assert response.quality_summary["supervision_report_count"] == 1
     assert response.quality_summary["disaster_report_count"] == 1
+    assert response.quality_summary["statistics_report_count"] == 1
+    assert response.quality_summary["vector_export_count"] == 1
     assert response.quality_summary["imagery_step_count"] == 1
     assert response.quality_summary["field_verified_artifact_count"] == 1
     assert response.quality_summary["field_import_workbook_count"] == 1

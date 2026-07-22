@@ -56,6 +56,10 @@
 
 ![AgriScope 成果交付与标准化归档](docs/images/delivery-archive.png)
 
+### 多格式矢量成果导出
+
+![AgriScope 多格式矢量成果导出](docs/images/vector-export-modal.png)
+
 ### 数据共享服务
 
 ![AgriScope 数据共享服务](docs/images/service-sharing-workbench.png)
@@ -83,6 +87,7 @@
 - 项目成员、角色和业务能力持久化；三级审核、版本回退、成果生成与下载均由后端角色门禁控制并记录用户编码和角色快照。
 - 支持外业 CSV / Excel 原子导入、原始 XLSX 受控保存、点斑空间匹配、偏移判定和疑点人工处置；处置完整覆盖保留内业、采用外业、显式折中、驳回外业和重新打开，实际改图生成不可变版本，未匹配记录不能虚构图斑修改；现场照片、语音和调查表作为独立实体执行格式、大小、SHA-256 与稳定用户角色审计，历史 URL 明确标为未经校验引用。
 - 支持任务作用域内地级区域、县区、地类、作物、种植模式、权属村面积聚合，使用真实任务面积生成年度趋势，并由项目负责人导出 CSV。
+- 支持从真实任务图斑按县区和六类地类筛选，生成 GeoJSON、ESRI Shapefile、OGC KML 2.2、OpenFileGDB 四种实体矢量成果；服务端复核要素数量、EPSG:4326、中文属性、逐文件大小和 SHA-256，任务变化后旧版本自动转为审计历史。
 - 支持外部灾害模型 GeoJSON 批量导入、PostGIS 面积与省域校验、分级渲染、受灾面积评估和人工复核确认；全部斑块闭环后可生成含空间分布图、等级/类型图表、明细及来源 SHA-256 的 XLSX 实体专题报告，下载和成果归档前重新校验。
 - 支持辐射定标、DOS1 大气校正、普通重投影、GCP 仿射精校正、RPC+DEM 严格正射、真实行政区裁剪、百分位拉伸、直方图均衡化和波段产品流水线；GCP 按像素 RMSE 门禁，RPC 正射校验 DEM 实体、覆盖范围和 SHA-256。
 - 支持两景不同 `operational` 影像步骤实体的相位相关平移配准：服务端自动计算初始位移、有效重叠率和相关峰旁比，将待配准影像写入参考影像同网格 GeoTIFF，再从实体输出复算像素残差并按项目位置精度规则验收。
@@ -497,12 +502,30 @@ psql "$POSTGRES_DSN" -f scripts/migrations/20260722_disaster_geojson_import.sql
 CSV 包含任务编号、监测年度、导出人稳定编码和角色，以及各维度面积、公顷/亩换算、
 占比和年度趋势。只有项目负责人具备后端 `export_statistics` 能力。
 
+统计页面同时提供“正式报告”入口。项目负责人可生成服务端受控报告版本，每个版本
+原子封装为 ZIP，并包含：地级区域、县区、地类、作物、种植模式、权属村和年度趋势
+多工作表 XLSX；含任务摘要、种植结构、行政区排名、年度趋势和可自动分页来源审计的 A4 PDF；
+以及保存逐文件大小、SHA256 和统计快照摘要的 `manifest.json`。数据库保存 ZIP/XLSX/PDF
+三类实体校验值、任务图斑数、任务更新时间、历史快照数量和最近更新时间。任务图斑或
+历史年度快照变化后，当前版本自动转为历史；项目负责人和甲方仍可下载历史版本用于审计，
+但最终成果包只纳入当前通过实体复核的报告成员。
+
+成果交付页提供独立“矢量成果”入口。项目负责人可选择一个或多个县区、六类地类和
+GeoJSON、ESRI Shapefile、OGC KML 2.2、OpenFileGDB 格式，服务端从 `task_plots`
+当前任务范围查询真实 Polygon，并保留图斑属性、行政层级和 OSM 来源血缘。单包最多
+100000 个要素，空筛选结果会明确拒绝。生成后原子发布 ZIP，数据库保存版本、筛选快照、
+任务图斑数和更新时间、稳定生成人角色、生成依据、ZIP 大小/SHA256，以及 manifest
+内全部实体成员的大小/SHA256。下载前会重新打开四种格式并核验数量与 EPSG:4326；
+项目负责人和甲方可下载，最终成果包只纳入当前任务版本仍有效的矢量导出成员。
+
 已有数据库执行以下迁移清理旧固定年度数值：
 
 ```bash
 cd backend
 psql "$POSTGRES_DSN" -f scripts/migrations/20260722_statistics_task_scope.sql
 psql "$POSTGRES_DSN" -f scripts/migrations/20260722_statistics_history_import.sql
+psql "$POSTGRES_DSN" -f scripts/migrations/20260723_statistics_reports.sql
+psql "$POSTGRES_DSN" -f scripts/migrations/20260723_vector_export_packages.sql
 ```
 
 ## 可选 3D Tiles
@@ -749,6 +772,13 @@ psql "$POSTGRES_DSN" -f scripts/migrations/20260722_remove_seeded_task_audit.sql
 | GET | `/api/v1/statistics/area-summary/export.csv` | 项目负责人导出任务作用域多维面积统计 CSV |
 | POST | `/api/v1/statistics/annual-snapshots/import-csv` | 项目负责人导入真实历史年度统计并保存文件与角色审计 |
 | GET | `/api/v1/statistics/annual-snapshots/import-template.csv` | 下载历史年度统计标准模板 |
+| GET | `/api/v1/statistics/reports` | 查询面积统计正式报告当前版本和历史版本 |
+| POST | `/api/v1/statistics/reports/generate` | 项目负责人生成 XLSX、PDF、manifest 原子报告包 |
+| GET | `/api/v1/statistics/reports/{report_code}/download` | 项目负责人或甲方复核大小与 SHA-256 后下载报告 ZIP |
+| GET | `/api/v1/vector-exports/options` | 查询任务真实县区、六类地类、要素数量上限和四种格式能力 |
+| GET | `/api/v1/vector-exports` | 查询当前及历史矢量成果导出版本与失效原因 |
+| POST | `/api/v1/vector-exports/generate` | 项目负责人按县区、地类和格式生成真实多格式矢量 ZIP |
+| GET | `/api/v1/vector-exports/{export_code}/download` | 项目负责人或甲方复核格式、数量、大小和 SHA-256 后下载 |
 | GET | `/api/v1/disasters/summary` | 获取灾害斑块和受灾范围汇总 |
 | POST | `/api/v1/disasters/import-geojson` | 批量导入灾害模型 GeoJSON，重算面积并保存来源审计 |
 | PATCH | `/api/v1/disasters/{patch_code}` | 人工修正灾害等级和确认状态 |

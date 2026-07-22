@@ -17,8 +17,10 @@ from app.core.exceptions import NotFoundException, ValidationException
 from app.dao.delivery_dao import DeliveryArchiveState, DeliveryDAO
 from app.dao.workbench_dao import QualityGateSummary, WorkbenchDAO
 from app.models.disaster_report import DisasterReport
+from app.models.statistics_report import StatisticsReport
 from app.models.supervision import SupervisionReport
 from app.models.thematic_map import ThematicMapProduct
+from app.models.vector_export import VectorExportPackage
 from app.models.workbench import (
     DeliveryPackage,
     ImageryProcessingStep,
@@ -37,9 +39,11 @@ from app.services.field_verification_artifact_service import (
 )
 from app.services.imagery_service import ImageryService
 from app.services.project_user_service import ProjectUserService
+from app.services.statistics_report_service import StatisticsReportService
 from app.services.statistics_service import StatisticsService
 from app.services.supervision_service import SupervisionService
 from app.services.thematic_map_service import ThematicMapService
+from app.services.vector_export_service import VectorExportService
 
 
 @dataclass(frozen=True)
@@ -72,6 +76,8 @@ class DeliveryService:
         supervision_service: SupervisionService | None = None,
         field_artifact_service: FieldVerificationArtifactService | None = None,
         disaster_report_service: DisasterReportService | None = None,
+        statistics_report_service: StatisticsReportService | None = None,
+        vector_export_service: VectorExportService | None = None,
     ) -> None:
         """初始化成果交付服务。
 
@@ -86,6 +92,8 @@ class DeliveryService:
             supervision_service: 独立监理报告实体校验服务。
             field_artifact_service: 外业核查实体证据服务。
             disaster_report_service: 灾害专题报告实体校验服务。
+            statistics_report_service: 面积统计正式报告实体校验服务。
+            vector_export_service: 多格式矢量成果实体校验服务。
 
         Returns:
             None: 无返回值。
@@ -104,6 +112,10 @@ class DeliveryService:
         self.disaster_report_service = (
             disaster_report_service or DisasterReportService()
         )
+        self.statistics_report_service = (
+            statistics_report_service or StatisticsReportService()
+        )
+        self.vector_export_service = vector_export_service or VectorExportService()
         self.storage_dir = (
             Path(__file__).resolve().parents[2] / "storage" / "deliveries"
         )
@@ -150,6 +162,16 @@ class DeliveryService:
                 archive_state.disaster_report_count,
                 archive_state.disaster_report_latest_at,
                 "灾害专题报告",
+            ),
+            "statistics_report": (
+                archive_state.statistics_report_count,
+                archive_state.statistics_report_latest_at,
+                "面积统计正式报告",
+            ),
+            "vector_export": (
+                archive_state.vector_export_count,
+                archive_state.vector_export_latest_at,
+                "多格式矢量成果",
             ),
             "dataset_asset": (
                 archive_state.dataset_asset_count,
@@ -560,6 +582,8 @@ class DeliveryService:
         thematic_products = await self.dao.get_thematic_map_products(db, task.id)
         supervision_reports = await self.dao.get_supervision_reports(db, task.id)
         disaster_reports = await self.dao.get_disaster_reports(db, task.id)
+        statistics_reports = await self.dao.get_statistics_reports(db, task.id)
+        vector_exports = await self.dao.get_vector_exports(db, task.id)
         dataset_assets = await self.dao.get_dataset_assets(
             db,
             task.project_id,
@@ -585,6 +609,19 @@ class DeliveryService:
         disaster_report_artifacts = await self._load_disaster_report_artifacts(
             disaster_reports
         )
+        statistics_report_artifacts = (
+            await self._load_statistics_report_artifacts(
+                db,
+                statistics_reports,
+                task,
+                len(plot_rows),
+            )
+        )
+        vector_export_artifacts = await self._load_vector_export_artifacts(
+            db,
+            vector_exports,
+            task,
+        )
         imagery_lineage = await self._build_imagery_lineage(
             imagery,
             imagery_steps,
@@ -607,6 +644,8 @@ class DeliveryService:
             "thematic_artifacts": thematic_artifacts,
             "supervision_artifacts": supervision_artifacts,
             "disaster_report_artifacts": disaster_report_artifacts,
+            "statistics_report_artifacts": statistics_report_artifacts,
+            "vector_export_artifacts": vector_export_artifacts,
             "dataset_assets": dataset_assets,
             "archive_state": archive_state,
         }
@@ -711,6 +750,113 @@ class DeliveryService:
                     "source_uri": report.file_uri,
                 }
             )
+        return artifacts
+
+    async def _load_statistics_report_artifacts(
+        self,
+        db: AsyncSession,
+        reports: Sequence[StatisticsReport],
+        task: object,
+        current_plot_count: int,
+    ) -> list[dict]:
+        """校验并读取当前面积统计正式报告的内部实体。
+
+        Args:
+            db: 异步数据库会话。
+            reports: 当前完成状态的统计报告序列。
+            task: 当前作业任务。
+            current_plot_count: 当前任务有效图斑数量。
+
+        Returns:
+            list[dict]: XLSX、PDF 和 manifest 归档项。
+        """
+        artifacts: list[dict] = []
+        for report in reports:
+            await self.statistics_report_service.require_current_report(
+                db,
+                report,
+                task,
+                current_plot_count,
+            )
+            members = await asyncio.to_thread(
+                self.statistics_report_service.read_verified_members,
+                report,
+            )
+            for filename, content in members.items():
+                suffix = Path(filename).suffix.lower()
+                file_format = (
+                    "JSON" if filename == "manifest.json" else suffix[1:].upper()
+                )
+                artifacts.append(
+                    {
+                        "path": f"statistics/reports/{report.report_code}/{filename}",
+                        "category": "面积统计正式报告",
+                        "format": file_format,
+                        "record_count": report.task_plot_count,
+                        "description": (
+                            f"{report.report_title} V{report.version} · {file_format}"
+                        ),
+                        "content": content,
+                        "source_entity_code": report.report_code,
+                        "source_uri": report.bundle_uri,
+                    }
+                )
+        return artifacts
+
+    async def _load_vector_export_artifacts(
+        self,
+        db: AsyncSession,
+        packages: Sequence[VectorExportPackage],
+        task: object,
+    ) -> list[dict]:
+        """校验并读取当前多格式矢量成果成员。
+
+        Args:
+            db: 异步数据库会话。
+            packages: 当前完成状态的矢量导出包。
+            task: 当前作业任务。
+
+        Returns:
+            list[dict]: GeoJSON、Shapefile、KML、FileGDB 和清单归档项。
+        """
+        artifacts: list[dict] = []
+        for package in packages:
+            await self.vector_export_service.require_current_package(
+                db,
+                package,
+                task,
+            )
+            members = await asyncio.to_thread(
+                self.vector_export_service.read_verified_members,
+                package,
+            )
+            manifest_files = {
+                item["path"]: item
+                for item in package.export_manifest.get("files", [])
+            }
+            for filename, content in members.items():
+                evidence = manifest_files.get(filename, {})
+                artifacts.append(
+                    {
+                        "path": (
+                            f"vector/exports/{package.export_code}/{filename}"
+                        ),
+                        "category": "多格式矢量成果",
+                        "format": (
+                            "JSON"
+                            if filename == "manifest.json"
+                            else evidence.get("format", "Binary")
+                        ),
+                        "record_count": package.feature_count,
+                        "description": (
+                            f"{package.export_title} V{package.version} · "
+                            f"{filename}"
+                        ),
+                        "content": content,
+                        "source_entity_code": package.export_code,
+                        "source_uri": package.file_uri,
+                    }
+                )
         return artifacts
 
     async def _build_imagery_lineage(
@@ -902,6 +1048,22 @@ class DeliveryService:
                     ),
                     "count": quality_summary["disaster_report_count"],
                 },
+                "statistics_reports": {
+                    "status": (
+                        "included"
+                        if quality_summary["statistics_report_count"] > 0
+                        else "not_provided"
+                    ),
+                    "count": quality_summary["statistics_report_count"],
+                },
+                "vector_exports": {
+                    "status": (
+                        "included"
+                        if quality_summary["vector_export_count"] > 0
+                        else "not_provided"
+                    ),
+                    "count": quality_summary["vector_export_count"],
+                },
                 "field_evidence": {
                     "status": quality_summary["field_evidence_status"],
                     "count": (
@@ -1038,6 +1200,8 @@ class DeliveryService:
             source_data["thematic_artifacts"]
             + source_data["supervision_artifacts"]
             + source_data["disaster_report_artifacts"]
+            + source_data["statistics_report_artifacts"]
+            + source_data["vector_export_artifacts"]
         ):
             entries.append(DeliveryArchiveEntry(**artifact))
         for item in source_data["field_artifacts"]:
@@ -1255,6 +1419,18 @@ class DeliveryService:
             "disaster_report_latest_at": (
                 archive_state.disaster_report_latest_at.isoformat()
                 if archive_state.disaster_report_latest_at
+                else None
+            ),
+            "statistics_report_count": archive_state.statistics_report_count,
+            "statistics_report_latest_at": (
+                archive_state.statistics_report_latest_at.isoformat()
+                if archive_state.statistics_report_latest_at
+                else None
+            ),
+            "vector_export_count": archive_state.vector_export_count,
+            "vector_export_latest_at": (
+                archive_state.vector_export_latest_at.isoformat()
+                if archive_state.vector_export_latest_at
                 else None
             ),
             "dataset_asset_count": archive_state.dataset_asset_count,

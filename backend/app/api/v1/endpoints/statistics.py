@@ -3,17 +3,88 @@
 from typing import Annotated
 
 from fastapi import APIRouter, File, Form, Query, Response, UploadFile
+from fastapi.responses import FileResponse
 
 from app.api.deps import DatabaseSession
 from app.schemas.statistics import (
     AreaStatisticsResponse,
     AreaStatisticsSnapshotImportMetadata,
     AreaStatisticsSnapshotImportResponse,
+    StatisticsReportGenerateRequest,
+    StatisticsReportListResponse,
+    StatisticsReportResponse,
 )
+from app.services.statistics_report_service import StatisticsReportService
 from app.services.statistics_service import StatisticsService
 
 router = APIRouter(prefix="/api/v1/statistics", tags=["种植面积统计分析"])
 service = StatisticsService()
+report_service = StatisticsReportService()
+
+
+@router.get("/reports", response_model=StatisticsReportListResponse)
+async def list_statistics_reports(
+    db: DatabaseSession,
+    task_code: Annotated[str, Query(min_length=1, max_length=50)] = "RS-2026-045",
+) -> StatisticsReportListResponse:
+    """查询任务面积统计正式报告历史。
+
+    Args:
+        db: FastAPI 注入的异步数据库会话。
+        task_code: 作业任务编号。
+
+    Returns:
+        StatisticsReportListResponse: 当前与历史报告列表。
+    """
+    return await report_service.list_reports(db, task_code)
+
+
+@router.post("/reports/generate", response_model=StatisticsReportResponse)
+async def generate_statistics_report(
+    request: StatisticsReportGenerateRequest,
+    db: DatabaseSession,
+    task_code: Annotated[str, Query(min_length=1, max_length=50)] = "RS-2026-045",
+) -> StatisticsReportResponse:
+    """生成包含 XLSX、PDF 和 manifest 的正式统计报告包。
+
+    Args:
+        request: 操作人、报告标题和生成依据。
+        db: FastAPI 注入的异步数据库会话。
+        task_code: 作业任务编号。
+
+    Returns:
+        StatisticsReportResponse: 新生成报告摘要。
+    """
+    return await report_service.generate_report(db, task_code, request)
+
+
+@router.get("/reports/{report_code}/download", response_class=FileResponse)
+async def download_statistics_report(
+    report_code: str,
+    db: DatabaseSession,
+    requester_code: Annotated[str, Query(min_length=1, max_length=50)],
+) -> FileResponse:
+    """鉴权并复核后下载面积统计正式报告 ZIP。
+
+    Args:
+        report_code: 报告业务编号。
+        db: FastAPI 注入的异步数据库会话。
+        requester_code: 下载人稳定项目用户编码。
+
+    Returns:
+        FileResponse: 通过大小和 SHA-256 校验的 ZIP 报告包。
+    """
+    download = await report_service.authorize_download(
+        db,
+        report_code,
+        requester_code,
+    )
+    return FileResponse(
+        path=download.path,
+        media_type="application/zip",
+        filename=download.filename,
+        headers={"ETag": f'"{download.checksum_sha256}"'},
+    )
 
 
 @router.post(

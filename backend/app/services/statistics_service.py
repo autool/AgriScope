@@ -12,6 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.exceptions import NotFoundException, ValidationException
 from app.dao.statistics_dao import StatisticsDAO
+from app.dao.statistics_report_dao import StatisticsReportDAO
 from app.dao.workbench_dao import WorkbenchDAO
 from app.models.workbench import AreaStatisticsImportBatch, ReviewRecord
 from app.schemas.statistics import (
@@ -34,6 +35,7 @@ class StatisticsService:
         workbench_dao: WorkbenchDAO | None = None,
         project_user_service: ProjectUserService | None = None,
         snapshot_parser: StatisticsSnapshotCsvParser | None = None,
+        report_dao: StatisticsReportDAO | None = None,
     ) -> None:
         """初始化面积统计服务。
 
@@ -42,6 +44,7 @@ class StatisticsService:
             workbench_dao: 工作台公共 DAO。
             project_user_service: 项目用户能力服务。
             snapshot_parser: 历史统计 CSV 解析服务。
+            report_dao: 正式统计报告 DAO。
 
         Returns:
             None: 无返回值。
@@ -50,6 +53,7 @@ class StatisticsService:
         self.workbench_dao = workbench_dao or WorkbenchDAO()
         self.project_user_service = project_user_service or ProjectUserService()
         self.snapshot_parser = snapshot_parser or StatisticsSnapshotCsvParser()
+        self.report_dao = report_dao or StatisticsReportDAO()
 
     @staticmethod
     def _build_groups(rows: list[object], total_area: Decimal) -> list[AreaGroupItem]:
@@ -299,6 +303,9 @@ class StatisticsService:
                     import_batch_id=batch.id,
                 )
             task.updated_at = imported_at
+            superseded_report_count = (
+                await self.report_dao.supersede_completed_reports(db, task.id)
+            )
             await self.workbench_dao.add_review_record(
                 db,
                 ReviewRecord(
@@ -313,6 +320,7 @@ class StatisticsService:
                         f"来源 {metadata.source_name} {metadata.source_version}；"
                         f"策略 {metadata.conflict_strategy}；SHA256 {checksum}；"
                         f"文件 {filename}；{metadata.comment}"
+                        f"；失效正式统计报告 {superseded_report_count} 份"
                     ),
                 ),
             )

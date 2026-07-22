@@ -2,6 +2,7 @@
 import {
   BarChartOutlined,
   DownloadOutlined,
+  FileDoneOutlined,
   UploadOutlined,
 } from '@ant-design/icons-vue'
 import { message } from 'ant-design-vue'
@@ -10,22 +11,30 @@ import { computed, onMounted, ref } from 'vue'
 
 import StatisticsRankingTable from '@/components/statistics/StatisticsRankingTable.vue'
 import StatisticsHistoryImportModal from '@/components/statistics/StatisticsHistoryImportModal.vue'
+import StatisticsReportModal from '@/components/statistics/StatisticsReportModal.vue'
 import { useStatisticsStore } from '@/store/statisticsStore'
 import type {
   AreaGroupItem,
   AreaStatisticsHistoryImportMetadata,
+  StatisticsReport,
 } from '@/types/workbench'
 
 const statisticsStore = useStatisticsStore()
 const {
   canExportComputed,
   canImportHistoryComputed,
+  canDownloadReportComputed,
+  canGenerateReportComputed,
+  downloadingReportCodeRef,
   exportingRef,
+  generatingReportRef,
   importingHistoryRef,
   loadingRef,
+  reportsRef,
   statisticsRef,
 } = storeToRefs(statisticsStore)
 const historyImportOpenRef = ref<boolean>(false)
+const reportModalOpenRef = ref<boolean>(false)
 const rankingDimensionRef = ref<'city' | 'district' | 'village' | 'planting'>(
   'city',
 )
@@ -127,6 +136,45 @@ const handleImportHistory = async (
   }
 }
 
+/**
+ * 生成服务端正式面积统计报告包。
+ * Args:
+ *   reportTitle: 报告标题。
+ *   comment: 生成依据。
+ * Returns:
+ *   Promise<void>: 生成完成后结束。
+ */
+const handleGenerateReport = async (
+  reportTitle: string,
+  comment: string,
+): Promise<void> => {
+  try {
+    const report = await statisticsStore.generateReport(reportTitle, comment)
+    message.success(`正式统计报告 ${report.report_code} 已生成`)
+  } catch {
+    // 请求拦截器已显示安全错误，保留弹窗便于修正。
+  }
+}
+
+/**
+ * 下载服务端校验后的正式统计报告 ZIP。
+ * Args:
+ *   report: 报告摘要。
+ * Returns:
+ *   Promise<void>: 下载动作触发后结束。
+ */
+const handleDownloadReport = async (
+  report: StatisticsReport,
+): Promise<void> => {
+  try {
+    const { blob, filename } = await statisticsStore.downloadReport(report)
+    downloadBlob(blob, filename)
+    message.success(`报告 V${report.version} 已通过完整性校验并开始下载`)
+  } catch {
+    // 请求拦截器已显示安全错误。
+  }
+}
+
 onMounted(() => {
   void statisticsStore.load()
 })
@@ -150,6 +198,11 @@ onMounted(() => {
             @click="historyImportOpenRef = true"
           >
             <UploadOutlined />导入历史快照
+          </a-button>
+        </a-tooltip>
+        <a-tooltip title="生成、查看和下载 XLSX/PDF 正式统计报告">
+          <a-button size="small" @click="reportModalOpenRef = true">
+            <FileDoneOutlined />正式报告
           </a-button>
         </a-tooltip>
         <a-tooltip
@@ -243,6 +296,20 @@ onMounted(() => {
       @cancel="historyImportOpenRef = false"
       @submit="handleImportHistory"
       @download-template="handleDownloadHistoryTemplate"
+    />
+    <StatisticsReportModal
+      :open="reportModalOpenRef"
+      :task-code="statisticsRef?.task_code || '--'"
+      :monitor-year="statisticsRef?.monitor_year || null"
+      :reports="reportsRef?.items || []"
+      :generating="generatingReportRef"
+      :downloading-code="downloadingReportCodeRef"
+      :can-generate="canGenerateReportComputed"
+      :can-download="canDownloadReportComputed"
+      @cancel="reportModalOpenRef = false"
+      @generate="handleGenerateReport"
+      @download="handleDownloadReport"
+      @refresh="statisticsStore.load"
     />
   </div>
 </template>

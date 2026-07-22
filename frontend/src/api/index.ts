@@ -4,6 +4,9 @@ import type {
   AreaStatistics,
   AreaStatisticsHistoryImportMetadata,
   AreaStatisticsHistoryImportResult,
+  StatisticsReport,
+  StatisticsReportGeneratePayload,
+  StatisticsReportList,
   BatchPlotAttributeUpdatePayload,
   BatchPlotAttributeUpdateResult,
   BoundaryProperties,
@@ -577,6 +580,51 @@ export const exportAreaStatisticsCsv = (
   responseType: 'blob',
   timeout: 60_000,
 })
+
+/**
+ * 查询任务面积统计正式报告历史。
+ * @param {string} taskCode 作业任务编号。
+ * @returns {Promise<object>} 当前与历史报告列表。
+ */
+export const getStatisticsReports = (
+  taskCode: string = 'RS-2026-045',
+) => request.get<StatisticsReportList>('/v1/statistics/reports', {
+  params: { task_code: taskCode },
+  timeout: 60_000,
+})
+
+/**
+ * 生成包含 XLSX、PDF 和 manifest 的正式统计报告包。
+ * @param {object} payload 操作人、报告标题和生成依据。
+ * @param {string} taskCode 作业任务编号。
+ * @returns {Promise<object>} 新生成报告摘要。
+ */
+export const generateStatisticsReport = (
+  payload: StatisticsReportGeneratePayload,
+  taskCode: string = 'RS-2026-045',
+) => request.post<StatisticsReport>(
+  '/v1/statistics/reports/generate',
+  payload,
+  { params: { task_code: taskCode }, timeout: 120_000 },
+)
+
+/**
+ * 下载服务端生成并重新校验的正式统计报告 ZIP。
+ * @param {string} reportCode 报告业务编号。
+ * @param {string} requesterCode 下载人稳定用户编码。
+ * @returns {Promise<Blob>} 含 XLSX、PDF 和 manifest 的 ZIP。
+ */
+export const downloadStatisticsReport = (
+  reportCode: string,
+  requesterCode: string,
+) => request.get<Blob>(
+  `/v1/statistics/reports/${encodeURIComponent(reportCode)}/download`,
+  {
+    params: { requester_code: requesterCode },
+    responseType: 'blob',
+    timeout: 120_000,
+  },
+)
 
 /**
  * 获取任务灾害斑块、受灾面积和专题图层。

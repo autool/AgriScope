@@ -8,6 +8,7 @@ export {}
 declare module 'vue' {
   export interface GlobalComponents {
     AAlert: typeof import('ant-design-vue/es')['Alert']
+    AAutoComplete: typeof import('ant-design-vue/es')['AutoComplete']
     AAvatar: typeof import('ant-design-vue/es')['Avatar']
     ABadge: typeof import('ant-design-vue/es')['Badge']
     AButton: typeof import('ant-design-vue/es')['Button']
@@ -112,6 +113,7 @@ declare module 'vue' {
     SpatialWorkbench: typeof import('./src/components/workbench/SpatialWorkbench.vue')['default']
     StatisticsHistoryImportModal: typeof import('./src/components/statistics/StatisticsHistoryImportModal.vue')['default']
     StatisticsRankingTable: typeof import('./src/components/statistics/StatisticsRankingTable.vue')['default']
+    StatisticsReportModal: typeof import('./src/components/statistics/StatisticsReportModal.vue')['default']
     SupervisionCountyEvaluationModal: typeof import('./src/components/supervision/SupervisionCountyEvaluationModal.vue')['default']
     SupervisionFindingDrawer: typeof import('./src/components/supervision/SupervisionFindingDrawer.vue')['default']
     SupervisionFindingModal: typeof import('./src/components/supervision/SupervisionFindingModal.vue')['default']
@@ -130,6 +132,7 @@ declare module 'vue' {
     UavFindingPanel: typeof import('./src/components/uav/UavFindingPanel.vue')['default']
     UavMissionMap: typeof import('./src/components/uav/UavMissionMap.vue')['default']
     UserIdentitySwitcher: typeof import('./src/components/layout/UserIdentitySwitcher.vue')['default']
+    VectorExportModal: typeof import('./src/components/delivery/VectorExportModal.vue')['default']
     WorkspaceHeader: typeof import('./src/components/workbench/WorkspaceHeader.vue')['default']
   }
 }

@@ -17,6 +17,7 @@ rasterio = "^1.4.3"
 python-multipart = "^0.0.20"
 openpyxl = "^3.1.5"
 pillow = "^10.2.0"
+fiona = "^1.10.1"
 
 [tool.poetry.group.dev.dependencies]
 pytest = "^8.3.0"

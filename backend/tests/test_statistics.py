@@ -222,10 +222,13 @@ def test_statistics_history_import_persists_file_audit() -> None:
         user_code="manager-zhao-zhiyuan",
         role_code="project_manager",
     )
+    report_dao = AsyncMock()
+    report_dao.supersede_completed_reports.return_value = 1
     service = StatisticsService(
         dao=dao,
         workbench_dao=workbench_dao,
         project_user_service=user_service,
+        report_dao=report_dao,
     )
     metadata = AreaStatisticsSnapshotImportMetadata(
         source_name="2025 年农业农村统计年报",
@@ -261,6 +264,7 @@ def test_statistics_history_import_persists_file_audit() -> None:
     assert batch.source_uri == "archive://statistics/2025/final.csv"
     assert batch.imported_by_code == "manager-zhao-zhiyuan"
     workbench_dao.add_review_record.assert_awaited_once()
+    report_dao.supersede_completed_reports.assert_awaited_once_with(db, task.id)
     db.commit.assert_awaited_once()
 
 

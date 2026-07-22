@@ -1,20 +1,41 @@
 <script setup lang="ts">
-import { CheckCircleOutlined, FileDoneOutlined } from '@ant-design/icons-vue'
+import {
+  CheckCircleOutlined,
+  ExportOutlined,
+  FileDoneOutlined,
+} from '@ant-design/icons-vue'
 import { message } from 'ant-design-vue'
 import { storeToRefs } from 'pinia'
 import { computed, onMounted, ref } from 'vue'
 
+import VectorExportModal from '@/components/delivery/VectorExportModal.vue'
 import { useDeliveryStore } from '@/store/deliveryStore'
 import { useUserStore } from '@/store/userStore'
+import { useVectorExportStore } from '@/store/vectorExportStore'
 import { useWorkbenchStore } from '@/store/workbenchStore'
+import type {
+  VectorExportGeneratePayload,
+  VectorExportPackage,
+} from '@/types/vectorExport'
 
 const workbenchStore = useWorkbenchStore()
 const deliveryStore = useDeliveryStore()
 const userStore = useUserStore()
+const vectorExportStore = useVectorExportStore()
 const { deliveriesRef } = storeToRefs(deliveryStore)
+const {
+  canDownloadComputed: canDownloadVectorComputed,
+  canGenerateComputed: canGenerateVectorComputed,
+  downloadingCodeRef: vectorDownloadingCodeRef,
+  generatingRef: vectorGeneratingRef,
+  listRef: vectorExportListRef,
+  loadingRef: vectorLoadingRef,
+  optionsRef: vectorExportOptionsRef,
+} = storeToRefs(vectorExportStore)
 const { overviewRef } = storeToRefs(workbenchStore)
 const selectedPackageCodeRef = ref<string | null>(null)
 const generatingRef = ref(false)
+const vectorExportOpenRef = ref<boolean>(false)
 const selectedPackageComputed = computed(() => deliveriesRef.value?.packages?.find(
   (item) => item.package_code === selectedPackageCodeRef.value,
 ) || deliveriesRef.value?.packages?.[0] || null)
@@ -91,8 +112,54 @@ const handleGenerate = async () => {
   }
 }
 
+const downloadBlob = (blob: Blob, filename: string): void => {
+  const url = window.URL.createObjectURL(blob)
+  const link = document.createElement('a')
+  link.href = url
+  link.download = filename
+  link.click()
+  window.URL.revokeObjectURL(url)
+}
+
+/**
+ * 生成真实多格式矢量成果包。
+ * Args:
+ *   payload: 格式、县区、地类和生成依据。
+ * Returns:
+ *   Promise<void>: 生成并刷新完成后结束。
+ */
+const handleGenerateVector = async (
+  payload: Omit<VectorExportGeneratePayload, 'operator_code'>,
+): Promise<void> => {
+  try {
+    const result = await vectorExportStore.generate(payload)
+    message.success(`矢量成果 V${result.version} 已生成，共 ${result.feature_count} 个图斑`)
+  } catch {
+    // 请求拦截器已显示安全错误，保留弹窗便于修正。
+  }
+}
+
+/**
+ * 下载并保存通过完整格式复核的矢量成果 ZIP。
+ * Args:
+ *   item: 导出版本摘要。
+ * Returns:
+ *   Promise<void>: 下载动作触发后结束。
+ */
+const handleDownloadVector = async (
+  item: VectorExportPackage,
+): Promise<void> => {
+  try {
+    const { blob, filename } = await vectorExportStore.download(item)
+    downloadBlob(blob, filename)
+    message.success(`矢量成果 V${item.version} 已通过完整性校验并开始下载`)
+  } catch {
+    // 请求拦截器已显示安全错误。
+  }
+}
+
 onMounted(() => {
-  void deliveryStore.load()
+  void Promise.all([deliveryStore.load(), vectorExportStore.load()])
 })
 </script>
 
@@ -100,14 +167,19 @@ onMounted(() => {
   <div class="delivery-view">
     <header class="delivery-toolbar">
       <span><FileDoneOutlined /> 成果包生成、校验与归档</span>
-      <a-button
-        type="primary"
-        :disabled="!canGenerateComputed"
-        :loading="generatingRef"
-        @click="handleGenerate"
-      >
-        生成新版本
-      </a-button>
+      <div>
+        <a-button @click="vectorExportOpenRef = true">
+          <ExportOutlined />矢量成果
+        </a-button>
+        <a-button
+          type="primary"
+          :disabled="!canGenerateComputed"
+          :loading="generatingRef"
+          @click="handleGenerate"
+        >
+          生成新版本
+        </a-button>
+      </div>
     </header>
     <a-alert
       :type="canGenerateComputed ? 'success' : 'warning'"
@@ -186,6 +258,21 @@ onMounted(() => {
         <section class="checksum"><span><small>SHA-256 CHECKSUM</small><code>{{ selectedPackageComputed.checksum_sha256 }}</code></span><a-tag :color="selectedPackageComputed.is_current ? 'green' : 'default'">{{ selectedPackageComputed.is_current ? '校验通过' : '历史校验值' }}</a-tag></section>
       </main>
     </div>
+    <VectorExportModal
+      :open="vectorExportOpenRef"
+      :task-code="overviewRef?.task.task_code || '--'"
+      :options="vectorExportOptionsRef"
+      :items="vectorExportListRef?.items || []"
+      :generating="vectorGeneratingRef"
+      :loading="vectorLoadingRef"
+      :downloading-code="vectorDownloadingCodeRef"
+      :can-generate="canGenerateVectorComputed"
+      :can-download="canDownloadVectorComputed"
+      @cancel="vectorExportOpenRef = false"
+      @refresh="vectorExportStore.load"
+      @generate="handleGenerateVector"
+      @download="handleDownloadVector"
+    />
   </div>
 </template>
 
@@ -193,6 +280,7 @@ onMounted(() => {
 .delivery-view { height: 100%; padding: 10px; overflow: auto; background: #eef3f0; }
 .delivery-toolbar { display: flex; align-items: center; justify-content: space-between; height: 44px; padding: 0 12px; margin-bottom: 9px; background: #fff; border: 1px solid #dfe6e2; border-radius: 6px; }
 .delivery-toolbar > span { display: flex; gap: 7px; align-items: center; font-size: 11px; font-weight: 600; }
+.delivery-toolbar > div { display: flex; gap: 7px; }
 .delivery-grid { display: grid; grid-template-columns: 270px minmax(0, 1fr); gap: 10px; margin-top: 9px; }
 .version-panel, .package-panel { background: #fff; border: 1px solid #dfe6e2; border-radius: 7px; }
 .version-panel { padding: 12px; }

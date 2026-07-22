@@ -9,8 +9,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.disaster_report import DisasterReport
 from app.models.plot import FarmlandPlot
+from app.models.statistics_report import StatisticsReport
 from app.models.supervision import SupervisionPlan, SupervisionReport
 from app.models.thematic_map import ThematicMapProduct
+from app.models.vector_export import VectorExportPackage
 from app.models.workbench import (
     DatasetAsset,
     DeliveryPackage,
@@ -35,6 +37,10 @@ class DeliveryArchiveState:
     imagery_step_latest_at: datetime | None
     disaster_report_count: int = 0
     disaster_report_latest_at: datetime | None = None
+    statistics_report_count: int = 0
+    statistics_report_latest_at: datetime | None = None
+    vector_export_count: int = 0
+    vector_export_latest_at: datetime | None = None
 
 
 class DeliveryDAO:
@@ -217,6 +223,54 @@ class DeliveryDAO:
         )
         return result.scalars().all()
 
+    async def get_statistics_reports(
+        self,
+        db: AsyncSession,
+        task_id: int,
+    ) -> Sequence[StatisticsReport]:
+        """查询任务当前有效面积统计正式报告。
+
+        Args:
+            db: 异步数据库会话。
+            task_id: 作业任务主键。
+
+        Returns:
+            Sequence[StatisticsReport]: 当前完成报告，正常仅一份。
+        """
+        result = await db.execute(
+            select(StatisticsReport)
+            .where(
+                StatisticsReport.task_id == task_id,
+                StatisticsReport.status == "completed",
+            )
+            .order_by(StatisticsReport.generated_at.desc())
+        )
+        return result.scalars().all()
+
+    async def get_vector_exports(
+        self,
+        db: AsyncSession,
+        task_id: int,
+    ) -> Sequence[VectorExportPackage]:
+        """查询任务当前有效多格式矢量成果包。
+
+        Args:
+            db: 异步数据库会话。
+            task_id: 作业任务主键。
+
+        Returns:
+            Sequence[VectorExportPackage]: 当前完成导出包，正常仅一份。
+        """
+        result = await db.execute(
+            select(VectorExportPackage)
+            .where(
+                VectorExportPackage.task_id == task_id,
+                VectorExportPackage.status == "completed",
+            )
+            .order_by(VectorExportPackage.generated_at.desc())
+        )
+        return result.scalars().all()
+
     async def get_dataset_assets(
         self,
         db: AsyncSession,
@@ -320,6 +374,28 @@ class DeliveryDAO:
                 )
             )
         ).one()
+        statistics_report_row = (
+            await db.execute(
+                select(
+                    func.count(StatisticsReport.id),
+                    func.max(StatisticsReport.generated_at),
+                ).where(
+                    StatisticsReport.task_id == task_id,
+                    StatisticsReport.status == "completed",
+                )
+            )
+        ).one()
+        vector_export_row = (
+            await db.execute(
+                select(
+                    func.count(VectorExportPackage.id),
+                    func.max(VectorExportPackage.generated_at),
+                ).where(
+                    VectorExportPackage.task_id == task_id,
+                    VectorExportPackage.status == "completed",
+                )
+            )
+        ).one()
         dataset_row = (
             await db.execute(
                 select(
@@ -356,6 +432,10 @@ class DeliveryDAO:
             supervision_report_latest_at=supervision_row[1],
             disaster_report_count=int(disaster_report_row[0] or 0),
             disaster_report_latest_at=disaster_report_row[1],
+            statistics_report_count=int(statistics_report_row[0] or 0),
+            statistics_report_latest_at=statistics_report_row[1],
+            vector_export_count=int(vector_export_row[0] or 0),
+            vector_export_latest_at=vector_export_row[1],
             dataset_asset_count=int(dataset_row[0] or 0),
             dataset_asset_latest_at=dataset_row[1],
             imagery_step_count=int(imagery_row[0] or 0),

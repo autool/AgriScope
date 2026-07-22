@@ -202,6 +202,43 @@ export interface AreaStatisticsHistoryImportResult {
   imported_at: string
 }
 
+export interface StatisticsReportGeneratePayload {
+  operator_code: string
+  report_title: string
+  comment: string
+}
+
+export interface StatisticsReport {
+  report_code: string
+  report_title: string
+  version: number
+  status: 'completed' | 'superseded' | 'invalid'
+  bundle_size_bytes: number
+  bundle_checksum_sha256: string
+  xlsx_size_bytes: number
+  xlsx_checksum_sha256: string
+  pdf_size_bytes: number
+  pdf_checksum_sha256: string
+  task_plot_count: number
+  task_updated_at_snapshot: string
+  history_snapshot_count: number
+  history_latest_updated_at: string | null
+  report_manifest: Record<string, unknown>
+  generation_comment: string
+  generated_by: string
+  generated_by_code: string
+  generated_by_role: UserRoleCode
+  generated_at: string
+  download_url: string | null
+  is_current: boolean
+  stale_reason: string | null
+}
+
+export interface StatisticsReportList {
+  task_code: string
+  items: StatisticsReport[]
+}
+
 export interface ImageryProcessingStep {
   step_code: string
   step_name: string

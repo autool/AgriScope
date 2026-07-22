@@ -35,6 +35,7 @@ from app.api.v1.endpoints import (
     supervision,
     thematic_map,
     uav,
+    vector_export,
     workbench,
 )
 from app.core.api_envelope import ApiEnvelopeMiddleware, configure_openapi_envelopes
@@ -191,6 +192,7 @@ app.include_router(workbench.router)
 app.include_router(field_verification.router)
 app.include_router(review.router)
 app.include_router(statistics.router)
+app.include_router(vector_export.router)
 app.include_router(disaster.router)
 app.include_router(imagery.router)
 app.include_router(imagery_fusion.router)
