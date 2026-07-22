@@ -1,0 +1,60 @@
+services:
+  postgis:
+    image: postgis/postgis:14-3.2
+    environment:
+      POSTGRES_DB: farmland
+      POSTGRES_USER: admin
+      POSTGRES_PASSWORD: admin123
+    volumes:
+      - ./backend/scripts/init_db.sql:/docker-entrypoint-initdb.d/init.sql:ro
+      - ./backend/data/administrative_boundaries:/docker-entrypoint-initdb.d/data/administrative_boundaries:ro
+      - ./backend/data/farmland:/docker-entrypoint-initdb.d/data/farmland:ro
+      - postgis_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U admin -d farmland"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    environment:
+      DATABASE_URL: postgresql+asyncpg://admin:admin123@postgis:5432/farmland
+      APP_ENV: production
+      LOG_LEVEL: INFO
+      MAX_IMAGERY_UPLOAD_BYTES: 10737418240
+    depends_on:
+      postgis:
+        condition: service_healthy
+    ports:
+      - "8000:8000"
+    volumes:
+      - backend_storage:/app/storage
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    depends_on:
+      backend:
+        condition: service_healthy
+    ports:
+      - "80:80"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost/"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+volumes:
+  postgis_data:
+  backend_storage:

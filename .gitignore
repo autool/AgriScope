@@ -1,0 +1,22 @@
+# Python
+backend/__pycache__/
+backend/**/__pycache__/
+backend/.pytest_cache/
+backend/.ruff_cache/
+backend/.venv/
+backend/.env
+
+# Node
+frontend/node_modules/
+frontend/dist/
+frontend/.env.local
+frontend/.env.*.local
+
+# IDE
+.vscode/
+.idea/
+*.log
+
+# Runtime-generated delivery artifacts
+backend/storage/deliveries/*.zip
+backend/storage/imagery/

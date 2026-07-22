@@ -1,0 +1,30 @@
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#app {
+  width: 100%;
+  min-width: 1080px;
+  min-height: 100%;
+  margin: 0;
+  font-family:
+    Inter, "PingFang SC", "Microsoft YaHei", system-ui, -apple-system, sans-serif;
+  color: #21332b;
+}
+
+button,
+input {
+  font: inherit;
+}
+
+.cesium-viewer-bottom,
+.cesium-viewer-toolbar {
+  z-index: 4;
+}
+
+// 项目使用统一可见的 OSM 版权条，隐藏 Cesium 默认折叠版权按钮。
+.cesium-widget-credits {
+  display: none !important;
+}

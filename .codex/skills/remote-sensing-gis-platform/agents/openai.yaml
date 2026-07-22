@@ -1,0 +1,4 @@
+interface:
+  display_name: "遥感监测 GIS 全栈规范"
+  short_description: "按分层架构与政府采购业务基线开发省级遥感生产平台"
+  default_prompt: "使用 $remote-sensing-gis-platform 按项目规范和黑龙江省公开采购业务基线实现并验证下一项遥感生产平台功能。"

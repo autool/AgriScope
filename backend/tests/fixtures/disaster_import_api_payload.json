@@ -1,0 +1,34 @@
+{
+  "type": "FeatureCollection",
+  "source_name": "接口验收测试模型",
+  "source_uri": "test://disaster-import/acceptance-20260722",
+  "source_version": "acceptance-v1",
+  "operator_code": "interp-li-jing",
+  "conflict_policy": "reject",
+  "comment": "仅用于接口验收，验证后清理数据库记录",
+  "features": [
+    {
+      "type": "Feature",
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [
+          [
+            [126.45, 45.75],
+            [126.451, 45.75],
+            [126.451, 45.751],
+            [126.45, 45.75]
+          ]
+        ]
+      },
+      "properties": {
+        "patch_code": "DS-API-ACCEPTANCE-001",
+        "source_feature_id": "acceptance-feature-001",
+        "disaster_type": "洪涝",
+        "severity": "轻度",
+        "crop_type": "玉米",
+        "detected_at": "2026-07-20",
+        "ndvi_change": -0.08
+      }
+    }
+  ]
+}

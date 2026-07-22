@@ -1,0 +1,33 @@
+{
+  "source_name": "接口验收外业采集批次",
+  "source_uri": "test://field-import/acceptance-20260722",
+  "source_version": "acceptance-v1",
+  "uploader_code": "field-zhang-qiang",
+  "comment": "仅用于接口与自动匹配验收，验证后清理",
+  "records": [
+    {
+      "verification_code": "FV-API-ACCEPTANCE-001",
+      "source_record_id": "acceptance-mobile-001",
+      "lon": 132.59282285348547,
+      "lat": 47.61248635,
+      "observed_land_class": "耕地",
+      "observed_crop_type": "玉米",
+      "photo_urls": ["test://field-media/acceptance-001.jpg"],
+      "voice_url": null,
+      "remark": "使用真实 OSM 图斑内部点验证包含匹配",
+      "captured_at": "2026-06-20T09:30:00+08:00"
+    },
+    {
+      "verification_code": "FV-API-ACCEPTANCE-002",
+      "source_record_id": "acceptance-mobile-002",
+      "lon": 124.0,
+      "lat": 52.5,
+      "observed_land_class": "林地",
+      "observed_crop_type": null,
+      "photo_urls": ["test://field-media/acceptance-002.jpg"],
+      "voice_url": "test://field-media/acceptance-002.m4a",
+      "remark": "使用省域内无邻近任务图斑点验证未匹配疑点",
+      "captured_at": "2026-06-20T10:00:00+08:00"
+    }
+  ]
+}
