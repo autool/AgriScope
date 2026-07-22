@@ -27,6 +27,7 @@ services:
       APP_ENV: production
       LOG_LEVEL: INFO
       MAX_IMAGERY_UPLOAD_BYTES: 10737418240
+      CHANGE_PREVIEW_MAX_DIMENSION: 1400
     depends_on:
       postgis:
         condition: service_healthy

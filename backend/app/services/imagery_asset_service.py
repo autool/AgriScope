@@ -737,8 +737,29 @@ class ImageryAssetService:
             )
         ]
 
-    def _verify_asset_file(self, asset: ImageryAsset) -> tuple[bool, str | None]:
-        """校验资产目录中的文件存在性、大小和 SHA256。
+    def resolve_verified_asset_path(self, asset: ImageryAsset) -> Path:
+        """解析并校验影像资产受控实体路径、大小和格式签名。
+
+        Args:
+            asset: 影像资产 ORM 对象。
+
+        Returns:
+            Path: 已确认位于影像存储根目录内的实体路径。
+        """
+        if not asset.file_uri or not asset.file_uri.startswith("storage://imagery/"):
+            raise ValidationException("仅有元数据，未关联实体文件")
+        relative_path = asset.file_uri.removeprefix("storage://imagery/")
+        path = (self.storage_dir / relative_path).resolve()
+        if not path.is_relative_to(self.storage_dir.resolve()) or not path.is_file():
+            raise ValidationException("实体影像文件不存在")
+        if path.stat().st_size != asset.file_size_bytes:
+            raise ValidationException("实体文件大小与资产记录不一致")
+        if not has_supported_raster_signature(path):
+            raise ValidationException("实体文件格式签名不合法")
+        return path
+
+    def verify_asset_file(self, asset: ImageryAsset) -> tuple[bool, str | None]:
+        """返回影像实体文件是否满足受控路径、大小和格式要求。
 
         Args:
             asset: 影像资产 ORM 对象。
@@ -746,16 +767,10 @@ class ImageryAssetService:
         Returns:
             tuple[bool, str | None]: 是否有效和失败原因。
         """
-        if not asset.file_uri or not asset.file_uri.startswith("storage://imagery/"):
-            return False, "仅有元数据，未关联实体文件"
-        relative_path = asset.file_uri.removeprefix("storage://imagery/")
-        path = (self.storage_dir / relative_path).resolve()
-        if not path.is_relative_to(self.storage_dir.resolve()) or not path.is_file():
-            return False, "实体影像文件不存在"
-        if path.stat().st_size != asset.file_size_bytes:
-            return False, "实体文件大小与资产记录不一致"
-        if not has_supported_raster_signature(path):
-            return False, "实体文件格式签名不合法"
+        try:
+            self.resolve_verified_asset_path(asset)
+        except ValidationException as exc:
+            return False, exc.message
         return True, None
 
     def _to_response(
@@ -772,7 +787,7 @@ class ImageryAssetService:
         Returns:
             ImageryAssetResponse: 文件和栅格元数据响应。
         """
-        file_verified, file_error = self._verify_asset_file(asset)
+        file_verified, file_error = self.verify_asset_file(asset)
         return ImageryAssetResponse(
             asset_code=asset.asset_code,
             asset_name=asset.asset_name,

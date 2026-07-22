@@ -33,6 +33,7 @@
 - 支持任务作用域内地级区域、县区、地类、作物、种植模式、权属村面积聚合，使用真实任务面积生成年度趋势，并由项目负责人导出 CSV。
 - 支持外部灾害模型 GeoJSON 批量导入、PostGIS 面积与省域校验、分级渲染、受灾面积评估和人工复核确认。
 - 支持辐射定标、大气校正、几何校正、裁剪和波段产品流水线。
+- 支持创建绑定两期真实影像、规则版本、任务图斑范围和配准证据的多时相变化检测任务；服务端将两期栅格重投影到同一公共交集网格并生成共同拉伸、带 SHA 清单的卷帘/闪烁/并排预览；既可原子导入外部候选 GeoJSON，也可基于该实体公共网格执行可配置 RGB 差分和连通域矢量化，保存算法版本、参数、源/成果 SHA 与实体 GeoJSON。自动候选保持“未分类”，必须由人工归入六类之一后才能确认，重分类与排除均保留不可变审计历史。
 - OpenLayers 二维地图与 Cesium 三维视图共享选中图斑和业务状态。
 - 应用壳层参考 Vben5，支持持久化布局偏好、折叠侧栏、多标签页、KeepAlive、局部刷新和内容最大化。
 - 支持 WGS84（EPSG:4326）坐标点查、地图点击查询和包围盒空间查询。
@@ -47,7 +48,7 @@
 项目已将黑龙江省政府采购网公开的国土变更调查、疑似变化图斑提取、高分辨率影像处理、生态遥感与野外验证、河湖动态监测、生产建设遥感监管和农作物病虫疫情田间监测项目纳入产品范围。新增能力按依赖关系持续开发：
 
 1. 多源数据目录、技术规则包、生产批次和县区任务分包。当前生产底座已实现，后续继续补充实体资产核验和批量生产工具。
-2. 多时相影像同步对比、变化候选生产、六类变化图斑判读与监理质检。
+2. 多时相变化检测已实现真实影像资格、任务与规则快照、实体栅格公共网格卷帘/闪烁/并排、外部候选 GeoJSON 导入、内置 RGB 差分自动候选发现、六类变化判读和不可变审计；后续继续补充多算法配置和监理抽检。
 3. RPC/GCP、DEM 正射、区域网平差、配准、融合、匀色、镶嵌和覆盖率验收。
 4. 历史影像溯源、专题图集、标准化成果归档和数据共享审批。
 5. 无人机任务、田间监测站、物联网设备、AI 病虫害识别与风险预警。
@@ -155,6 +156,7 @@ psql "$POSTGRES_DSN" -f scripts/migrations/20260721_task_plot_scope.sql
 psql "$POSTGRES_DSN" -f scripts/migrations/20260722_plot_split_operations.sql
 psql "$POSTGRES_DSN" -f scripts/migrations/20260722_plot_operation_history.sql
 psql "$POSTGRES_DSN" -f scripts/migrations/20260722_add_production_foundation.sql
+psql "$POSTGRES_DSN" -f scripts/migrations/20260722_change_detection_workflow.sql
 ```
 
 其中 `POSTGRES_DSN` 使用 PostgreSQL 原生连接串。`task_plots` 明确保存任务与图斑的分配关系，质量检查、进度统计和提交门禁均以该作用域为准。
@@ -401,6 +403,13 @@ psql "$POSTGRES_DSN" -f scripts/migrations/20260722_remove_seeded_task_audit.sql
 | GET | `/api/v1/deliveries/{package_code}/download` | 经角色、时效、大小和 SHA-256 校验后下载成果包 |
 | GET | `/api/v1/rule-configs` | 查询项目当前质量与外业校核规则 |
 | PATCH | `/api/v1/rule-configs` | 更新项目规则并保存修改前后值审计 |
+| GET | `/api/v1/change-detection/overview` | 查询真实影像资格、检测任务、候选队列和判读历史 |
+| POST | `/api/v1/change-detection/runs` | 绑定两期已核验影像、规则与配准证据创建检测任务 |
+| POST | `/api/v1/change-detection/runs/{run_code}/candidates/import-geojson` | 原子导入六类变化候选 GeoJSON 并重算面积 |
+| POST | `/api/v1/change-detection/runs/{run_code}/discover-candidates` | 基于双时相公共网格执行 RGB 差分并生成带校验值的未分类候选成果 |
+| PATCH | `/api/v1/change-detection/runs/{run_code}/candidates/{candidate_code}/review` | 人工确认、重分类或排除候选并追加不可变历史 |
+| GET | `/api/v1/change-detection/runs/{run_code}/comparison` | 生成或读取双时相公共网格预览及来源校验清单 |
+| GET | `/api/v1/change-detection/runs/{run_code}/comparison/{side}.png` | 读取带 SHA-256 ETag 的前/后时相 PNG 预览 |
 
 ## 数据安全
 

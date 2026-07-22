@@ -20,3 +20,4 @@ frontend/.env.*.local
 # Runtime-generated delivery artifacts
 backend/storage/deliveries/*.zip
 backend/storage/imagery/
+backend/storage/change_detection/

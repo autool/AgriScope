@@ -17,6 +17,7 @@ ROLE_CAPABILITIES: dict[str, tuple[str, ...]] = {
         "process_imagery",
         "import_disaster",
         "run_plot_quality_check",
+        "review_change_candidate",
         "submit_self_check",
         "review_self_check",
     ),
@@ -29,6 +30,7 @@ ROLE_CAPABILITIES: dict[str, tuple[str, ...]] = {
         "rematch_field_data",
         "resolve_field_issue",
         "review_disaster",
+        "review_change_candidate",
         "rollback_plot",
     ),
     "project_manager": (
@@ -36,6 +38,7 @@ ROLE_CAPABILITIES: dict[str, tuple[str, ...]] = {
         "manage_production",
         "manage_datasets",
         "run_change_detection",
+        "review_change_candidate",
         "manage_services",
         "manage_devices",
         "review_model_output",

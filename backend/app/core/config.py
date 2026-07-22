@@ -13,6 +13,7 @@ class Settings(BaseSettings):
     app_env: str = "development"
     log_level: str = "INFO"
     max_imagery_upload_bytes: int = 10 * 1024 * 1024 * 1024
+    change_preview_max_dimension: int = Field(default=1400, ge=256, le=4096)
     database_url: str = Field(
         default="postgresql+asyncpg://admin:admin123@postgis:5432/farmland"
     )

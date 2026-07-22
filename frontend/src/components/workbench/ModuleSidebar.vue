@@ -6,6 +6,7 @@ import {
   DashboardOutlined,
   DatabaseOutlined,
   DeploymentUnitOutlined,
+  DiffOutlined,
   EditOutlined,
   EnvironmentOutlined,
   FileDoneOutlined,
@@ -28,6 +29,7 @@ const navGroupsComputed = computed(() => [
     items: [
       { path: '/dashboard', label: '项目总览', icon: DashboardOutlined },
       { path: '/production', label: '生产调度', icon: DeploymentUnitOutlined },
+      { path: '/change-detection', label: '变化检测', icon: DiffOutlined },
       {
         path: '/imagery',
         label: '影像预处理',

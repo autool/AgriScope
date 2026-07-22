@@ -14,6 +14,7 @@ from sqlalchemy.exc import DBAPIError, IntegrityError, SQLAlchemyError
 
 from app.api.v1.endpoints import (
     boundary,
+    change_detection,
     delivery,
     disaster,
     field_verification,
@@ -185,3 +186,4 @@ app.include_router(delivery.router)
 app.include_router(boundary.router)
 app.include_router(rule_config.router)
 app.include_router(production.router)
+app.include_router(change_detection.router)

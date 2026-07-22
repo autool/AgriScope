@@ -29,6 +29,16 @@ const router = createRouter({
           },
         },
         {
+          path: 'change-detection',
+          component: () => import('@/views/ChangeDetectionView.vue'),
+          meta: {
+            title: '多时相变化检测',
+            description: '前后时相影像、候选变化与人工判读闭环',
+            fullWidth: true,
+            keepAlive: true,
+          },
+        },
+        {
           path: 'imagery',
           component: () => import('@/views/ImageryView.vue'),
           meta: {
