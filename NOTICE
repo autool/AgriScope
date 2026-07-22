@@ -4,3 +4,10 @@ Copyright 2026 AgriScope contributors
 This product includes public administrative-boundary and OpenStreetMap-derived
 snapshot data. Source attribution and snapshot metadata are preserved with the
 corresponding data files and project documentation.
+
+Optional public Sentinel-2 imagery imported by the project is discovered through
+Element 84 Earth Search and read from the AWS Open Data Sentinel-2 L2A COG archive.
+The generated local subset preserves the STAC item identifier, source band URLs,
+SAFE product URI, processing baseline, and public-data classification. Copernicus
+Sentinel data remains subject to the Copernicus Sentinel Data Legal Notice:
+https://sentinels.copernicus.eu/documents/247904/690755/Sentinel_Data_Legal_Notice

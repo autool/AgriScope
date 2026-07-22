@@ -1,6 +1,28 @@
 """数据库模型。"""
 
 from app.models.plot import Base, FarmlandPlot
+from app.models.service_sharing import (
+    ServiceAccessRequest,
+    ServiceCredential,
+    ServiceHealthCheck,
+    ServiceUsageEvent,
+    SharedService,
+)
+from app.models.supervision import (
+    SupervisionCountyEvaluation,
+    SupervisionEvent,
+    SupervisionFinding,
+    SupervisionInspection,
+    SupervisionPlan,
+    SupervisionReinspection,
+    SupervisionReport,
+    SupervisionSample,
+)
+from app.models.thematic_map import (
+    ThematicMapEvent,
+    ThematicMapProduct,
+    ThematicMapTemplate,
+)
 from app.models.workbench import (
     DatasetAsset,
     DatasetLineage,
@@ -38,7 +60,23 @@ __all__ = [
     "PlotVersion",
     "QualityIssue",
     "ReviewRecord",
+    "ServiceAccessRequest",
+    "ServiceCredential",
+    "ServiceHealthCheck",
+    "ServiceUsageEvent",
+    "SharedService",
+    "SupervisionCountyEvaluation",
+    "SupervisionEvent",
+    "SupervisionFinding",
+    "SupervisionInspection",
+    "SupervisionPlan",
+    "SupervisionReinspection",
+    "SupervisionReport",
+    "SupervisionSample",
     "TaskPlot",
+    "ThematicMapEvent",
+    "ThematicMapProduct",
+    "ThematicMapTemplate",
     "WorkPackage",
     "WorkPackagePlot",
 ]

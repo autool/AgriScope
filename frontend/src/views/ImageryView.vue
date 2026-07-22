@@ -3,6 +3,7 @@ import {
   CheckCircleOutlined,
   CloudUploadOutlined,
   PlayCircleOutlined,
+  SafetyCertificateOutlined,
 } from '@ant-design/icons-vue'
 import { message } from 'ant-design-vue'
 import { storeToRefs } from 'pinia'
@@ -13,6 +14,7 @@ import { useAssetStore } from '@/store/assetStore'
 import { useImageryStore } from '@/store/imageryStore'
 import { useWorkbenchStore } from '@/store/workbenchStore'
 import type { ImageryAssetItem, ImageryProcessingStep } from '@/types/workbench'
+import type { ImageryQuicklookProduct, ImageryQuicklookProductCode } from '@/types/workbench'
 
 const imageryStore = useImageryStore()
 const assetStore = useAssetStore()
@@ -22,10 +24,11 @@ const {
   loadingRef,
   processingRef,
   processingStepCodeRef,
+  quicklookRef,
 } = storeToRefs(imageryStore)
 const { catalogRef } = storeToRefs(assetStore)
 const actionVisibleRef = ref<boolean>(false)
-const actionModeRef = ref<'execute' | 'register'>('execute')
+const actionModeRef = ref<'execute' | 'register' | 'source-accept'>('execute')
 const selectedStepRef = ref<ImageryProcessingStep | null>(null)
 const selectedAssetCodeRef = ref<string>('')
 const selectedAssetComputed = computed<ImageryAssetItem | null>(() => (
@@ -33,11 +36,25 @@ const selectedAssetComputed = computed<ImageryAssetItem | null>(() => (
     (item) => item.asset_code === selectedAssetCodeRef.value,
   ) || null
 ))
-const bandProductsVerifiedComputed = computed<boolean>(() => (
-  processingRef.value?.steps.find(
-    (step) => step.step_code === 'band_products',
-  )?.output_verified || false
-))
+const quicklookProduct = (
+  productCode: ImageryQuicklookProductCode,
+): ImageryQuicklookProduct | null => (
+  quicklookRef.value?.products.find(
+    (product) => product.product_code === productCode,
+  ) || null
+)
+const sourceQuicklookComputed = computed(() => quicklookProduct('source'))
+const trueColorQuicklookComputed = computed(() => quicklookProduct('true_color'))
+const falseColorQuicklookComputed = computed(() => quicklookProduct('false_color'))
+const ndviQuicklookComputed = computed(() => quicklookProduct('ndvi'))
+
+const quicklookStyle = (
+  product: ImageryQuicklookProduct | null,
+): Record<string, string> => (
+  product?.available && product.preview_url
+    ? { backgroundImage: `url("${product.preview_url}")` }
+    : {}
+)
 
 const statusColor = (step: ImageryProcessingStep): string => {
   if (step.output_verified) return 'green'
@@ -47,6 +64,13 @@ const statusColor = (step: ImageryProcessingStep): string => {
 }
 
 const statusLabel = (step: ImageryProcessingStep): string => {
+  const evidence = step.parameters.artifact_evidence
+  if (
+    typeof evidence === 'object'
+    && evidence !== null
+    && 'execution_mode' in evidence
+    && evidence.execution_mode === 'source_level_acceptance'
+  ) return '源级已承认'
   if (step.output_verified) return '产物已校验'
   if (step.status === 'artifact_missing') return '产物缺失'
   if (step.status === 'running') return '处理中'
@@ -59,9 +83,24 @@ const stepBlocked = (step: ImageryProcessingStep): boolean => (
   )
 )
 
+const sourceAcceptanceAvailable = (step: ImageryProcessingStep): boolean => (
+  processingRef.value?.processing_level?.toUpperCase() === 'L2A'
+  && ['radiometric', 'atmospheric'].includes(step.step_code)
+)
+
+const sourceAccepted = (step: ImageryProcessingStep): boolean => {
+  const evidence = step.parameters.artifact_evidence
+  return (
+    typeof evidence === 'object'
+    && evidence !== null
+    && 'execution_mode' in evidence
+    && evidence.execution_mode === 'source_level_acceptance'
+  )
+}
+
 const openActionModal = (
   step: ImageryProcessingStep,
-  mode: 'execute' | 'register',
+  mode: 'execute' | 'register' | 'source-accept',
 ): void => {
   selectedStepRef.value = step
   actionModeRef.value = mode
@@ -90,10 +129,23 @@ const handleActionSuccess = (successMessage: string): void => {
 
 onMounted(() => {
   void (async () => {
-    await assetStore.load()
+    // 子路由会早于布局父组件触发 mounted。这里显式同步总览和目录，
+    // 避免总览尚未就绪时按采集日期误选更新但仅用于联调的演示资产。
+    await Promise.all([
+      assetStore.load(),
+      workbenchStore.refreshOverview(),
+    ])
     const overviewAssetCode = workbenchStore.overviewRef?.imagery?.asset_code
     const preferredAsset = catalogRef.value?.items.find(
       (item) => item.asset_code === overviewAssetCode && item.file_verified,
+    ) || catalogRef.value?.items.find(
+      (item) => (
+        item.data_status === 'operational'
+        && item.file_verified
+        && (item.band_count || 0) >= 4
+      ),
+    ) || catalogRef.value?.items.find(
+      (item) => item.data_status === 'operational' && item.file_verified,
     ) || catalogRef.value?.items.find(
       (item) => item.file_verified && (item.band_count || 0) >= 4,
     ) || catalogRef.value?.items[0]
@@ -105,19 +157,52 @@ onMounted(() => {
 <template>
   <div class="imagery-view">
     <section class="scene-workspace">
-      <div class="scene-preview">
+      <div
+        class="scene-preview"
+        :class="{ unavailable: !sourceQuicklookComputed?.available }"
+        :style="quicklookStyle(sourceQuicklookComputed)"
+      >
         <div class="scene-title">
-          <span><small>BASEMAP CONTEXT PREVIEW</small><strong>影像底图参考预览</strong></span>
-          <a-tag>非处理产物</a-tag>
+          <span><small>PHYSICAL RASTER QUICKLOOK</small><strong>实体源影像快视图</strong></span>
+          <a-tag :color="quicklookRef?.data_status === 'demo' ? 'orange' : 'green'">
+            {{ quicklookRef?.data_status === 'demo' ? '明确演示数据' : '业务实体文件' }}
+          </a-tag>
         </div>
         <div class="scene-meta">
-          {{ processingRef ? `${processingRef.asset_code} · ${processingRef.resolution_m ?? '--'} m` : '尚未选择影像资产' }}
+          <template v-if="sourceQuicklookComputed?.available">
+            {{ processingRef?.asset_code }} · 波段 {{ sourceQuicklookComputed.band_indexes.join('/') }} ·
+            SHA256 {{ sourceQuicklookComputed.source_checksum_sha256?.slice(0, 12) }}…
+          </template>
+          <template v-else>
+            {{ sourceQuicklookComputed?.unavailable_reason || '尚未选择可读取的实体影像资产' }}
+          </template>
         </div>
       </div>
       <div class="product-grid">
-        <article class="true-color"><span><strong>真彩色产品</strong><small>R3 G2 B1</small></span><a-tag :color="bandProductsVerifiedComputed ? 'green' : 'default'">{{ bandProductsVerifiedComputed ? '产物已校验' : '未验证' }}</a-tag></article>
-        <article class="false-color"><span><strong>标准假彩色</strong><small>R4 G3 B2</small></span><a-tag :color="bandProductsVerifiedComputed ? 'green' : 'default'">{{ bandProductsVerifiedComputed ? '产物已校验' : '未验证' }}</a-tag></article>
-        <article class="ndvi"><span><strong>NDVI 植被指数</strong><small>-1.0 ～ 1.0</small></span><a-tag :color="bandProductsVerifiedComputed ? 'green' : 'default'">{{ bandProductsVerifiedComputed ? '产物已校验' : '未验证' }}</a-tag></article>
+        <article
+          class="true-color"
+          :class="{ unavailable: !trueColorQuicklookComputed?.available }"
+          :style="quicklookStyle(trueColorQuicklookComputed)"
+        >
+          <span><strong>真彩色产品</strong><small>{{ trueColorQuicklookComputed?.available ? `波段 ${trueColorQuicklookComputed.band_indexes.join('/')}` : trueColorQuicklookComputed?.unavailable_reason || '未生成' }}</small></span>
+          <a-tag :color="trueColorQuicklookComputed?.available ? 'green' : 'default'">{{ trueColorQuicklookComputed?.available ? '实体产物快视图' : '不可用' }}</a-tag>
+        </article>
+        <article
+          class="false-color"
+          :class="{ unavailable: !falseColorQuicklookComputed?.available }"
+          :style="quicklookStyle(falseColorQuicklookComputed)"
+        >
+          <span><strong>标准假彩色</strong><small>{{ falseColorQuicklookComputed?.available ? `波段 ${falseColorQuicklookComputed.band_indexes.join('/')}` : falseColorQuicklookComputed?.unavailable_reason || '未生成' }}</small></span>
+          <a-tag :color="falseColorQuicklookComputed?.available ? 'green' : 'default'">{{ falseColorQuicklookComputed?.available ? '实体产物快视图' : '不可用' }}</a-tag>
+        </article>
+        <article
+          class="ndvi"
+          :class="{ unavailable: !ndviQuicklookComputed?.available }"
+          :style="quicklookStyle(ndviQuicklookComputed)"
+        >
+          <span><strong>NDVI 植被指数</strong><small>{{ ndviQuicklookComputed?.available && ndviQuicklookComputed.value_range ? `${ndviQuicklookComputed.value_range[0].toFixed(3)} ～ ${ndviQuicklookComputed.value_range[1].toFixed(3)}` : ndviQuicklookComputed?.unavailable_reason || '未生成' }}</small></span>
+          <a-tag :color="ndviQuicklookComputed?.available ? 'green' : 'default'">{{ ndviQuicklookComputed?.available ? '实体产物快视图' : '不可用' }}</a-tag>
+        </article>
       </div>
     </section>
 
@@ -172,11 +257,21 @@ onMounted(() => {
               <a-progress :percent="step.progress" :show-info="false" size="small" />
               <p>{{ step.artifact_error || step.output_uri || '尚未登记实体产物' }}</p>
               <p v-if="step.output_verified" class="artifact-evidence">
-                {{ step.processor_name }} {{ step.processor_version }} ·
+                {{ sourceAccepted(step) ? '复用已校验 L2A 源实体，未执行重复算法' : `${step.processor_name} ${step.processor_version}` }} ·
                 {{ step.output_size_bytes }} bytes ·
                 SHA256 {{ step.output_checksum_sha256?.slice(0, 12) }}…
               </p>
               <div v-if="!step.output_verified" class="step-actions">
+                <a-button
+                  v-if="sourceAcceptanceAvailable(step)"
+                  size="small"
+                  :loading="processingStepCodeRef === step.step_code"
+                  :disabled="!canProcessComputed || !selectedAssetComputed?.file_verified || stepBlocked(step)"
+                  :title="stepBlocked(step) ? '请先完成上一步处理' : '复核实体源文件标签和 SHA-256，不执行重复算法'"
+                  @click="openActionModal(step, 'source-accept')"
+                >
+                  <SafetyCertificateOutlined /> 源级承认
+                </a-button>
                 <a-button
                   type="primary"
                   size="small"
@@ -207,6 +302,8 @@ onMounted(() => {
       :asset-code="processingRef?.asset_code || ''"
       :asset-verified="selectedAssetComputed?.file_verified || false"
       :asset-band-count="selectedAssetComputed?.band_count || null"
+      :asset-band-descriptions="selectedAssetComputed?.raster_metadata.descriptions || []"
+      :processing-level="processingRef?.processing_level || null"
       :initial-mode="actionModeRef"
       @success="handleActionSuccess"
     />
@@ -216,7 +313,8 @@ onMounted(() => {
 <style scoped>
 .imagery-view { display: grid; grid-template-columns: minmax(0, 1fr) 340px; gap: 10px; height: 100%; padding: 10px; background: #18241f; }
 .scene-workspace { display: grid; grid-template-rows: minmax(250px, 1fr) 140px; gap: 10px; min-width: 0; min-height: 0; }
-.scene-preview { position: relative; overflow: hidden; background: url('/imagery-tiles/10/365/872') center / cover; border: 1px solid rgb(255 255 255 / 13%); border-radius: 8px; }
+.scene-preview { position: relative; overflow: hidden; background: #0f1915 center / contain no-repeat; border: 1px solid rgb(255 255 255 / 13%); border-radius: 8px; }
+.scene-preview.unavailable { background-image: radial-gradient(circle at center, #24362e, #101914) !important; }
 .scene-preview::after { position: absolute; inset: 0; content: ''; box-shadow: inset 0 0 80px rgb(0 0 0 / 25%); }
 .scene-title, .scene-meta { position: absolute; z-index: 1; color: #fff; background: rgb(15 42 30 / 80%); border: 1px solid rgb(255 255 255 / 12%); border-radius: 5px; backdrop-filter: blur(6px); }
 .scene-title { top: 14px; left: 14px; display: flex; gap: 20px; align-items: center; padding: 8px 10px; }
@@ -225,10 +323,9 @@ onMounted(() => {
 .scene-title strong { font-size: 11px; }
 .scene-meta { right: 14px; bottom: 14px; padding: 6px 9px; font-size: 8px; }
 .product-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 9px; }
-.product-grid article { position: relative; display: flex; align-items: end; justify-content: space-between; padding: 11px; overflow: hidden; color: #fff; background: url('/imagery-tiles/10/365/872') center / cover; border-radius: 7px; }
+.product-grid article { position: relative; display: flex; align-items: end; justify-content: space-between; padding: 11px; overflow: hidden; color: #fff; background: #1c2a24 center / contain no-repeat; border: 1px solid rgb(255 255 255 / 10%); border-radius: 7px; }
 .product-grid article::after { position: absolute; inset: 0; content: ''; background: linear-gradient(transparent 30%, rgb(3 19 12 / 85%)); }
-.product-grid .false-color { filter: hue-rotate(95deg) saturate(1.35); }
-.product-grid .ndvi { background: linear-gradient(120deg, #a93627aa, #d7c83baa, #287d3cbb), url('/imagery-tiles/10/365/872') center / cover; background-blend-mode: color; }
+.product-grid article.unavailable { background-image: linear-gradient(135deg, #2c3a34, #18241f) !important; }
 .product-grid article > span, .product-grid article > :deep(.ant-tag) { position: relative; z-index: 1; }
 .product-grid article > span { display: flex; flex-direction: column; }
 .product-grid strong { font-size: 10px; }

@@ -21,3 +21,5 @@ frontend/.env.*.local
 backend/storage/deliveries/*.zip
 backend/storage/imagery/
 backend/storage/change_detection/
+backend/storage/supervision/
+backend/storage/thematic_maps/

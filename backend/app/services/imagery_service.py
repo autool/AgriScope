@@ -6,6 +6,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from uuid import uuid4
 
+import rasterio
+from rasterio.errors import RasterioIOError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.exceptions import NotFoundException, ValidationException
@@ -20,6 +22,7 @@ from app.models.workbench import ReviewRecord
 from app.schemas.imagery import (
     ImageryProcessingResponse,
     ImageryProcessingStepResponse,
+    ImagerySourceLevelAcceptRequest,
     ImageryStepExecuteRequest,
     ImageryStepRunRequest,
 )
@@ -29,6 +32,21 @@ from app.services.project_user_service import ProjectUserService
 
 class ImageryService:
     """查询影像处理进度并执行受控流水线步骤。"""
+
+    SOURCE_LEVEL_ACCEPTANCE_STEPS = {
+        "radiometric": "源文件已按 STAC 标度转换为 L2A 地表反射率",
+        "atmospheric": "Sentinel-2 L2A 已完成大气校正并提供地表反射率",
+    }
+    SOURCE_LEVEL_REQUIRED_TAGS = (
+        "PLATFORM",
+        "INSTRUMENT",
+        "PROCESSING_LEVEL",
+        "SOURCE_PROVIDER",
+        "SOURCE_PRODUCT_URI",
+        "SOURCE_PROCESSING_BASELINE",
+        "SOURCE_SCALE_APPLIED",
+        "REFLECTANCE_QUANTITY",
+    )
 
     def __init__(
         self,
@@ -82,25 +100,44 @@ class ImageryService:
         Returns:
             tuple[bool, dict, str | None]: 是否有效、证据信息和失败原因。
         """
+        try:
+            _, evidence = self.resolve_verified_step_artifact_path(step)
+        except ValidationException as exc:
+            evidence = (step.parameters or {}).get("artifact_evidence") or {}
+            return False, evidence, exc.message
+        return True, evidence, None
+
+    def resolve_verified_step_artifact_path(
+        self,
+        step: object,
+    ) -> tuple[Path, dict]:
+        """解析并校验处理步骤实体产物路径、大小和 SHA256。
+
+        Args:
+            step: 影像处理步骤 ORM 对象。
+
+        Returns:
+            tuple[Path, dict]: 已校验实体路径和产物证据。
+        """
         evidence = (step.parameters or {}).get("artifact_evidence") or {}
         relative_path = evidence.get("relative_path")
         if not relative_path:
-            return False, evidence, "尚未登记实体产物"
+            raise ValidationException("尚未登记实体产物")
         try:
             artifact_path = self._resolve_artifact_path(str(relative_path))
-        except ValidationException:
-            return False, evidence, "登记的产物路径不合法"
+        except ValidationException as exc:
+            raise ValidationException("登记的产物路径不合法") from exc
         if not artifact_path.is_file():
-            return False, evidence, "登记的实体产物不存在"
+            raise ValidationException("登记的实体产物不存在")
         if not has_supported_raster_signature(artifact_path):
-            return False, evidence, "实体产物文件头与声明格式不一致"
+            raise ValidationException("实体产物文件头与声明格式不一致")
         file_size = artifact_path.stat().st_size
         if file_size != evidence.get("file_size_bytes"):
-            return False, evidence, "实体产物大小与登记值不一致"
+            raise ValidationException("实体产物大小与登记值不一致")
         checksum = calculate_sha256(artifact_path)
         if checksum != evidence.get("checksum_sha256"):
-            return False, evidence, "实体产物 SHA256 与登记值不一致"
-        return True, evidence, None
+            raise ValidationException("实体产物 SHA256 与登记值不一致")
+        return artifact_path, evidence
 
     def _to_step_response(self, step: object) -> ImageryProcessingStepResponse:
         """组装包含实体产物校验状态的步骤响应。
@@ -135,7 +172,7 @@ class ImageryService:
             completed_at=step.completed_at,
         )
 
-    def _resolve_asset_source_path(self, asset: object) -> Path:
+    def resolve_verified_asset_source_path(self, asset: object) -> Path:
         """校验并解析原始影像资产实体文件。
 
         Args:
@@ -186,13 +223,91 @@ class ImageryService:
                 f"请先完成并校验步骤：{blockers[0].step_name}"
             )
         if not previous_steps:
-            return self._resolve_asset_source_path(asset)
+            return self.resolve_verified_asset_source_path(asset)
         previous_step = max(previous_steps, key=lambda item: item.sequence)
         evidence = (previous_step.parameters or {}).get("artifact_evidence") or {}
         relative_path = str(evidence.get("relative_path") or "")
         if not relative_path:
             raise ValidationException("上一处理步骤缺少实体产物路径")
         return self._resolve_artifact_path(relative_path)
+
+    @classmethod
+    def _inspect_source_level_evidence(
+        cls,
+        source_path: Path,
+        expected_processing_level: str,
+    ) -> dict:
+        """从当前实体栅格复核可承认的 Sentinel-2 L2A 证据。
+
+        Args:
+            source_path: 已通过路径、大小和 SHA256 校验的上游实体。
+            expected_processing_level: 请求声明的产品级别。
+
+        Returns:
+            dict: 从物理文件读取的产品级别、血缘和栅格结构证据。
+        """
+        try:
+            with rasterio.open(source_path) as dataset:
+                tags = {
+                    str(key).strip().upper(): str(value).strip()
+                    for key, value in dataset.tags().items()
+                }
+                missing_tags = [
+                    key for key in cls.SOURCE_LEVEL_REQUIRED_TAGS if not tags.get(key)
+                ]
+                if missing_tags:
+                    raise ValidationException(
+                        "源产品缺少受控承认标签：" + ", ".join(missing_tags)
+                    )
+                processing_level = tags["PROCESSING_LEVEL"].upper()
+                if processing_level != expected_processing_level.upper():
+                    raise ValidationException("源文件处理级别与承认请求不一致")
+                if not tags["PLATFORM"].upper().startswith("SENTINEL-2"):
+                    raise ValidationException("当前仅支持 Sentinel-2 L2A 源级承认")
+                if tags["INSTRUMENT"].upper() != "MSI":
+                    raise ValidationException("Sentinel-2 源产品载荷必须为 MSI")
+                if tags["SOURCE_SCALE_APPLIED"].lower() != "true":
+                    raise ValidationException("源文件尚未应用 STAC 反射率标度")
+                if tags["REFLECTANCE_QUANTITY"].upper() != "BOA_REFLECTANCE":
+                    raise ValidationException("源文件不是 L2A 地表反射率")
+                if any(dtype not in {"float32", "float64"} for dtype in dataset.dtypes):
+                    raise ValidationException("源文件像元尚未转换为浮点反射率")
+                if tags.get("SECURITY_CLASSIFICATION", "").lower() == "public":
+                    public_missing = [
+                        key
+                        for key in ("STAC_ITEM_ID", "SOURCE_LICENSE_URL")
+                        if not tags.get(key)
+                    ]
+                    if public_missing:
+                        raise ValidationException(
+                            "公开源产品缺少来源许可标签："
+                            + ", ".join(public_missing)
+                        )
+                return {
+                    "platform": tags["PLATFORM"],
+                    "instrument": tags["INSTRUMENT"],
+                    "processing_level": processing_level,
+                    "source_provider": tags["SOURCE_PROVIDER"],
+                    "source_product_uri": tags["SOURCE_PRODUCT_URI"],
+                    "source_processing_baseline": tags[
+                        "SOURCE_PROCESSING_BASELINE"
+                    ],
+                    "stac_item_id": tags.get("STAC_ITEM_ID"),
+                    "source_license_url": tags.get("SOURCE_LICENSE_URL"),
+                    "security_classification": tags.get(
+                        "SECURITY_CLASSIFICATION"
+                    ),
+                    "source_scale_applied": True,
+                    "reflectance_quantity": tags["REFLECTANCE_QUANTITY"],
+                    "raster_width": dataset.width,
+                    "raster_height": dataset.height,
+                    "band_count": dataset.count,
+                    "dtypes": list(dataset.dtypes),
+                    "crs": dataset.crs.to_string() if dataset.crs else None,
+                    "band_descriptions": list(dataset.descriptions),
+                }
+        except RasterioIOError as exc:
+            raise ValidationException("源产品无法由 Rasterio 读取") from exc
 
     @staticmethod
     def _update_asset_status(asset: object, step_code: str) -> None:
@@ -552,4 +667,79 @@ class ImageryService:
         except BaseException:
             output_path.unlink(missing_ok=True)
             raise
+        return await self.get_processing(db, asset_code)
+
+    async def accept_source_level_step(
+        self,
+        db: AsyncSession,
+        asset_code: str,
+        step_code: str,
+        task_code: str,
+        request: ImagerySourceLevelAcceptRequest,
+    ) -> ImageryProcessingResponse:
+        """用物理 L2A 源产品证据满足定标或大气校正要求。
+
+        Args:
+            db: 异步数据库会话。
+            asset_code: 影像资产编号。
+            step_code: 仅允许辐射定标或大气校正。
+            task_code: 作业任务编号。
+            request: 稳定用户、预期级别、无算法确认和承认依据。
+
+        Returns:
+            ImageryProcessingResponse: 承认后的完整流水线状态。
+        """
+        acceptance_basis = self.SOURCE_LEVEL_ACCEPTANCE_STEPS.get(step_code)
+        if acceptance_basis is None:
+            raise ValidationException("源产品级别只能承认辐射定标或大气校正步骤")
+        asset = await self.dao.get_asset_by_code_for_update(db, asset_code)
+        task = await self.workbench_dao.get_task_by_code(db, task_code)
+        if asset is None:
+            raise NotFoundException(f"未找到影像资产 {asset_code}")
+        if task is None:
+            raise NotFoundException(f"未找到任务 {task_code}")
+        if task.project_id != asset.project_id:
+            raise ValidationException("作业任务与影像资产不属于同一项目")
+        if str(asset.processing_level or "").upper() != (
+            request.expected_processing_level
+        ):
+            raise ValidationException("资产处理级别与源产品承认请求不一致")
+        operator = await self.project_user_service.require_capability(
+            db,
+            asset.project_id,
+            request.operator_code,
+            "process_imagery",
+        )
+        step = await self.dao.get_step_for_update(db, asset.id, step_code)
+        if step is None:
+            raise NotFoundException(f"未找到处理步骤 {step_code}")
+        steps = list(await self.dao.get_steps(db, asset.id))
+        source_path = self._resolve_step_source_path(asset, steps, step)
+        source_evidence = await asyncio.to_thread(
+            self._inspect_source_level_evidence,
+            source_path,
+            request.expected_processing_level,
+        )
+        invalidated_steps = self._invalidate_downstream_steps(asset, steps, step)
+        relative_path = source_path.relative_to(self.storage_dir).as_posix()
+        await self._persist_step_completion(
+            db,
+            task,
+            asset,
+            step,
+            relative_path,
+            "受控源产品级别承认",
+            "sentinel-l2a-source-acceptance-v1",
+            operator,
+            request.justification,
+            evidence_extra={
+                "execution_mode": "source_level_acceptance",
+                "algorithm_executed": False,
+                "expected_processing_level": request.expected_processing_level,
+                "acceptance_basis": acceptance_basis,
+                "source_evidence": source_evidence,
+                "invalidated_downstream_steps": invalidated_steps,
+            },
+            action="source_level_accepted",
+        )
         return await self.get_processing(db, asset_code)

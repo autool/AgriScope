@@ -10,7 +10,10 @@ import {
   EditOutlined,
   EnvironmentOutlined,
   FileDoneOutlined,
+  FileImageOutlined,
   RadarChartOutlined,
+  SafetyCertificateOutlined,
+  ShareAltOutlined,
   SettingOutlined,
 } from '@ant-design/icons-vue'
 import { storeToRefs } from 'pinia'
@@ -43,6 +46,7 @@ const navGroupsComputed = computed(() => [
         badge: overviewRef.value?.statistics.plot_count || undefined,
       },
       { path: '/statistics', label: '面积统计', icon: BarChartOutlined },
+      { path: '/thematic-maps', label: '专题制图', icon: FileImageOutlined },
       {
         path: '/disaster',
         label: '灾害与长势',
@@ -61,6 +65,7 @@ const navGroupsComputed = computed(() => [
         badge: overviewRef.value?.statistics.pending_field_verification_count || undefined,
       },
       { path: '/review', label: '成果审核', icon: AuditOutlined },
+      { path: '/supervision', label: '独立监理', icon: SafetyCertificateOutlined },
       { path: '/delivery', label: '成果交付', icon: FileDoneOutlined },
     ],
   },
@@ -68,6 +73,7 @@ const navGroupsComputed = computed(() => [
     label: '资源管理',
     items: [
       { path: '/assets', label: '影像文件库', icon: DatabaseOutlined },
+      { path: '/service-sharing', label: '数据共享', icon: ShareAltOutlined },
       { path: '/settings', label: '规则配置', icon: SettingOutlined },
     ],
   },

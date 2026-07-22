@@ -14,7 +14,9 @@ interface ImageryStepActionModalProps {
   assetCode: string
   assetVerified: boolean
   assetBandCount: number | null
-  initialMode?: 'execute' | 'register'
+  assetBandDescriptions: Array<string | null>
+  processingLevel: string | null
+  initialMode?: 'execute' | 'register' | 'source-accept'
 }
 
 const props = withDefaults(defineProps<ImageryStepActionModalProps>(), {
@@ -29,8 +31,9 @@ const imageryStore = useImageryStore()
 const layerStore = useLayerStore()
 const userStore = useUserStore()
 const { canProcessComputed } = storeToRefs(imageryStore)
-const modeRef = ref<'execute' | 'register'>('execute')
+const modeRef = ref<'execute' | 'register' | 'source-accept'>('execute')
 const savingRef = ref<boolean>(false)
+const sourceAcceptanceConfirmedRef = ref<boolean>(false)
 const commentRef = ref<string>('')
 const outputPathRef = ref<string>('')
 const processorNameRef = ref<string>('外部遥感处理器')
@@ -63,6 +66,11 @@ const capabilityTextComputed = computed<string>(() => (
   canProcessComputed.value
     ? `${userStore.currentUserComputed?.display_name || '--'} · ${userStore.currentUserComputed?.role_name || '--'}`
     : '当前身份无影像处理权限'
+))
+
+const sourceAcceptanceEligibleComputed = computed<boolean>(() => (
+  props.processingLevel?.toUpperCase() === 'L2A'
+  && ['radiometric', 'atmospheric'].includes(props.step?.step_code || '')
 ))
 
 const close = (): void => emit('update:open', false)
@@ -117,9 +125,30 @@ const submit = async (): Promise<void> => {
     message.warning('请填写影像存储目录内的产物相对路径')
     return
   }
+  if (modeRef.value === 'source-accept') {
+    if (!sourceAcceptanceEligibleComputed.value) {
+      message.warning('当前步骤或产品级别不支持源级承认')
+      return
+    }
+    if (!sourceAcceptanceConfirmedRef.value) {
+      message.warning('请确认本动作不会执行或伪造重复算法')
+      return
+    }
+    if (commentRef.value.trim().length < 10) {
+      message.warning('请填写至少 10 个字符的源产品承认依据')
+      return
+    }
+  }
   savingRef.value = true
   try {
-    if (modeRef.value === 'execute') {
+    if (modeRef.value === 'source-accept') {
+      await imageryStore.acceptSourceLevelStep(step.step_code, {
+        expected_processing_level: 'L2A',
+        confirm_no_algorithm_execution: true,
+        justification: commentRef.value.trim(),
+      })
+      emit('success', `${step.step_name}已通过 L2A 源产品证据承认`)
+    } else if (modeRef.value === 'execute') {
       await imageryStore.executeStep(
         step.step_code,
         executionParameters(),
@@ -147,9 +176,24 @@ watch(
   () => [props.open, props.step?.step_code, props.initialMode] as const,
   ([open]) => {
     if (!open || !props.step) return
-    modeRef.value = props.initialMode
+    modeRef.value = (
+      props.initialMode === 'source-accept'
+      && !sourceAcceptanceEligibleComputed.value
+    ) ? 'execute' : props.initialMode
     outputPathRef.value = `${props.assetCode}/${props.step.step_code}-result.tif`
     commentRef.value = ''
+    sourceAcceptanceConfirmedRef.value = false
+    const normalizedDescriptions = props.assetBandDescriptions.map(
+      (description) => description?.trim().toLowerCase() || '',
+    )
+    const bandIndex = (name: string, fallback: number): number => {
+      const index = normalizedDescriptions.findIndex((item) => item === name)
+      return index >= 0 ? index + 1 : fallback
+    }
+    parameters.redBand = bandIndex('red', 1)
+    parameters.greenBand = bandIndex('green', 2)
+    parameters.blueBand = bandIndex('blue', 3)
+    parameters.nirBand = bandIndex('nir', 4)
   },
   { immediate: true },
 )
@@ -224,6 +268,26 @@ watch(
           <label><span>处理器版本</span><a-input v-model:value="processorVersionRef" /></label>
         </div>
       </a-tab-pane>
+      <a-tab-pane
+        v-if="sourceAcceptanceEligibleComputed"
+        key="source-accept"
+        tab="L2A 源级承认"
+      >
+        <a-alert
+          type="warning"
+          show-icon
+          message="服务端将重新核验源实体 SHA-256、L2A、STAC 标度应用、BOA 反射率及来源许可；不会复制文件，也不会执行 DOS1 等重复算法。"
+        />
+        <div class="source-acceptance-form">
+          <p>
+            适用步骤：{{ props.step?.step_name }}。承认后该步骤复用同一已校验实体，
+            审计记录会明确标注“未执行算法”。
+          </p>
+          <a-checkbox v-model:checked="sourceAcceptanceConfirmedRef">
+            我确认仅承认已存在的 Sentinel-2 L2A 产品能力，不把跳过描述为算法执行
+          </a-checkbox>
+        </div>
+      </a-tab-pane>
     </a-tabs>
     <div class="common-form">
       <label><span>操作身份</span><strong>{{ capabilityTextComputed }}</strong></label>
@@ -234,6 +298,7 @@ watch(
 
 <style scoped>
 .action-form, .common-form { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 14px; }
+.source-acceptance-form { padding: 14px; margin-top: 12px; font-size: 10px; line-height: 1.7; background: #f7f9f8; border: 1px solid #e0e7e3; border-radius: 6px; }
 .common-form { padding-top: 12px; border-top: 1px solid #e7ebe9; }
 .action-form label, .common-form label { display: grid; grid-template-columns: 130px minmax(0, 1fr); gap: 8px; align-items: center; font-size: 9px; }
 .action-form label:has(.ant-select), .common-form label:last-child, .action-form > :deep(.ant-alert) { grid-column: 1 / -1; }

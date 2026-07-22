@@ -26,6 +26,8 @@ import type {
   GeoJsonFeature,
   GeoJsonFeatureCollection,
   ImageryProcessing,
+  ImageryQuicklook,
+  ImagerySourceLevelAcceptPayload,
   ImageryArtifactRegisterPayload,
   ImageryStepExecutePayload,
   ImageryAssetCatalog,
@@ -608,6 +610,15 @@ export const getImageryProcessing = (assetCode: string) => request.get<ImageryPr
 )
 
 /**
+ * 从实体源影像和已校验波段产物获取真实快视图。
+ * @param {string} assetCode 影像资产编号。
+ * @returns {Promise<object>} 快视图 URL、波段、范围和校验值。
+ */
+export const getImageryQuicklooks = (assetCode: string) => request.get<ImageryQuicklook>(
+  `/v1/imagery-assets/${assetCode}/quicklooks`,
+)
+
+/**
  * 查询项目影像资产目录和实体文件状态。
  * @param {string} projectCode 项目编号。
  * @returns {Promise<object>} 真实影像资产目录。
@@ -676,6 +687,25 @@ export const executeImageryProcessingStep = (
   `/v1/imagery-assets/${assetCode}/processing/${stepCode}/execute`,
   payload,
   { params: { task_code: taskCode }, timeout: 10 * 60 * 1000 },
+)
+
+/**
+ * 使用实体 L2A 源产品级别证据满足定标或大气校正步骤。
+ * @param {string} assetCode 影像资产编号。
+ * @param {string} stepCode 辐射定标或大气校正步骤编码。
+ * @param {object} payload 稳定用户、产品级别、无算法确认和承认依据。
+ * @param {string} taskCode 作业任务编号。
+ * @returns {Promise<object>} 更新后的影像处理流水线。
+ */
+export const acceptImagerySourceLevelStep = (
+  assetCode: string,
+  stepCode: string,
+  payload: ImagerySourceLevelAcceptPayload,
+  taskCode: string = 'RS-2026-045',
+) => request.post<ImageryProcessing>(
+  `/v1/imagery-assets/${assetCode}/processing/${stepCode}/accept-source`,
+  payload,
+  { params: { task_code: taskCode } },
 )
 
 /**

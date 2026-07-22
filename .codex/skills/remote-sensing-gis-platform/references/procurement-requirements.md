@@ -55,6 +55,14 @@ the platform has persisted evidence and executable workflows.
 - Maintain historical imagery coverage matrices and issue-tracing timelines. A public
   procurement example requires problem tracing across 1980–2024 imagery.
 - Never classify an open public test image as confidential operational evidence.
+- Public Sentinel-2 integration must preserve the Earth Search STAC item, original COG band URLs, SAFE product URI, processing baseline, provider, Copernicus legal notice, and public classification. Treat a verified public raster as usable business input without presenting it as confidential source data or an accepted production product.
+- Earth Search COG subsets must apply each band's STAC Raster Extension scale/offset/nodata and persist the original calibration list. Sentinel-2 L2A may satisfy radiometric and atmospheric gates through an audited no-algorithm source acceptance only after physical BOA-reflectance and checksum verification; reprojection, administrative clipping, and thematic products remain separate checksum-backed outputs.
+- The implemented imagery workbench preview contract reads the selected physical raster
+  rather than a fixed map tile. It persists source and PNG checksums, WGS84 bounds,
+  band selection, stretch/value range, and renderer version. True-color, false-color,
+  and NDVI quicklooks are available only from a checksum-verified `band_products`
+  artifact, remain visibly demo when their source is demo, and do not count as an
+  accepted production artifact by themselves.
 
 ## Supervision, acceptance, maps, and archives
 
@@ -65,10 +73,36 @@ the platform has persisted evidence and executable workflows.
   and independent project supervision as distinct evidence streams.
 - Archive source datasets, intermediate artifacts, final vectors/rasters, plot record
   sheets, statistics, thematic maps, reports, quality evidence, approvals, and manifests.
+- The implemented delivery-archive contract physically embeds verified thematic maps and
+  independent-supervision reports, while revalidating and referencing large imagery source
+  and processing rasters by controlled URI, size, SHA-256, version, classification, and
+  processing evidence. It also includes the project/task dataset catalog, an explicit
+  included/referenced/not-provided archive index, and per-file size/SHA-256 values for
+  every embedded member except the self-describing manifest. Changes to thematic maps,
+  supervision reports, dataset catalogs, or current imagery-processing artifacts make
+  older packages stale; a new package explicitly supersedes prior completed versions.
+  This is controlled online delivery evidence, not proof of complete offline-media
+  preservation of every large source raster or a long-term archival retention program.
 - Provide a thematic-map composer with title, neatline, north arrow, scale bar, legend,
   producer, date, map number, layout templates, bulk generation, and physical checksums.
+- The implemented thematic-map contract reads a checksum-verified `band_products`
+  physical raster directly, persists layout templates, and generates 1–12 PNG/PDF maps
+  per atomic batch. Each product manifest preserves source URI/SHA-256, STAC item,
+  license, public classification, product baseline, actual bands, stretch or value range,
+  layout, renderer version, output size/SHA-256, and stable operator-role evidence.
+  Preview and download revalidate controlled path, signature, size, and checksum; maps
+  made from public Sentinel-2 evidence retain a visible non-statutory-results label.
+  This contract is not evidence that RPC/GCP orthorectification, fusion, color balancing,
+  mosaicking, historical atlas composition, or complete archival delivery is finished.
 - Publish approved map/data services only through registered endpoints with application,
   approval, credentials, documentation, health state, usage audit, and revocation.
+- The implemented service-sharing contract uses persisted registrations, independent
+  client-review approval, database-verified internal resource checksums, classification
+  and exposure rules, purpose/expiry-bound access applications, one-time API-key display,
+  hashed credential storage, bounded SSRF-protected health probes, authenticated usage
+  events, individual credential revocation, and atomic service-wide credential revocation.
+  The current real catalog entry is the public Element 84 Earth Search STAC endpoint;
+  it is not evidence that confidential or statutory survey products are publicly served.
 
 ## Security and operational requirements
 

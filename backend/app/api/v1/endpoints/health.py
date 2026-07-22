@@ -9,6 +9,7 @@ router = APIRouter(tags=["健康检查"])
 
 
 @router.get("/health", summary="检查应用和数据库连接状态")
+@router.get("/api/v1/system-health", summary="检查应用和数据库连接状态")
 async def health_check(db: DatabaseSession) -> dict[str, str]:
     """执行轻量 SQL 检查数据库连通性。
 

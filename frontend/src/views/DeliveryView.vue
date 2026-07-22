@@ -32,6 +32,32 @@ const deliveryBlockerComputed = computed<string>(() => {
   return '三级审核已完成，当前项目负责人可生成最终成果包'
 })
 
+const summaryNumber = (key: string): number => {
+  const value = selectedPackageComputed.value?.quality_summary[key]
+  return typeof value === 'number' ? value : Number(value || 0)
+}
+
+const formatBytes = (value?: number | null): string => {
+  if (!value) return '--'
+  if (value < 1024) return `${value} B`
+  if (value < 1024 * 1024) return `${(value / 1024).toFixed(1)} KB`
+  return `${(value / 1024 / 1024).toFixed(1)} MB`
+}
+
+const evidenceLabel = (status?: string): string => ({
+  included: '实体已纳入',
+  referenced: '校验后引用',
+  not_provided: '未提供',
+  legacy: '历史清单',
+}[status || 'legacy'] || '历史清单')
+
+const evidenceColor = (status?: string): string => ({
+  included: 'green',
+  referenced: 'blue',
+  not_provided: 'default',
+  legacy: 'default',
+}[status || 'legacy'] || 'default')
+
 const getDownloadUrl = (downloadUrl: string | null): string | undefined => {
   const userCode = userStore.currentUserComputed?.user_code
   if (!downloadUrl || !userCode || !userStore.hasCapability('download_delivery')) {
@@ -118,7 +144,15 @@ onMounted(() => {
           <div><small>交付版本</small><strong>v{{ selectedPackageComputed.version }}</strong></div>
           <div><small>成果文件</small><strong>{{ selectedPackageComputed.manifest.length }}</strong></div>
           <div><small>质量得分</small><strong>{{ selectedPackageComputed.quality_summary.quality_score }}</strong></div>
-          <div><small>文件大小</small><strong>{{ ((selectedPackageComputed.file_size_bytes || 0) / 1024).toFixed(1) }} KB</strong></div>
+          <div><small>实体专题图</small><strong>{{ summaryNumber('thematic_map_count') }}</strong></div>
+          <div><small>监理报告</small><strong>{{ summaryNumber('supervision_report_count') }}</strong></div>
+          <div><small>文件大小</small><strong>{{ formatBytes(selectedPackageComputed.file_size_bytes) }}</strong></div>
+        </section>
+        <section class="archive-summary">
+          <span><small>多源数据目录</small><strong>{{ summaryNumber('dataset_asset_count') }} 项</strong></span>
+          <span><small>影像处理实体</small><strong>{{ summaryNumber('imagery_step_count') }} 项</strong></span>
+          <span><small>外业证据</small><strong>{{ selectedPackageComputed.quality_summary.field_evidence_status === 'provided' ? '已提供' : '未提供' }}</strong></span>
+          <span><small>灾害证据</small><strong>{{ selectedPackageComputed.quality_summary.disaster_evidence_status === 'provided' ? '已提供' : '未提供' }}</strong></span>
         </section>
         <section class="manifest-section">
           <header>
@@ -133,7 +167,20 @@ onMounted(() => {
             </a-button>
           </header>
           <div class="manifest-grid">
-            <article v-for="item in selectedPackageComputed.manifest" :key="item.path"><i><FileDoneOutlined /></i><span><strong>{{ item.category }} · {{ item.format }}</strong><small>{{ item.path }}</small><em>{{ item.description }}</em></span><a-tag>{{ item.record_count === null ? '报告' : `${item.record_count} 条` }}</a-tag></article>
+            <article v-for="item in selectedPackageComputed.manifest" :key="item.path">
+              <i><FileDoneOutlined /></i>
+              <span>
+                <strong>{{ item.category }} · {{ item.format }}</strong>
+                <small>{{ item.path }}</small>
+                <em>{{ item.description }}</em>
+                <code v-if="item.checksum_sha256">SHA {{ item.checksum_sha256.slice(0, 16) }}… · {{ formatBytes(item.file_size_bytes) }}</code>
+                <code v-else-if="item.source_entity_code">来源 {{ item.source_entity_code }}</code>
+              </span>
+              <div class="manifest-state">
+                <a-tag :color="evidenceColor(item.evidence_status)">{{ evidenceLabel(item.evidence_status) }}</a-tag>
+                <small>{{ item.record_count === null ? '成果文件' : `${item.record_count} 条` }}</small>
+              </div>
+            </article>
           </div>
         </section>
         <section class="checksum"><span><small>SHA-256 CHECKSUM</small><code>{{ selectedPackageComputed.checksum_sha256 }}</code></span><a-tag :color="selectedPackageComputed.is_current ? 'green' : 'default'">{{ selectedPackageComputed.is_current ? '校验通过' : '历史校验值' }}</a-tag></section>
@@ -170,21 +217,32 @@ onMounted(() => {
 .acceptance-seal > :first-child { font-size: 24px; }
 .acceptance-seal strong { margin-top: 3px; font-size: 10px; }
 .acceptance-seal small { font-size: 7px; }
-.package-metrics { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; margin: 9px 0; }
+.package-metrics { display: grid; grid-template-columns: repeat(6, 1fr); gap: 8px; margin: 9px 0; }
 .package-metrics > div { padding: 11px; background: #f4f7f5; border-radius: 5px; }
 .package-metrics small, .package-metrics strong { display: block; }
 .package-metrics small { font-size: 7px; color: #839088; }
 .package-metrics strong { margin-top: 3px; font-size: 16px; color: #347957; }
+.archive-summary { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; padding: 10px; margin-bottom: 9px; background: #f8faf9; border: 1px solid #e3e8e5; border-radius: 6px; }
+.archive-summary span { display: flex; flex-direction: column; gap: 2px; }
+.archive-summary small { font-size: 7px; color: #89958f; }
+.archive-summary strong { font-size: 10px; color: #405148; }
 .manifest-section { padding: 12px; border: 1px solid #e3e8e5; border-radius: 6px; }
 .manifest-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 7px; }
-.manifest-grid article { display: grid; grid-template-columns: 29px 1fr auto; gap: 7px; align-items: center; padding: 9px; background: #f8faf9; border: 1px solid #e8ecea; border-radius: 5px; }
+.manifest-grid article { display: grid; grid-template-columns: 29px minmax(0, 1fr) auto; gap: 7px; align-items: center; padding: 9px; background: #f8faf9; border: 1px solid #e8ecea; border-radius: 5px; }
 .manifest-grid article > i { display: grid; width: 27px; height: 27px; color: #3d8b63; background: #e7f2eb; border-radius: 4px; place-items: center; }
 .manifest-grid article > span { display: flex; min-width: 0; flex-direction: column; }
 .manifest-grid strong { font-size: 8px; }
 .manifest-grid small, .manifest-grid em { overflow: hidden; font-size: 7px; color: #8b9690; text-overflow: ellipsis; white-space: nowrap; }
 .manifest-grid em { font-style: normal; }
+.manifest-grid code { overflow: hidden; font-size: 7px; color: #53665c; text-overflow: ellipsis; white-space: nowrap; }
+.manifest-state { display: flex; flex-direction: column; gap: 3px; align-items: flex-end; }
+.manifest-state small { font-size: 7px; color: #8b9690; }
 .checksum { display: flex; align-items: center; justify-content: space-between; padding: 10px; margin-top: 9px; background: #f4f7f5; border-radius: 5px; }
 .checksum > span { display: flex; min-width: 0; flex-direction: column; }
 .checksum small { font-size: 7px; color: #8b9690; }
 .checksum code { overflow: hidden; font-size: 8px; text-overflow: ellipsis; white-space: nowrap; }
+@media (max-width: 1280px) {
+  .package-metrics { grid-template-columns: repeat(3, 1fr); }
+  .manifest-grid { grid-template-columns: 1fr; }
+}
 </style>

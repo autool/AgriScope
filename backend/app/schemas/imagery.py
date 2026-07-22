@@ -145,6 +145,38 @@ class ImageryProcessingResponse(BaseModel):
     steps: list[ImageryProcessingStepResponse]
 
 
+class ImageryQuicklookProductResponse(BaseModel):
+    """单个真实源影像或波段产品快视图证据。"""
+
+    product_code: Literal["source", "true_color", "false_color", "ndvi"]
+    product_name: str
+    available: bool
+    unavailable_reason: str | None
+    source_kind: Literal["source_asset", "verified_band_products"] | None
+    source_uri: str | None
+    source_checksum_sha256: str | None
+    preview_url: str | None
+    preview_checksum_sha256: str | None
+    bounds_wgs84: tuple[float, float, float, float] | None
+    width: int | None
+    height: int | None
+    band_indexes: tuple[int, ...]
+    band_descriptions: tuple[str, ...]
+    stretch_ranges: tuple[tuple[float, float], ...]
+    value_range: tuple[float, float] | None
+    renderer_version: str | None
+    generated_at: datetime | None
+
+
+class ImageryQuicklookResponse(BaseModel):
+    """当前实体影像及已校验波段产品快视图集合。"""
+
+    asset_code: str
+    asset_name: str
+    data_status: Literal["operational", "demo"]
+    products: list[ImageryQuicklookProductResponse]
+
+
 class ImageryStepRunRequest(BaseModel):
     """登记并完成影像预处理步骤请求。"""
 
@@ -202,3 +234,45 @@ class ImageryStepExecuteRequest(BaseModel):
         if not normalized:
             raise ValueError("操作人编码不得为空")
         return normalized
+
+
+class ImagerySourceLevelAcceptRequest(BaseModel):
+    """使用已验证源产品级别满足处理步骤的受控承认请求。"""
+
+    operator_code: str = Field(min_length=1, max_length=50)
+    expected_processing_level: Literal["L2A"] = "L2A"
+    confirm_no_algorithm_execution: bool
+    justification: str = Field(min_length=10, max_length=500)
+
+    model_config = ConfigDict(extra="forbid")
+
+    @field_validator("operator_code", "justification")
+    @classmethod
+    def validate_required_text(cls, value: str) -> str:
+        """清理操作人和承认依据。
+
+        Args:
+            value: 原始文本。
+
+        Returns:
+            str: 非空规范文本。
+        """
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("必填字段不得为空")
+        return normalized
+
+    @field_validator("confirm_no_algorithm_execution")
+    @classmethod
+    def validate_confirmation(cls, value: bool) -> bool:
+        """要求操作人明确确认本动作不会执行或伪造算法。
+
+        Args:
+            value: 客户端确认值。
+
+        Returns:
+            bool: 仅允许明确确认值。
+        """
+        if value is not True:
+            raise ValueError("必须确认本动作不执行重复算法")
+        return value

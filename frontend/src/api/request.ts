@@ -10,6 +10,16 @@ interface ApiEnvelope<T> {
   msg?: string
 }
 
+declare module 'axios' {
+  interface AxiosRequestConfig {
+    silent?: boolean
+  }
+
+  interface InternalAxiosRequestConfig {
+    silent?: boolean
+  }
+}
+
 const axiosInstance = axios.create({
   baseURL: import.meta.env.VITE_API_BASE_URL || '/api',
   timeout: 15000,
@@ -37,8 +47,12 @@ axiosInstance.interceptors.response.use(
       return Promise.reject(new Error('接口请求失败'))
     }
     const status = error.response?.status
+    const silent = error.config?.silent === true
     const responseData = error.response?.data as { msg?: string } | undefined
     const safeMessage = responseData?.msg
+    if (silent) {
+      return Promise.reject(new Error(safeMessage || '接口请求失败'))
+    }
     if (status === 404) {
       message.error(safeMessage || '该坐标不在基本农田保护范围内')
     } else if (status === 403) {

@@ -335,18 +335,29 @@ class ImageryProcessingEngine:
         green_index = self._band_index(parameters, "green_band", 2, source.count)
         blue_index = self._band_index(parameters, "blue_band", 3, source.count)
         nir_index = self._band_index(parameters, "nir_band", 4, source.count)
-        source_bands = source.read().astype("float32")
+        selected_indexes = {red_index, green_index, blue_index, nir_index}
+        if len(selected_indexes) != 4:
+            raise ValidationException("红、绿、蓝和近红外必须选择四个不同波段")
+        source_bands = source.read(masked=True).astype("float32").filled(np.nan)
         red = source_bands[red_index - 1]
         green = source_bands[green_index - 1]
         blue = source_bands[blue_index - 1]
         nir = source_bands[nir_index - 1]
         denominator = nir + red
+        valid_ndvi = (
+            np.isfinite(red)
+            & np.isfinite(nir)
+            & (red >= 0)
+            & (nir >= 0)
+            & (denominator > 1e-12)
+        )
         ndvi = np.divide(
             nir - red,
             denominator,
-            out=np.zeros_like(denominator, dtype="float32"),
-            where=np.abs(denominator) > 1e-12,
+            out=np.full_like(denominator, np.nan, dtype="float32"),
+            where=valid_ndvi,
         )
+        ndvi = np.clip(ndvi, -1, 1)
         product_stack = np.stack(
             [red, green, blue, nir, red, green, ndvi],
         ).astype("float32")
@@ -360,7 +371,7 @@ class ImageryProcessingEngine:
             "ndvi",
         )
         profile = self._output_profile(source)
-        profile.update(count=7, dtype="float32", nodata=None)
+        profile.update(count=7, dtype="float32", nodata=np.nan, predictor=3)
         with rasterio.open(output_path, "w", **profile) as output:
             output.write(product_stack)
             output.descriptions = descriptions

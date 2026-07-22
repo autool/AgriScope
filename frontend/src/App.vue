@@ -6,11 +6,12 @@ import {
   SettingOutlined,
 } from '@ant-design/icons-vue'
 import { storeToRefs } from 'pinia'
-import { computed } from 'vue'
+import { computed, onMounted, onUnmounted } from 'vue'
 import { useRouter } from 'vue-router'
 
 import UserIdentitySwitcher from '@/components/layout/UserIdentitySwitcher.vue'
 import { useLayoutStore } from '@/store/layoutStore'
+import { useSystemHealthStore } from '@/store/systemHealthStore'
 import { useWorkbenchStore } from '@/store/workbenchStore'
 
 interface TaskNotification {
@@ -23,18 +24,26 @@ interface TaskNotification {
 }
 
 const layoutStore = useLayoutStore()
+const systemHealthStore = useSystemHealthStore()
 const workbenchStore = useWorkbenchStore()
 const router = useRouter()
-const { initializedRef, loadingRef, overviewRef } = storeToRefs(workbenchStore)
+const { loadingRef, overviewRef } = storeToRefs(workbenchStore)
 
 const projectNameComputed = computed<string>(() => (
   overviewRef.value?.project.project_name || '加载项目上下文'
 ))
 const serviceStateComputed = computed<{ label: string; state: string }>(() => {
-  if (loadingRef.value) return { label: '数据服务连接中', state: 'loading' }
-  if (initializedRef.value) return { label: '数据服务正常', state: 'online' }
-  return { label: '数据服务待连接', state: 'offline' }
+  if (systemHealthStore.stateRef === 'checking' || loadingRef.value) {
+    return { label: '平台与数据库检查中', state: 'loading' }
+  }
+  if (systemHealthStore.stateRef === 'online') {
+    return { label: '平台与数据库可用', state: 'online' }
+  }
+  return { label: '平台或数据库离线', state: 'offline' }
 })
+
+onMounted(() => systemHealthStore.start())
+onUnmounted(() => systemHealthStore.stop())
 const notificationsComputed = computed<TaskNotification[]>(() => {
   const overview = overviewRef.value
   if (!overview) return []

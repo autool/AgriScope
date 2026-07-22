@@ -279,9 +279,7 @@ const handleHierarchySelect = async (node: FarmlandHierarchyNode): Promise<void>
   height: 96px;
   overflow: hidden;
   color: rgb(255 255 255 / 75%);
-  background:
-    linear-gradient(135deg, rgb(27 58 43 / 18%), rgb(176 154 86 / 14%)),
-    url('/imagery-tiles/10/365/872') center / cover;
+  background: linear-gradient(135deg, #28483a, #172820);
   border-radius: 6px;
   place-items: center;
 }

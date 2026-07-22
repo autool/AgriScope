@@ -38,6 +38,11 @@ class DeliveryManifestItem(BaseModel):
     format: str
     record_count: int | None
     description: str
+    file_size_bytes: int | None = None
+    checksum_sha256: str | None = None
+    source_entity_code: str | None = None
+    source_uri: str | None = None
+    evidence_status: str = "legacy"
 
 
 class DeliveryPackageResponse(BaseModel):

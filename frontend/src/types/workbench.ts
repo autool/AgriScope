@@ -234,6 +234,13 @@ export interface ImageryStepExecutePayload {
   comment?: string | null
 }
 
+export interface ImagerySourceLevelAcceptPayload {
+  operator_code: string
+  expected_processing_level: 'L2A'
+  confirm_no_algorithm_execution: true
+  justification: string
+}
+
 export interface ImageryProcessing {
   asset_code: string
   asset_name: string
@@ -248,6 +255,36 @@ export interface ImageryProcessing {
   steps: ImageryProcessingStep[]
 }
 
+export type ImageryQuicklookProductCode = 'source' | 'true_color' | 'false_color' | 'ndvi'
+
+export interface ImageryQuicklookProduct {
+  product_code: ImageryQuicklookProductCode
+  product_name: string
+  available: boolean
+  unavailable_reason: string | null
+  source_kind: 'source_asset' | 'verified_band_products' | null
+  source_uri: string | null
+  source_checksum_sha256: string | null
+  preview_url: string | null
+  preview_checksum_sha256: string | null
+  bounds_wgs84: [number, number, number, number] | null
+  width: number | null
+  height: number | null
+  band_indexes: number[]
+  band_descriptions: string[]
+  stretch_ranges: Array<[number, number]>
+  value_range: [number, number] | null
+  renderer_version: string | null
+  generated_at: string | null
+}
+
+export interface ImageryQuicklook {
+  asset_code: string
+  asset_name: string
+  data_status: 'operational' | 'demo'
+  products: ImageryQuicklookProduct[]
+}
+
 export interface ImageryBusinessMetadataField {
   value: string | number | null
   source: string
@@ -260,6 +297,7 @@ export interface ImageryBusinessMetadataField {
 }
 
 export interface ImageryRasterMetadata extends Record<string, unknown> {
+  descriptions?: Array<string | null>
   business_metadata?: Partial<Record<
     'sensor_type' | 'acquired_at' | 'processing_level' | 'cloud_cover',
     ImageryBusinessMetadataField
@@ -308,6 +346,11 @@ export interface DeliveryManifestItem {
   format: string
   record_count: number | null
   description: string
+  file_size_bytes?: number | null
+  checksum_sha256?: string | null
+  source_entity_code?: string | null
+  source_uri?: string | null
+  evidence_status?: 'included' | 'referenced' | 'not_provided' | 'legacy'
 }
 
 export interface DeliveryPackage {

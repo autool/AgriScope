@@ -16,6 +16,22 @@
 
 ![AgriScope 生产调度](docs/images/production-scheduling.png)
 
+### 公开 Sentinel-2 实体影像
+
+![AgriScope 公开 Sentinel-2 实体影像](docs/images/imagery-public-sentinel.png)
+
+### 专题制图工作台
+
+![AgriScope 专题制图工作台](docs/images/thematic-map-workbench.png)
+
+### 成果交付与标准化归档
+
+![AgriScope 成果交付与标准化归档](docs/images/delivery-archive.png)
+
+### 数据共享服务
+
+![AgriScope 数据共享服务](docs/images/service-sharing-workbench.png)
+
 ### 规则配置
 
 ![AgriScope 规则配置](docs/images/rule-settings.png)
@@ -33,7 +49,13 @@
 - 支持任务作用域内地级区域、县区、地类、作物、种植模式、权属村面积聚合，使用真实任务面积生成年度趋势，并由项目负责人导出 CSV。
 - 支持外部灾害模型 GeoJSON 批量导入、PostGIS 面积与省域校验、分级渲染、受灾面积评估和人工复核确认。
 - 支持辐射定标、大气校正、几何校正、裁剪和波段产品流水线。
+- 支持从 Element 84 Earth Search 公共 STAC 查询并裁取 Sentinel-2 L2A 蓝、绿、红、近红外四个同网格 COG；强制读取 Raster Extension 的 `scale`、`offset` 和 `nodata` 并转换为浮点 BOA 地表反射率，再复用平台入库门禁。保存 STAC 条目、原始波段 URL、产品 URI、处理基线、公开许可、空间范围、文件大小和 SHA-256。
+- 影像预处理页不再使用固定瓦片冒充当前资产预览：服务端从所选实体源栅格生成带源文件 SHA-256、WGS84 范围、波段索引和 PNG 校验值的真实快视图；真彩色、标准假彩色和 NDVI 仅从已通过实体校验的 `band_products` 七波段产物生成，缺失时明确显示不可用。快视图只用于核验，不计入处理完成率。
 - 支持创建绑定两期真实影像、规则版本、任务图斑范围和配准证据的多时相变化检测任务；服务端将两期栅格重投影到同一公共交集网格并生成共同拉伸、带 SHA 清单的卷帘/闪烁/并排预览；既可原子导入外部候选 GeoJSON，也可基于该实体公共网格执行可配置 RGB 差分和连通域矢量化，保存算法版本、参数、源/成果 SHA 与实体 GeoJSON。自动候选保持“未分类”，必须由人工归入六类之一后才能确认，重分类与排除均保留不可变审计历史。
+- 支持与自动质检和三级审核相互独立的项目监理闭环：独立监理按真实任务图斑执行系统抽样或县区分层随机抽样，固化图斑版本与任务范围快照；过程检查保存实体证据地址，生产团队提交整改，独立监理逐轮复检，并完成县区量化评价。全部门禁通过后生成带大小、SHA-256 和完整证据清单的不可变 JSON 监理报告。
+- 支持从已校验 `band_products` 实体栅格批量生成真彩色、标准假彩色和 NDVI 专题图，输出 PNG/PDF 实体文件。版式包含图名、图廓、指北针、比例尺、图例、制图单位、日期和图号；清单同时保存来源 URI/SHA-256、STAC/许可/密级血缘、渲染参数、成图大小与 SHA-256，预览和下载前重新校验实体，公开数据显式标注“非法定调查成果”。
+- 成果 ZIP 采用标准目录归档任务矢量、统计、灾害、外业、质量、审核、报告、真实专题图和独立监理报告；影像源与处理产物通过重新校验的 URI、大小和 SHA-256 血缘引用，多源数据资产目录与归档状态索引一并写入。除清单自身外，每个内嵌文件保存大小和 SHA-256；新增专题图、监理报告、数据资产或影像处理产物会使旧包失效，新版本生成时旧版本明确转为审计历史。
+- 支持地图与数据服务受控共享：项目负责人登记服务和真实资源证据，甲方审核代表独立审批；项目成员提交用途和期限明确的访问申请，项目负责人审批并可签发只显示一次的 API Key。数据库仅保存密钥 SHA-256 和末四位，支持真实健康探测、SSRF 内网防护、调用指标审计、单凭证撤销和服务级批量吊销。
 - OpenLayers 二维地图与 Cesium 三维视图共享选中图斑和业务状态。
 - 应用壳层参考 Vben5，支持持久化布局偏好、折叠侧栏、多标签页、KeepAlive、局部刷新和内容最大化。
 - 支持 WGS84（EPSG:4326）坐标点查、地图点击查询和包围盒空间查询。
@@ -48,10 +70,11 @@
 项目已将黑龙江省政府采购网公开的国土变更调查、疑似变化图斑提取、高分辨率影像处理、生态遥感与野外验证、河湖动态监测、生产建设遥感监管和农作物病虫疫情田间监测项目纳入产品范围。新增能力按依赖关系持续开发：
 
 1. 多源数据目录、技术规则包、生产批次和县区任务分包。当前生产底座已实现，后续继续补充实体资产核验和批量生产工具。
-2. 多时相变化检测已实现真实影像资格、任务与规则快照、实体栅格公共网格卷帘/闪烁/并排、外部候选 GeoJSON 导入、内置 RGB 差分自动候选发现、六类变化判读和不可变审计；后续继续补充多算法配置和监理抽检。
-3. RPC/GCP、DEM 正射、区域网平差、配准、融合、匀色、镶嵌和覆盖率验收。
-4. 历史影像溯源、专题图集、标准化成果归档和数据共享审批。
-5. 无人机任务、田间监测站、物联网设备、AI 病虫害识别与风险预警。
+2. 多时相变化检测已实现真实影像资格、任务与规则快照、实体栅格公共网格卷帘/闪烁/并排、外部候选 GeoJSON 导入、内置 RGB 差分自动候选发现、六类变化判读和不可变审计；后续继续补充多算法配置。
+3. 独立项目监理已实现真实任务图斑抽样、过程检查、问题整改、逐轮复检、县区评价和不可变实体报告；当前数据库无业务监理记录时保持真实空状态。
+4. RPC/GCP、DEM 正射、区域网平差、配准、融合、匀色、镶嵌和覆盖率验收。
+5. 专题制图已实现持久化版式模板、真实波段产品批量成图、PNG/PDF 实体输出、双 SHA-256 校验、公开数据标识和角色审计；标准化交付归档已纳入真实专题图、监理报告、影像处理血缘、多源资产目录、逐文件 SHA-256 和归档源变化失效判断。数据共享已实现注册、甲方审批、访问申请、一次性凭证、健康检查、调用审计和撤销。历史影像长周期溯源、完整图集编排和源栅格离线封存仍待继续建设。
+6. 无人机任务、田间监测站、物联网设备、AI 病虫害识别与风险预警。
 
 公开采购文件中的最小图斑面积、完整率、边界吻合度、地类准确率、关键字段准确率和像素套合精度将作为可配置规则保存，不在业务代码中硬编码。公开或演示数据继续与正式业务、涉密数据严格区分。
 
@@ -157,6 +180,9 @@ psql "$POSTGRES_DSN" -f scripts/migrations/20260722_plot_split_operations.sql
 psql "$POSTGRES_DSN" -f scripts/migrations/20260722_plot_operation_history.sql
 psql "$POSTGRES_DSN" -f scripts/migrations/20260722_add_production_foundation.sql
 psql "$POSTGRES_DSN" -f scripts/migrations/20260722_change_detection_workflow.sql
+psql "$POSTGRES_DSN" -f scripts/migrations/20260722_independent_supervision_workflow.sql
+psql "$POSTGRES_DSN" -f scripts/migrations/20260722_thematic_map_workflow.sql
+psql "$POSTGRES_DSN" -f scripts/migrations/20260722_service_sharing_workflow.sql
 ```
 
 其中 `POSTGRES_DSN` 使用 PostgreSQL 原生连接串。`task_plots` 明确保存任务与图斑的分配关系，质量检查、进度统计和提交门禁均以该作用域为准。
@@ -212,6 +238,20 @@ psql "$POSTGRES_DSN" -f scripts/migrations/20260721_delivery_role_scope.sql
 
 当前内置内业解译员、外业核查员、质检员、项目负责人、甲方审核代表和独立监理六类项目身份。独立监理与质检员保持不同角色和能力，不能用质检记录冒充监理证据。前端身份切换仅用于联调不同职责，后端仍依据 `project_users.user_code` 独立校验能力。历史成果包若早于任务最新修改时间，或包内图斑数与 `task_plots` 当前作用域不一致，将保留为审计历史并禁止下载。
 
+### 独立项目监理
+
+独立监理页由 `/api/v1/supervision/overview` 返回完整 122 县区真实任务范围和监理业务状态。创建计划时只读取 `task_plots` 中的图斑身份、县区和版本，不加载全省完整 Polygon；系统抽样或县区分层随机抽样均可按同一计划编号复现，每个计划最多 5000 个样本，超过上限时明确拒绝而不截断。
+
+监理计划固化任务图斑数量和任务更新时间。基础数据变化后，旧计划不能继续登记检查或生成报告。整改由内业、质检或项目负责人提交，复检、县区评价和报告生成只能由独立监理执行。报告生成要求至少一次过程检查、全部问题闭环、所有抽样县区完成评价，并写入受控目录；下载前重新校验实体文件大小和 SHA-256。
+
+### 专题制图
+
+专题制图页由 `/api/v1/thematic-maps/overview` 返回当前项目的持久化版式、可用实体影像来源和任务成果。来源资格只接受已完成并通过物理文件、大小和 SHA-256 校验的 `band_products` 产物；专题图渲染直接读取该实体栅格，不复用影像快视图缓存，也不会把快视图状态冒充制图完成状态。
+
+项目负责人可保存图幅尺寸、DPI、页边距、图例位置、图廓、指北针、比例尺、标题模式和真实制图单位，并在一批请求中生成 1–12 张真彩色、标准假彩色或 NDVI PNG/PDF。每张成图清单保存来源 URI 与 SHA-256、STAC 条目、许可、密级、产品基线、实际波段描述、拉伸或值域、版式、渲染器版本、成图大小和成图 SHA-256；写出失败时整批回滚数据库记录和临时文件。
+
+公开 Sentinel-2 成图在图面上持续显示“公开数据 · 非法定调查成果”。解译员可在线预览经重新校验的 PNG，项目负责人拥有批量生成和附件下载权限；每次预览与下载分别记录稳定用户编码和角色快照。当前闭环不代表 RPC/GCP 正射、融合、匀色、镶嵌或高级图集编排已经完成。
+
 ### 生产调度与多源数据目录
 
 生产调度页由 `/api/v1/production/overview` 返回当前项目任务的真实聚合结果。县区工作区来自完整行政区划和 `task_plots` 任务范围，当前返回全部 122 个县区；没有生产批次或多源资产时返回 0 和空列表，不初始化虚构批次、负责人进度或完成状态。
@@ -224,6 +264,42 @@ psql "$POSTGRES_DSN" -f scripts/migrations/20260721_delivery_role_scope.sql
 影像、任务图斑质量检查全覆盖、全部门禁通过、平均质量分、开放问题和待处置外业
 疑点。质量报告和验收报告会区分真实专项记录与空集合；未提供外业记录或未导入灾害
 成果时会明确写入报告，不会描述为已完成专项成果。
+
+新成果包使用 `vector/`、`statistics/`、`disasters/`、`field/`、`quality/`、
+`review/`、`reports/`、`thematic_maps/`、`supervision/` 和 `archive/` 标准目录。
+生成前重新校验当前影像源、全部已完成处理产物、专题图和监理报告实体；专题图与监理
+报告直接写入 ZIP，影像源和大体量处理中间栅格通过 `archive/imagery_lineage.json`
+保存受控 URI、实体大小和 SHA-256 引用，多源资产写入 `archive/dataset_catalog.json`，
+各类证据的“已纳入/校验后引用/未提供”状态写入 `archive/archive_index.json`。
+
+`manifest.json` 保存每个内嵌文件的路径、分类、格式、记录数、来源实体、文件大小和
+SHA-256。任务图斑、专题图、监理报告、多源资产目录或当前影像处理产物发生变化后，
+历史包立即禁止作为当前成果下载；生成新版本时旧 `completed` 包统一转为
+`superseded`，确保同一任务只有一个当前交付版本。当前实现是可校验交付包闭环，尚不
+把大体量源栅格完整复制进 ZIP，因此不宣称已经完成长期离线介质封存。
+
+### 数据共享服务
+
+数据共享页使用 `shared_services`、`service_access_requests`、
+`service_credentials`、`service_health_checks` 和 `service_usage_events` 保存完整工作流。
+项目负责人登记服务地址、健康地址、接口文档、资源编号、资源 SHA-256、密级、暴露
+范围、鉴权方式和责任单位；影像、专题图、成果包及多源目录等内部资源必须与数据库
+真实实体和 SHA-256 一致，客户端自行填写的校验值不能直接获得发布资格。
+
+服务登记后固定进入 `pending_approval`，只有甲方审核代表具备独立批准或驳回能力。
+涉密资源禁止发布到公共范围，公共服务必须使用 HTTPS，非公共服务必须配置鉴权。
+项目成员可对已激活服务提交包含申请单位、明确用途和最长 365 天期限的访问申请；
+API Key 模式批准后密钥明文只返回一次，数据库仅保存 SHA-256 哈希和末四位。
+
+健康检查由后端实际访问登记地址，保存 HTTP 状态、响应时间、检查人和检查时间。
+默认拒绝环回、私网、链路本地、保留和组播地址，离线部署确有需要时通过
+`SERVICE_HEALTH_PRIVATE_HOST_ALLOWLIST` 显式列出可信主机。服务调用审计必须通过
+项目负责人身份或有效 API Key 哈希校验，保存方法、路径、响应状态、耗时和字节数。
+撤销单个凭证或整个服务均保留不可变事件；服务撤销时同一事务吊销全部活动凭证。
+
+当前联调目录登记的是公开 Element 84 Earth Search STAC，已经由项目负责人登记、
+甲方审核代表批准，并完成一次 HTTP 200 的真实健康探测。该记录用于公开 Sentinel-2
+影像检索，不代表平台对外发布了涉密或法定调查成果。
 
 ### 外业核查 CSV / Excel 导入
 
@@ -310,6 +386,46 @@ psql "$POSTGRES_DSN" -f scripts/migrations/20260722_statistics_history_import.sq
 
 ## 影像处理执行与外部产物登记
 
+### 公开 Sentinel-2 实体影像导入
+
+`backend/scripts/import_public_sentinel_imagery.py` 通过 Element 84 Earth Search
+查询 Sentinel-2 L2A 条目，只接受蓝、绿、红和近红外四个 10 米 COG 同 CRS、同变换、
+同尺寸的场景。每个波段必须提供 STAC Raster Extension 的 `scale`、`offset` 和
+`nodata`；脚本在裁取时把量化 DN 转换为 `float32` BOA 地表反射率，并将原标度清单
+写入实体标签。缺少标度时整次拒绝，不能把量化 DN 冒充 L2A 反射率。生成的 GeoTIFF
+再通过现有影像资产 Service 完成
+权限校验、Rasterio 元数据提取、SHA256 去重、受控落盘、处理步骤初始化和审计登记：
+
+```bash
+cd backend
+poetry run python -m scripts.import_public_sentinel_imagery \
+  --asset-code S2B-HRB-20260716-PUBLIC \
+  --asset-name "Sentinel-2B 哈尔滨公开影像 2026-07-16" \
+  --bbox 126.58,45.76,126.68,45.84 \
+  --datetime-range 2026-07-16T00:00:00Z/2026-07-16T23:59:59Z \
+  --max-cloud-cover 5 \
+  --operator-code manager-zhao-zhiyuan \
+  --data-status operational
+```
+
+候选平台、载荷、采集时间和云量均取自实际 STAC Feature，不按资产名称或命令参数
+伪造。输出标签保存 STAC Item、四个波段 URL、Copernicus 数据法律声明、SAFE 产品
+URI、处理基线和 `public` 密级。`operational` 只表示该公开实体已通过平台业务影像
+文件门禁，不会把公开数据描述为涉密成果，也不代表完成了正射、配准或验收处理。
+对 L2A 源影像尚未生成或登记受控 `band_products` 时，真彩色、假彩色和 NDVI 卡片
+必须继续显示不可用，不能直接用源文件冒充处理成果。
+
+对导入器已实际应用 STAC 标度的 Sentinel-2 L2A，可在辐射定标和大气校正步骤选择
+“L2A 源级承认”。服务端会重新校验实体大小、SHA256、平台/载荷、L2A、
+`SOURCE_SCALE_APPLIED=true`、`BOA_REFLECTANCE`、产品 URI、处理基线，以及公开数据的
+STAC Item 和许可链接。承认步骤复用同一实体，不复制文件、不运行 DOS1，并在步骤证据
+和审核记录中保存 `algorithm_executed=false`。几何重投影、行政区裁剪和波段产品仍须
+生成新的校验值实体，不能一并跳过。
+
+波段产品必须使用四个不同波段。前端从实体描述自动识别 Blue/Green/Red/NIR；当前
+Sentinel 子集映射为红=3、绿=2、蓝=1、近红外=4。NDVI 仅对有限、非负且分母大于零的
+红光/近红外反射率计算，其余像元写为 `NaN`，有效结果限制在 `[-1, 1]`。
+
 影像处理页可直接使用平台内置 Rasterio 处理器执行标准五步流水线：按显式比例系数
 和偏移量完成 DN 定标、使用 DOS1 暗目标法进行基础大气校正、重投影到指定 CRS、
 按数据库真实行政区边界裁剪，并生成真彩色、标准假彩色和 NDVI 七波段产品栈。
@@ -321,6 +437,12 @@ psql "$POSTGRES_DSN" -f scripts/migrations/20260722_statistics_history_import.sq
 HDF 产物放入 `backend/storage/imagery/`，再通过影像处理页面登记相对路径、
 处理器名称和版本。后端会校验存储目录边界、文件格式签名、文件大小和 SHA256；
 缺少实体文件的步骤不会计入完成率，产品卡片也不会显示为已生成。
+
+影像页面的主图来自当前选中资产的实体源栅格，真彩色、标准假彩色和 NDVI 卡片
+来自已校验的七波段产品栈，不再对固定瓦片使用 CSS 滤镜模拟。快视图缓存按实体来源
+SHA256 隔离，清单保存来源 URI、文件大小、波段索引/描述、WGS84 范围、拉伸参数、
+渲染器版本、PNG 大小和 PNG SHA256；读取时会重新校验缓存。`demo` 影像仍显式标记，
+快视图本身不会改变预处理步骤状态，也不会被成果交付门禁视为生产产物。
 
 数据资产页支持直接上传 GeoTIFF、IMG 和 HDF。后端使用 Rasterio 从实体文件
 读取驱动格式、CRS、WGS84 覆盖范围、像元分辨率、栅格尺寸、波段描述和标签，
@@ -394,13 +516,16 @@ psql "$POSTGRES_DSN" -f scripts/migrations/20260722_remove_seeded_task_audit.sql
 | POST | `/api/v1/disasters/import-geojson` | 批量导入灾害模型 GeoJSON，重算面积并保存来源审计 |
 | PATCH | `/api/v1/disasters/{patch_code}` | 人工修正灾害等级和确认状态 |
 | GET | `/api/v1/imagery-assets/{asset_code}/processing` | 查询影像预处理流水线 |
+| GET | `/api/v1/imagery-assets/{asset_code}/quicklooks` | 从实体源影像和已校验波段产物生成真实快视图及来源清单 |
+| GET | `/api/v1/imagery-assets/{asset_code}/quicklooks/{product_code}.png` | 读取带 PNG SHA-256 ETag 的源影像、真彩色、假彩色或 NDVI 快视图 |
 | POST | `/api/v1/imagery-assets/{asset_code}/processing/{step_code}/run` | 校验并登记外部处理实体产物 |
 | POST | `/api/v1/imagery-assets/{asset_code}/processing/{step_code}/execute` | 使用内置处理器执行步骤并生成受控实体产物 |
+| POST | `/api/v1/imagery-assets/{asset_code}/processing/{step_code}/accept-source` | 复核 Sentinel-2 L2A 实体与血缘后，无重复算法地承认定标或大气校正要求 |
 | GET | `/api/v1/imagery-assets` | 查询项目真实影像资产目录 |
 | POST | `/api/v1/imagery-assets` | 上传影像文件并自动读取栅格与空间元数据 |
-| GET | `/api/v1/deliveries` | 查询交付门禁、当前/历史成果包和失效原因 |
-| POST | `/api/v1/deliveries/generate` | 项目负责人生成任务作用域成果 ZIP |
-| GET | `/api/v1/deliveries/{package_code}/download` | 经角色、时效、大小和 SHA-256 校验后下载成果包 |
+| GET | `/api/v1/deliveries` | 查询交付门禁、单一当前版本、历史包及任务/归档源失效原因 |
+| POST | `/api/v1/deliveries/generate` | 项目负责人生成含实体专题图、监理报告、影像血缘和逐文件 SHA-256 的任务成果 ZIP |
+| GET | `/api/v1/deliveries/{package_code}/download` | 经角色、任务快照、归档快照、大小和 SHA-256 校验后下载当前成果包 |
 | GET | `/api/v1/rule-configs` | 查询项目当前质量与外业校核规则 |
 | PATCH | `/api/v1/rule-configs` | 更新项目规则并保存修改前后值审计 |
 | GET | `/api/v1/change-detection/overview` | 查询真实影像资格、检测任务、候选队列和判读历史 |
@@ -410,6 +535,29 @@ psql "$POSTGRES_DSN" -f scripts/migrations/20260722_remove_seeded_task_audit.sql
 | PATCH | `/api/v1/change-detection/runs/{run_code}/candidates/{candidate_code}/review` | 人工确认、重分类或排除候选并追加不可变历史 |
 | GET | `/api/v1/change-detection/runs/{run_code}/comparison` | 生成或读取双时相公共网格预览及来源校验清单 |
 | GET | `/api/v1/change-detection/runs/{run_code}/comparison/{side}.png` | 读取带 SHA-256 ETag 的前/后时相 PNG 预览 |
+| GET | `/api/v1/supervision/overview` | 查询 122 县区真实监理工作区、计划、检查、问题和报告状态 |
+| POST | `/api/v1/supervision/plans` | 从任务真实图斑创建可复现县区抽样计划并固化数据快照 |
+| GET | `/api/v1/supervision/plans/{plan_code}/samples` | 分页读取完整显式样本身份和图斑版本快照 |
+| POST | `/api/v1/supervision/plans/{plan_code}/inspections` | 独立监理登记过程检查及证据 |
+| POST | `/api/v1/supervision/plans/{plan_code}/inspections/{inspection_code}/findings` | 登记监理问题、严重度、证据和整改期限 |
+| POST | `/api/v1/supervision/plans/{plan_code}/findings/{finding_code}/rectification` | 生产团队提交整改说明和证据 |
+| POST | `/api/v1/supervision/plans/{plan_code}/findings/{finding_code}/reinspect` | 独立监理保存逐轮复检结论 |
+| PATCH | `/api/v1/supervision/plans/{plan_code}/county-evaluations/{region_code}` | 新增或更新县区量化评价并审计修改前后值 |
+| POST | `/api/v1/supervision/plans/{plan_code}/report` | 通过闭环门禁后生成不可变实体监理报告 |
+| GET | `/api/v1/supervision/reports/{report_code}/download` | 鉴权并复核大小与 SHA-256 后下载报告 |
+| GET | `/api/v1/thematic-maps/overview` | 查询版式模板、已校验实体来源和当前任务专题图成果 |
+| POST | `/api/v1/thematic-maps/templates` | 项目负责人创建持久化专题图版式并记录稳定身份审计 |
+| POST | `/api/v1/thematic-maps/products/generate` | 从同一已校验波段产品实体原子批量生成 PNG/PDF 专题图 |
+| GET | `/api/v1/thematic-maps/products/{product_code}/download` | 按预览或附件方式鉴权，并复核签名、大小及 SHA-256 后读取成果 |
+| GET | `/api/v1/service-sharing/overview` | 按项目用户能力查询服务、申请、凭证摘要、健康和调用审计 |
+| POST | `/api/v1/service-sharing/services` | 项目负责人登记服务与真实资源证据并提交甲方审批 |
+| POST | `/api/v1/service-sharing/services/{service_code}/review` | 甲方审核代表批准或驳回服务登记 |
+| POST | `/api/v1/service-sharing/services/{service_code}/access-requests` | 项目成员提交用途和期限明确的访问申请 |
+| POST | `/api/v1/service-sharing/access-requests/{request_code}/review` | 项目负责人审批访问并按需签发一次性 API Key |
+| POST | `/api/v1/service-sharing/services/{service_code}/health-check` | 执行带 SSRF 防护的真实服务健康探测 |
+| POST | `/api/v1/service-sharing/services/{service_code}/usage` | 校验项目身份或 API Key 后写入调用审计 |
+| POST | `/api/v1/service-sharing/services/{service_code}/revoke` | 撤销服务并原子吊销全部活动凭证 |
+| POST | `/api/v1/service-sharing/credentials/{credential_code}/revoke` | 单独撤销一个访问凭证 |
 
 ## 数据安全
 

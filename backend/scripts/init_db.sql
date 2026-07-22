@@ -1277,3 +1277,538 @@ CREATE INDEX IF NOT EXISTS idx_change_detection_events_run_time
 CREATE INDEX IF NOT EXISTS idx_change_detection_events_candidate_time
     ON change_detection_events (candidate_id, created_at DESC)
     WHERE candidate_id IS NOT NULL;
+
+-- 独立项目监理首个可交付闭环。
+-- 与自动质检、内业自检、质检审核和甲方复核分离，保存真实抽样与不可变证据。
+
+CREATE TABLE IF NOT EXISTS supervision_plans (
+    id SERIAL PRIMARY KEY,
+    project_id INTEGER NOT NULL
+        REFERENCES monitoring_projects(id) ON DELETE CASCADE,
+    task_id INTEGER NOT NULL
+        REFERENCES monitoring_tasks(id) ON DELETE CASCADE,
+    plan_code VARCHAR(80) NOT NULL UNIQUE,
+    plan_name VARCHAR(200) NOT NULL,
+    sampling_method VARCHAR(30) NOT NULL,
+    sample_ratio NUMERIC(7, 4) NOT NULL,
+    minimum_per_region INTEGER NOT NULL,
+    region_codes JSONB NOT NULL DEFAULT '[]'::jsonb,
+    task_plot_count_snapshot INTEGER NOT NULL,
+    task_updated_at_snapshot TIMESTAMPTZ NOT NULL,
+    planned_start_date DATE NOT NULL,
+    planned_end_date DATE NOT NULL,
+    status VARCHAR(30) NOT NULL DEFAULT 'active',
+    created_by VARCHAR(100) NOT NULL,
+    created_by_code VARCHAR(50) NOT NULL,
+    created_by_role VARCHAR(40) NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    CONSTRAINT ck_supervision_plan_sampling_method CHECK (
+        sampling_method IN ('systematic', 'stratified_random')
+    ),
+    CONSTRAINT ck_supervision_plan_ratio CHECK (
+        sample_ratio >= 0.1 AND sample_ratio <= 100
+    ),
+    CONSTRAINT ck_supervision_plan_minimum CHECK (
+        minimum_per_region >= 1 AND minimum_per_region <= 500
+    ),
+    CONSTRAINT ck_supervision_plan_task_count CHECK (
+        task_plot_count_snapshot > 0
+    ),
+    CONSTRAINT ck_supervision_plan_dates CHECK (
+        planned_end_date >= planned_start_date
+    ),
+    CONSTRAINT ck_supervision_plan_status CHECK (
+        status IN ('active', 'completed', 'cancelled')
+    )
+);
+
+CREATE INDEX IF NOT EXISTS idx_supervision_plans_task_status
+    ON supervision_plans (task_id, status, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS supervision_samples (
+    id SERIAL PRIMARY KEY,
+    plan_id INTEGER NOT NULL
+        REFERENCES supervision_plans(id) ON DELETE CASCADE,
+    plot_code VARCHAR(50) NOT NULL
+        REFERENCES farmland_plots(plot_code) ON DELETE RESTRICT,
+    region_code VARCHAR(50) NOT NULL,
+    region_name VARCHAR(100) NOT NULL,
+    plot_version_snapshot INTEGER NOT NULL,
+    selection_rank INTEGER NOT NULL,
+    selected_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    CONSTRAINT uq_supervision_sample_plot UNIQUE (plan_id, plot_code),
+    CONSTRAINT ck_supervision_sample_version CHECK (plot_version_snapshot > 0),
+    CONSTRAINT ck_supervision_sample_rank CHECK (selection_rank > 0)
+);
+
+CREATE INDEX IF NOT EXISTS idx_supervision_samples_plan_region
+    ON supervision_samples (plan_id, region_code, selection_rank);
+CREATE INDEX IF NOT EXISTS idx_supervision_samples_plot
+    ON supervision_samples (plot_code);
+
+CREATE TABLE IF NOT EXISTS supervision_inspections (
+    id SERIAL PRIMARY KEY,
+    plan_id INTEGER NOT NULL
+        REFERENCES supervision_plans(id) ON DELETE CASCADE,
+    inspection_code VARCHAR(80) NOT NULL,
+    inspection_stage VARCHAR(40) NOT NULL,
+    inspected_at TIMESTAMPTZ NOT NULL,
+    conclusion VARCHAR(30) NOT NULL,
+    evidence_uri VARCHAR(500) NOT NULL,
+    summary TEXT NOT NULL,
+    inspector VARCHAR(100) NOT NULL,
+    inspector_code VARCHAR(50) NOT NULL,
+    inspector_role VARCHAR(40) NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    CONSTRAINT uq_supervision_inspection_code UNIQUE (
+        plan_id, inspection_code
+    ),
+    CONSTRAINT ck_supervision_inspection_stage CHECK (
+        inspection_stage IN (
+            'imagery_processing',
+            'plot_interpretation',
+            'quality_control',
+            'field_verification',
+            'review_delivery'
+        )
+    ),
+    CONSTRAINT ck_supervision_inspection_conclusion CHECK (
+        conclusion IN ('passed', 'conditional', 'failed')
+    )
+);
+
+CREATE INDEX IF NOT EXISTS idx_supervision_inspections_plan_time
+    ON supervision_inspections (plan_id, inspected_at DESC);
+
+CREATE TABLE IF NOT EXISTS supervision_findings (
+    id SERIAL PRIMARY KEY,
+    inspection_id INTEGER NOT NULL
+        REFERENCES supervision_inspections(id) ON DELETE CASCADE,
+    sample_id INTEGER
+        REFERENCES supervision_samples(id) ON DELETE SET NULL,
+    finding_code VARCHAR(80) NOT NULL,
+    region_code VARCHAR(50) NOT NULL,
+    region_name VARCHAR(100) NOT NULL,
+    issue_type VARCHAR(60) NOT NULL,
+    severity VARCHAR(20) NOT NULL,
+    description TEXT NOT NULL,
+    evidence_uri VARCHAR(500) NOT NULL,
+    rework_deadline DATE NOT NULL,
+    status VARCHAR(40) NOT NULL DEFAULT 'open',
+    rectification_comment TEXT,
+    rectification_evidence_uri VARCHAR(500),
+    rectified_by VARCHAR(100),
+    rectified_by_code VARCHAR(50),
+    rectified_by_role VARCHAR(40),
+    rectified_at TIMESTAMPTZ,
+    created_by VARCHAR(100) NOT NULL,
+    created_by_code VARCHAR(50) NOT NULL,
+    created_by_role VARCHAR(40) NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    CONSTRAINT uq_supervision_finding_code UNIQUE (
+        inspection_id, finding_code
+    ),
+    CONSTRAINT ck_supervision_finding_severity CHECK (
+        severity IN ('minor', 'major', 'critical')
+    ),
+    CONSTRAINT ck_supervision_finding_status CHECK (
+        status IN (
+            'open',
+            'rectification_submitted',
+            'rework_required',
+            'closed'
+        )
+    ),
+    CONSTRAINT ck_supervision_finding_rectification CHECK (
+        status = 'open'
+        OR (
+            rectification_comment IS NOT NULL
+            AND rectification_evidence_uri IS NOT NULL
+            AND rectified_by_code IS NOT NULL
+            AND rectified_at IS NOT NULL
+        )
+    )
+);
+
+CREATE INDEX IF NOT EXISTS idx_supervision_findings_status_deadline
+    ON supervision_findings (status, rework_deadline);
+CREATE INDEX IF NOT EXISTS idx_supervision_findings_region
+    ON supervision_findings (region_code, severity, status);
+
+CREATE TABLE IF NOT EXISTS supervision_reinspections (
+    id SERIAL PRIMARY KEY,
+    finding_id INTEGER NOT NULL
+        REFERENCES supervision_findings(id) ON DELETE CASCADE,
+    round_no INTEGER NOT NULL,
+    result VARCHAR(20) NOT NULL,
+    comment TEXT NOT NULL,
+    evidence_uri VARCHAR(500) NOT NULL,
+    inspector VARCHAR(100) NOT NULL,
+    inspector_code VARCHAR(50) NOT NULL,
+    inspector_role VARCHAR(40) NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    CONSTRAINT uq_supervision_reinspection_round UNIQUE (
+        finding_id, round_no
+    ),
+    CONSTRAINT ck_supervision_reinspection_round CHECK (round_no > 0),
+    CONSTRAINT ck_supervision_reinspection_result CHECK (
+        result IN ('passed', 'failed')
+    )
+);
+
+CREATE INDEX IF NOT EXISTS idx_supervision_reinspections_finding_time
+    ON supervision_reinspections (finding_id, round_no);
+
+CREATE TABLE IF NOT EXISTS supervision_county_evaluations (
+    id SERIAL PRIMARY KEY,
+    plan_id INTEGER NOT NULL
+        REFERENCES supervision_plans(id) ON DELETE CASCADE,
+    region_code VARCHAR(50) NOT NULL,
+    region_name VARCHAR(100) NOT NULL,
+    quality_score NUMERIC(5, 2) NOT NULL,
+    timeliness_score NUMERIC(5, 2) NOT NULL,
+    compliance_score NUMERIC(5, 2) NOT NULL,
+    overall_score NUMERIC(5, 2) NOT NULL,
+    grade VARCHAR(20) NOT NULL,
+    comment TEXT NOT NULL,
+    evaluated_by VARCHAR(100) NOT NULL,
+    evaluated_by_code VARCHAR(50) NOT NULL,
+    evaluated_by_role VARCHAR(40) NOT NULL,
+    evaluated_at TIMESTAMPTZ NOT NULL,
+    CONSTRAINT uq_supervision_county_evaluation UNIQUE (
+        plan_id, region_code
+    ),
+    CONSTRAINT ck_supervision_county_scores CHECK (
+        quality_score >= 0 AND quality_score <= 100
+        AND timeliness_score >= 0 AND timeliness_score <= 100
+        AND compliance_score >= 0 AND compliance_score <= 100
+        AND overall_score >= 0 AND overall_score <= 100
+    ),
+    CONSTRAINT ck_supervision_county_grade CHECK (
+        grade IN ('A', 'B', 'C', 'D')
+    )
+);
+
+CREATE INDEX IF NOT EXISTS idx_supervision_county_plan_grade
+    ON supervision_county_evaluations (plan_id, grade, overall_score);
+
+CREATE TABLE IF NOT EXISTS supervision_reports (
+    id SERIAL PRIMARY KEY,
+    plan_id INTEGER NOT NULL UNIQUE
+        REFERENCES supervision_plans(id) ON DELETE RESTRICT,
+    report_code VARCHAR(100) NOT NULL UNIQUE,
+    file_uri VARCHAR(500) NOT NULL,
+    file_size_bytes BIGINT NOT NULL,
+    checksum_sha256 VARCHAR(64) NOT NULL,
+    evidence_manifest JSONB NOT NULL DEFAULT '{}'::jsonb,
+    generated_by VARCHAR(100) NOT NULL,
+    generated_by_code VARCHAR(50) NOT NULL,
+    generated_by_role VARCHAR(40) NOT NULL,
+    generated_at TIMESTAMPTZ NOT NULL,
+    CONSTRAINT ck_supervision_report_size CHECK (file_size_bytes > 0),
+    CONSTRAINT ck_supervision_report_checksum CHECK (
+        char_length(checksum_sha256) = 64
+    )
+);
+
+CREATE TABLE IF NOT EXISTS supervision_events (
+    id SERIAL PRIMARY KEY,
+    plan_id INTEGER NOT NULL
+        REFERENCES supervision_plans(id) ON DELETE CASCADE,
+    entity_type VARCHAR(40) NOT NULL,
+    entity_code VARCHAR(100) NOT NULL,
+    action VARCHAR(50) NOT NULL,
+    previous_values JSONB NOT NULL DEFAULT '{}'::jsonb,
+    new_values JSONB NOT NULL DEFAULT '{}'::jsonb,
+    comment TEXT NOT NULL,
+    operator VARCHAR(100) NOT NULL,
+    operator_code VARCHAR(50) NOT NULL,
+    operator_role VARCHAR(40) NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_supervision_events_plan_time
+    ON supervision_events (plan_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_supervision_events_entity
+    ON supervision_events (entity_type, entity_code, created_at DESC);
+
+
+-- 专题制图模板、实体成果和不可变审计。
+CREATE TABLE IF NOT EXISTS thematic_map_templates (
+    id SERIAL PRIMARY KEY,
+    project_id INTEGER NOT NULL
+        REFERENCES monitoring_projects(id) ON DELETE CASCADE,
+    template_code VARCHAR(80) NOT NULL,
+    template_name VARCHAR(150) NOT NULL,
+    title_pattern VARCHAR(200) NOT NULL,
+    producer VARCHAR(150) NOT NULL,
+    page_width_px INTEGER NOT NULL,
+    page_height_px INTEGER NOT NULL,
+    dpi INTEGER NOT NULL,
+    margin_px INTEGER NOT NULL,
+    legend_position VARCHAR(30) NOT NULL,
+    include_neatline BOOLEAN NOT NULL DEFAULT TRUE,
+    include_north_arrow BOOLEAN NOT NULL DEFAULT TRUE,
+    include_scale_bar BOOLEAN NOT NULL DEFAULT TRUE,
+    created_by VARCHAR(100) NOT NULL,
+    created_by_code VARCHAR(50) NOT NULL,
+    created_by_role VARCHAR(40) NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    CONSTRAINT uq_thematic_map_template_project_code
+        UNIQUE (project_id, template_code),
+    CONSTRAINT ck_thematic_map_template_dimensions CHECK (
+        page_width_px BETWEEN 800 AND 8000
+        AND page_height_px BETWEEN 600 AND 8000
+    ),
+    CONSTRAINT ck_thematic_map_template_print CHECK (
+        dpi BETWEEN 72 AND 600
+        AND margin_px BETWEEN 20 AND 800
+    ),
+    CONSTRAINT ck_thematic_map_template_legend_position CHECK (
+        legend_position IN ('bottom_right', 'bottom_left')
+    )
+);
+
+CREATE INDEX IF NOT EXISTS idx_thematic_map_templates_project_time
+    ON thematic_map_templates (project_id, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS thematic_map_products (
+    id SERIAL PRIMARY KEY,
+    template_id INTEGER NOT NULL
+        REFERENCES thematic_map_templates(id) ON DELETE RESTRICT,
+    task_id INTEGER NOT NULL
+        REFERENCES monitoring_tasks(id) ON DELETE CASCADE,
+    asset_id INTEGER NOT NULL
+        REFERENCES imagery_assets(id) ON DELETE RESTRICT,
+    product_code VARCHAR(100) NOT NULL,
+    map_name VARCHAR(200) NOT NULL,
+    map_number VARCHAR(100) NOT NULL,
+    map_date DATE NOT NULL,
+    source_product_code VARCHAR(30) NOT NULL,
+    output_format VARCHAR(10) NOT NULL,
+    status VARCHAR(20) NOT NULL,
+    file_uri VARCHAR(500) NOT NULL,
+    file_size_bytes INTEGER NOT NULL,
+    checksum_sha256 VARCHAR(64) NOT NULL,
+    page_width_px INTEGER NOT NULL,
+    page_height_px INTEGER NOT NULL,
+    dpi INTEGER NOT NULL,
+    source_uri VARCHAR(500) NOT NULL,
+    source_checksum_sha256 VARCHAR(64) NOT NULL,
+    source_bounds_wgs84 JSONB NOT NULL,
+    render_manifest JSONB NOT NULL,
+    generated_by VARCHAR(100) NOT NULL,
+    generated_by_code VARCHAR(50) NOT NULL,
+    generated_by_role VARCHAR(40) NOT NULL,
+    generated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    CONSTRAINT uq_thematic_map_product_code UNIQUE (product_code),
+    CONSTRAINT uq_thematic_map_product_business_key UNIQUE (
+        task_id, map_number, source_product_code, output_format
+    ),
+    CONSTRAINT ck_thematic_map_product_source_code CHECK (
+        source_product_code IN ('true_color', 'false_color', 'ndvi')
+    ),
+    CONSTRAINT ck_thematic_map_product_format CHECK (
+        output_format IN ('png', 'pdf')
+    ),
+    CONSTRAINT ck_thematic_map_product_status CHECK (
+        status IN ('completed', 'invalid')
+    ),
+    CONSTRAINT ck_thematic_map_product_file_evidence CHECK (
+        file_size_bytes > 0
+        AND char_length(checksum_sha256) = 64
+    )
+);
+
+CREATE INDEX IF NOT EXISTS idx_thematic_map_products_task_time
+    ON thematic_map_products (task_id, generated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_thematic_map_products_asset_source
+    ON thematic_map_products (asset_id, source_product_code, output_format);
+
+CREATE TABLE IF NOT EXISTS thematic_map_events (
+    id SERIAL PRIMARY KEY,
+    task_id INTEGER NOT NULL
+        REFERENCES monitoring_tasks(id) ON DELETE CASCADE,
+    entity_type VARCHAR(40) NOT NULL,
+    entity_code VARCHAR(100) NOT NULL,
+    action VARCHAR(50) NOT NULL,
+    event_values JSONB NOT NULL,
+    comment TEXT NOT NULL,
+    operator VARCHAR(100) NOT NULL,
+    operator_code VARCHAR(50) NOT NULL,
+    operator_role VARCHAR(40) NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_thematic_map_events_task_time
+    ON thematic_map_events (task_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_thematic_map_events_entity
+    ON thematic_map_events (entity_type, entity_code, created_at DESC);
+
+-- 受控地图/数据服务注册、审批、凭证、健康、调用审计和撤销闭环。
+CREATE TABLE IF NOT EXISTS shared_services (
+    id SERIAL PRIMARY KEY,
+    project_id INTEGER NOT NULL
+        REFERENCES monitoring_projects(id) ON DELETE CASCADE,
+    service_code VARCHAR(80) NOT NULL,
+    service_name VARCHAR(200) NOT NULL,
+    service_type VARCHAR(30) NOT NULL,
+    endpoint_url VARCHAR(1000) NOT NULL,
+    health_check_url VARCHAR(1000) NOT NULL,
+    documentation_url VARCHAR(1000) NOT NULL,
+    resource_type VARCHAR(30) NOT NULL,
+    resource_code VARCHAR(100) NOT NULL,
+    resource_checksum_sha256 VARCHAR(64),
+    data_classification VARCHAR(30) NOT NULL,
+    exposure_scope VARCHAR(30) NOT NULL,
+    auth_mode VARCHAR(30) NOT NULL,
+    status VARCHAR(30) NOT NULL,
+    owner_department VARCHAR(150) NOT NULL,
+    registered_by VARCHAR(100) NOT NULL,
+    registered_by_code VARCHAR(50) NOT NULL,
+    registered_by_role VARCHAR(40) NOT NULL,
+    reviewed_by VARCHAR(100),
+    reviewed_by_code VARCHAR(50),
+    reviewed_by_role VARCHAR(40),
+    review_comment TEXT,
+    reviewed_at TIMESTAMPTZ,
+    revoked_by VARCHAR(100),
+    revoked_by_code VARCHAR(50),
+    revoked_by_role VARCHAR(40),
+    revocation_reason TEXT,
+    revoked_at TIMESTAMPTZ,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    CONSTRAINT uq_shared_service_project_code
+        UNIQUE (project_id, service_code),
+    CONSTRAINT ck_shared_service_type CHECK (
+        service_type IN ('stac', 'wms', 'wmts', 'wfs', 'rest', 'download')
+    ),
+    CONSTRAINT ck_shared_service_resource_type CHECK (
+        resource_type IN (
+            'external_api', 'imagery', 'vector', 'thematic_map',
+            'delivery', 'statistics', 'other'
+        )
+    ),
+    CONSTRAINT ck_shared_service_classification CHECK (
+        data_classification IN ('public', 'internal', 'confidential')
+    ),
+    CONSTRAINT ck_shared_service_scope CHECK (
+        exposure_scope IN ('public', 'project', 'restricted')
+    ),
+    CONSTRAINT ck_shared_service_auth_mode CHECK (
+        auth_mode IN ('none', 'api_key', 'oauth2', 'network_whitelist')
+    ),
+    CONSTRAINT ck_shared_service_status CHECK (
+        status IN (
+            'pending_approval', 'active', 'rejected', 'suspended', 'revoked'
+        )
+    )
+);
+
+CREATE INDEX IF NOT EXISTS idx_shared_services_project_status
+    ON shared_services (project_id, status, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS service_access_requests (
+    id SERIAL PRIMARY KEY,
+    service_id INTEGER NOT NULL
+        REFERENCES shared_services(id) ON DELETE CASCADE,
+    request_code VARCHAR(100) NOT NULL UNIQUE,
+    applicant_organization VARCHAR(200) NOT NULL,
+    purpose TEXT NOT NULL,
+    requested_until DATE NOT NULL,
+    status VARCHAR(30) NOT NULL,
+    applicant VARCHAR(100) NOT NULL,
+    applicant_code VARCHAR(50) NOT NULL,
+    applicant_role VARCHAR(40) NOT NULL,
+    decided_by VARCHAR(100),
+    decided_by_code VARCHAR(50),
+    decided_by_role VARCHAR(40),
+    decision_comment TEXT,
+    decided_at TIMESTAMPTZ,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    CONSTRAINT ck_service_access_request_status CHECK (
+        status IN ('pending', 'approved', 'rejected', 'revoked', 'expired')
+    )
+);
+
+CREATE INDEX IF NOT EXISTS idx_service_access_requests_service_status
+    ON service_access_requests (service_id, status, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS service_credentials (
+    id SERIAL PRIMARY KEY,
+    service_id INTEGER NOT NULL
+        REFERENCES shared_services(id) ON DELETE CASCADE,
+    access_request_id INTEGER NOT NULL UNIQUE
+        REFERENCES service_access_requests(id) ON DELETE CASCADE,
+    credential_code VARCHAR(100) NOT NULL UNIQUE,
+    secret_hash VARCHAR(64) NOT NULL,
+    secret_last_four VARCHAR(4) NOT NULL,
+    status VARCHAR(20) NOT NULL,
+    issued_by VARCHAR(100) NOT NULL,
+    issued_by_code VARCHAR(50) NOT NULL,
+    issued_by_role VARCHAR(40) NOT NULL,
+    issued_at TIMESTAMPTZ NOT NULL,
+    expires_at TIMESTAMPTZ NOT NULL,
+    revoked_by VARCHAR(100),
+    revoked_by_code VARCHAR(50),
+    revoked_by_role VARCHAR(40),
+    revocation_reason TEXT,
+    revoked_at TIMESTAMPTZ,
+    CONSTRAINT ck_service_credential_status CHECK (
+        status IN ('active', 'revoked', 'expired')
+    )
+);
+
+CREATE INDEX IF NOT EXISTS idx_service_credentials_service_status
+    ON service_credentials (service_id, status, expires_at);
+
+CREATE TABLE IF NOT EXISTS service_health_checks (
+    id SERIAL PRIMARY KEY,
+    service_id INTEGER NOT NULL
+        REFERENCES shared_services(id) ON DELETE CASCADE,
+    checked_url VARCHAR(1000) NOT NULL,
+    status VARCHAR(30) NOT NULL,
+    http_status INTEGER,
+    response_time_ms INTEGER NOT NULL,
+    detail VARCHAR(500) NOT NULL,
+    checked_by VARCHAR(100) NOT NULL,
+    checked_by_code VARCHAR(50) NOT NULL,
+    checked_by_role VARCHAR(40) NOT NULL,
+    checked_at TIMESTAMPTZ NOT NULL,
+    CONSTRAINT ck_service_health_check_status CHECK (
+        status IN ('healthy', 'degraded', 'unavailable')
+    )
+);
+
+CREATE INDEX IF NOT EXISTS idx_service_health_checks_service_time
+    ON service_health_checks (service_id, checked_at DESC);
+
+CREATE TABLE IF NOT EXISTS service_usage_events (
+    id SERIAL PRIMARY KEY,
+    service_id INTEGER NOT NULL
+        REFERENCES shared_services(id) ON DELETE CASCADE,
+    access_request_id INTEGER
+        REFERENCES service_access_requests(id) ON DELETE SET NULL,
+    credential_id INTEGER
+        REFERENCES service_credentials(id) ON DELETE SET NULL,
+    event_type VARCHAR(50) NOT NULL,
+    request_method VARCHAR(10),
+    request_path VARCHAR(1000),
+    response_status INTEGER,
+    duration_ms INTEGER,
+    response_bytes BIGINT,
+    detail JSONB NOT NULL DEFAULT '{}'::jsonb,
+    actor VARCHAR(100) NOT NULL,
+    actor_code VARCHAR(100) NOT NULL,
+    actor_role VARCHAR(40) NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_service_usage_events_service_time
+    ON service_usage_events (service_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_service_usage_events_type_time
+    ON service_usage_events (event_type, created_at DESC);

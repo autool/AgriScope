@@ -67,6 +67,15 @@ const router = createRouter({
           },
         },
         {
+          path: 'thematic-maps',
+          component: () => import('@/views/ThematicMapView.vue'),
+          meta: {
+            title: '专题制图',
+            description: '真实影像产品、版式模板、批量 PNG/PDF 与校验清单',
+            keepAlive: true,
+          },
+        },
+        {
           path: 'disaster',
           component: () => import('@/views/DisasterView.vue'),
           meta: {
@@ -97,6 +106,16 @@ const router = createRouter({
           },
         },
         {
+          path: 'supervision',
+          component: () => import('@/views/SupervisionView.vue'),
+          meta: {
+            title: '独立项目监理',
+            description: '真实抽样、过程检查、整改复检、县区评价与不可变报告',
+            fullWidth: true,
+            keepAlive: true,
+          },
+        },
+        {
           path: 'delivery',
           component: () => import('@/views/DeliveryView.vue'),
           meta: {
@@ -111,6 +130,15 @@ const router = createRouter({
           meta: {
             title: '影像文件库',
             description: '已上传栅格实体、文件校验和影像元数据',
+            keepAlive: true,
+          },
+        },
+        {
+          path: 'service-sharing',
+          component: () => import('@/views/ServiceSharingView.vue'),
+          meta: {
+            title: '数据共享服务',
+            description: '服务注册、甲方审批、访问凭证、健康检查、调用审计与撤销',
             keepAlive: true,
           },
         },

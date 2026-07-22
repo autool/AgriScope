@@ -3,7 +3,7 @@
 from datetime import datetime
 from typing import Annotated, Literal
 
-from fastapi import APIRouter, File, Form, Query, UploadFile, status
+from fastapi import APIRouter, File, Form, Query, Response, UploadFile, status
 
 from app.api.deps import DatabaseSession
 from app.schemas.imagery import (
@@ -11,15 +11,19 @@ from app.schemas.imagery import (
     ImageryAssetListResponse,
     ImageryAssetResponse,
     ImageryProcessingResponse,
+    ImageryQuicklookResponse,
+    ImagerySourceLevelAcceptRequest,
     ImageryStepExecuteRequest,
     ImageryStepRunRequest,
 )
 from app.services.imagery_asset_service import ImageryAssetService
+from app.services.imagery_quicklook_service import ImageryQuicklookService
 from app.services.imagery_service import ImageryService
 
 router = APIRouter(prefix="/api/v1/imagery-assets", tags=["遥感影像预处理"])
 service = ImageryService()
 asset_service = ImageryAssetService()
+quicklook_service = ImageryQuicklookService()
 
 
 @router.get("", response_model=ImageryAssetListResponse)
@@ -120,6 +124,55 @@ async def get_imagery_processing(
     return await service.get_processing(db, asset_code)
 
 
+@router.get("/{asset_code}/quicklooks", response_model=ImageryQuicklookResponse)
+async def get_imagery_quicklooks(
+    asset_code: str,
+    db: DatabaseSession,
+) -> ImageryQuicklookResponse:
+    """从当前实体源影像和已校验波段产物生成真实快视图。
+
+    Args:
+        asset_code: 影像资产编号。
+        db: FastAPI 注入的异步数据库会话。
+
+    Returns:
+        ImageryQuicklookResponse: 不参与处理完成度计算的快视图证据。
+    """
+    return await quicklook_service.get_quicklooks(db, asset_code)
+
+
+@router.get("/{asset_code}/quicklooks/{product_code}.png")
+async def get_imagery_quicklook_image(
+    asset_code: str,
+    product_code: Literal["source", "true_color", "false_color", "ndvi"],
+    db: DatabaseSession,
+) -> Response:
+    """读取经来源和 PNG 双重 SHA256 校验的快视图。
+
+    Args:
+        asset_code: 影像资产编号。
+        product_code: 源影像、真彩色、假彩色或 NDVI。
+        db: FastAPI 注入的异步数据库会话。
+
+    Returns:
+        Response: 带 ETag 的 RGBA PNG。
+    """
+    content, etag = await quicklook_service.get_image(
+        db,
+        asset_code,
+        product_code,
+    )
+    return Response(
+        content=content,
+        media_type="image/png",
+        headers={
+            "ETag": f'"{etag}"',
+            "Cache-Control": "private, max-age=3600",
+            "X-Content-Type-Options": "nosniff",
+        },
+    )
+
+
 @router.post(
     "/{asset_code}/processing/{step_code}/run",
     response_model=ImageryProcessingResponse,
@@ -170,6 +223,38 @@ async def execute_imagery_processing_step(
         ImageryProcessingResponse: 执行后的处理流水线。
     """
     return await service.execute_step(
+        db,
+        asset_code,
+        step_code,
+        task_code,
+        request,
+    )
+
+
+@router.post(
+    "/{asset_code}/processing/{step_code}/accept-source",
+    response_model=ImageryProcessingResponse,
+)
+async def accept_imagery_source_level_step(
+    asset_code: str,
+    step_code: str,
+    request: ImagerySourceLevelAcceptRequest,
+    db: DatabaseSession,
+    task_code: Annotated[str, Query(min_length=1, max_length=50)] = "RS-2026-045",
+) -> ImageryProcessingResponse:
+    """以实体源产品级别证据满足定标或大气校正步骤。
+
+    Args:
+        asset_code: 影像资产编号。
+        step_code: 辐射定标或大气校正步骤编码。
+        request: 操作人、预期产品级别、无算法确认和承认依据。
+        db: FastAPI 注入的异步数据库会话。
+        task_code: 作业任务编号。
+
+    Returns:
+        ImageryProcessingResponse: 承认后的完整流水线状态。
+    """
+    return await service.accept_source_level_step(
         db,
         asset_code,
         step_code,

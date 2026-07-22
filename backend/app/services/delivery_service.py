@@ -1,8 +1,11 @@
 """成果交付包生成、清单管理与下载业务服务。"""
 
+import asyncio
 import csv
 import hashlib
 import json
+from collections.abc import Sequence
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from io import StringIO
 from pathlib import Path
@@ -11,9 +14,15 @@ from zipfile import ZIP_DEFLATED, ZipFile
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.exceptions import NotFoundException, ValidationException
-from app.dao.delivery_dao import DeliveryDAO
+from app.dao.delivery_dao import DeliveryArchiveState, DeliveryDAO
 from app.dao.workbench_dao import QualityGateSummary, WorkbenchDAO
-from app.models.workbench import DeliveryPackage, ReviewRecord
+from app.models.supervision import SupervisionReport
+from app.models.thematic_map import ThematicMapProduct
+from app.models.workbench import (
+    DeliveryPackage,
+    ImageryProcessingStep,
+    ReviewRecord,
+)
 from app.schemas.delivery import (
     DeliveryGenerateRequest,
     DeliveryListResponse,
@@ -21,8 +30,26 @@ from app.schemas.delivery import (
     DeliveryPackageResponse,
 )
 from app.services.disaster_service import DisasterService
+from app.services.imagery_service import ImageryService
 from app.services.project_user_service import ProjectUserService
 from app.services.statistics_service import StatisticsService
+from app.services.supervision_service import SupervisionService
+from app.services.thematic_map_service import ThematicMapService
+
+
+@dataclass(frozen=True)
+class DeliveryArchiveEntry:
+    """待写入成果 ZIP 的单个实体或生成文件。"""
+
+    path: str
+    category: str
+    format: str
+    record_count: int | None
+    description: str
+    content: bytes
+    source_entity_code: str | None = None
+    source_uri: str | None = None
+    evidence_status: str = "included"
 
 
 class DeliveryService:
@@ -35,6 +62,9 @@ class DeliveryService:
         statistics_service: StatisticsService | None = None,
         disaster_service: DisasterService | None = None,
         project_user_service: ProjectUserService | None = None,
+        imagery_service: ImageryService | None = None,
+        thematic_map_service: ThematicMapService | None = None,
+        supervision_service: SupervisionService | None = None,
     ) -> None:
         """初始化成果交付服务。
 
@@ -44,6 +74,9 @@ class DeliveryService:
             statistics_service: 面积统计服务。
             disaster_service: 灾害评估服务。
             project_user_service: 项目用户与角色校验服务。
+            imagery_service: 影像实体与处理产物校验服务。
+            thematic_map_service: 专题图实体校验服务。
+            supervision_service: 独立监理报告实体校验服务。
 
         Returns:
             None: 无返回值。
@@ -53,6 +86,9 @@ class DeliveryService:
         self.statistics_service = statistics_service or StatisticsService()
         self.disaster_service = disaster_service or DisasterService()
         self.project_user_service = project_user_service or ProjectUserService()
+        self.imagery_service = imagery_service or ImageryService()
+        self.thematic_map_service = thematic_map_service or ThematicMapService()
+        self.supervision_service = supervision_service or SupervisionService()
         self.storage_dir = (
             Path(__file__).resolve().parents[2] / "storage" / "deliveries"
         )
@@ -61,17 +97,21 @@ class DeliveryService:
     def _get_stale_reason(
         package: DeliveryPackage,
         task: object,
+        archive_state: DeliveryArchiveState,
     ) -> str | None:
         """判断成果包是否仍对应任务当前版本。
 
         Args:
             package: 成果交付包模型。
             task: 当前任务模型。
+            archive_state: 当前专题图、监理报告和数据资产归档状态。
 
         Returns:
             str | None: 失效原因；仍为当前成果时返回 None。
         """
-        if package.status not in {"completed", "superseded"}:
+        if package.status == "superseded":
+            return "成果包已被新版本替代"
+        if package.status != "completed":
             return "成果包未处于已完成状态"
         if package.completed_at is None:
             return "成果包缺少完成时间"
@@ -80,6 +120,44 @@ class DeliveryService:
         package_plot_count = package.quality_summary.get("plot_count")
         if package_plot_count != task.total_plots:
             return "成果包图斑数量与当前任务作用域不一致"
+        snapshot_fields = {
+            "thematic_map": (
+                archive_state.thematic_map_count,
+                archive_state.thematic_map_latest_at,
+                "专题图成果",
+            ),
+            "supervision_report": (
+                archive_state.supervision_report_count,
+                archive_state.supervision_report_latest_at,
+                "独立监理报告",
+            ),
+            "dataset_asset": (
+                archive_state.dataset_asset_count,
+                archive_state.dataset_asset_latest_at,
+                "多源数据资产目录",
+            ),
+            "imagery_step": (
+                archive_state.imagery_step_count,
+                archive_state.imagery_step_latest_at,
+                "影像处理产物",
+            ),
+        }
+        for prefix, values in snapshot_fields.items():
+            current_count, current_latest_at, label = values
+            snapshot_count = package.quality_summary.get(f"{prefix}_count")
+            snapshot_latest_at = package.quality_summary.get(
+                f"{prefix}_latest_at"
+            )
+            current_latest_text = (
+                current_latest_at.isoformat() if current_latest_at else None
+            )
+            if snapshot_count is None and current_count > 0:
+                return f"成果包缺少{label}归档快照"
+            if snapshot_count is not None and int(snapshot_count) != current_count:
+                return f"{label}数量在成果包生成后发生变化"
+            if snapshot_latest_at != current_latest_text:
+                if snapshot_latest_at is not None or current_latest_text is not None:
+                    return f"{label}在成果包生成后发生更新"
         return None
 
     @classmethod
@@ -87,16 +165,19 @@ class DeliveryService:
         cls,
         package: DeliveryPackage,
         task: object,
+        archive_state: DeliveryArchiveState,
     ) -> DeliveryPackageResponse:
         """将成果包模型转换为 API 响应。
 
         Args:
             package: 成果交付包模型。
+            task: 当前任务模型。
+            archive_state: 当前归档来源聚合状态。
 
         Returns:
             DeliveryPackageResponse: 成果交付包响应。
         """
-        stale_reason = cls._get_stale_reason(package, task)
+        stale_reason = cls._get_stale_reason(package, task, archive_state)
         return DeliveryPackageResponse(
             package_code=package.package_code,
             package_name=package.package_name,
@@ -162,6 +243,16 @@ class DeliveryService:
         if task is None:
             raise NotFoundException(f"未找到任务 {task_code}")
         packages = await self.dao.get_packages(db, task.id)
+        imagery = await self.workbench_dao.get_latest_imagery(
+            db,
+            task.project_id,
+        )
+        archive_state = await self.dao.get_archive_state(
+            db,
+            task.project_id,
+            task.id,
+            getattr(imagery, "id", None),
+        )
         open_issue_count = await self.workbench_dao.count_open_issues(db, task.id)
         pending_field_count = (
             await self.workbench_dao.count_pending_field_verifications(
@@ -176,10 +267,6 @@ class DeliveryService:
         elif pending_field_count > 0:
             generate_blocker = f"仍有 {pending_field_count} 条外业疑点未处置"
         else:
-            imagery = await self.workbench_dao.get_latest_imagery(
-                db,
-                task.project_id,
-            )
             if imagery is None:
                 generate_blocker = "缺少具备实体校验的业务影像"
             else:
@@ -193,7 +280,10 @@ class DeliveryService:
             task_code=task_code,
             can_generate=can_generate,
             generate_blocker=generate_blocker,
-            packages=[self._to_response(package, task) for package in packages],
+            packages=[
+                self._to_response(package, task, archive_state)
+                for package in packages
+            ],
         )
 
     async def generate_package(
@@ -250,6 +340,7 @@ class DeliveryService:
             raise ValidationException(f"{quality_gate_blocker}，不能生成成果包")
 
         version = await self.dao.get_next_version(db, task.id)
+        await self.dao.supersede_completed_packages(db, task.id)
         timestamp = datetime.now(UTC).strftime("%Y%m%d%H%M%S")
         package_code = f"{task_code}-DELIVERY-v{version}-{timestamp}"
         package = await self.dao.add_package(
@@ -271,16 +362,20 @@ class DeliveryService:
         )
 
         source_data = await self._load_source_data(db, task)
-        manifest = self._build_manifest(source_data)
         quality_summary = self._build_quality_summary(task, source_data)
+        archive_entries = self._build_archive_entries(
+            task,
+            source_data,
+            quality_summary,
+        )
+        manifest = self._build_manifest(archive_entries)
         self.storage_dir.mkdir(parents=True, exist_ok=True)
         package_path = self.storage_dir / f"{package_code}.zip"
         temporary_path = package_path.with_suffix(".zip.tmp")
         try:
             self._write_zip(
                 temporary_path,
-                task,
-                source_data,
+                archive_entries,
                 manifest,
                 quality_summary,
             )
@@ -309,7 +404,7 @@ class DeliveryService:
         )
         await db.commit()
         await db.refresh(package)
-        return self._to_response(package, task)
+        return self._to_response(package, task, source_data["archive_state"])
 
     async def get_package_for_download(
         self,
@@ -341,7 +436,17 @@ class DeliveryService:
         )
         if package.status not in {"completed", "superseded"} or not package.file_uri:
             raise ValidationException("成果包尚未生成完成")
-        stale_reason = self._get_stale_reason(package, task)
+        imagery = await self.workbench_dao.get_latest_imagery(
+            db,
+            task.project_id,
+        )
+        archive_state = await self.dao.get_archive_state(
+            db,
+            task.project_id,
+            task.id,
+            getattr(imagery, "id", None),
+        )
+        stale_reason = self._get_stale_reason(package, task, archive_state)
         if stale_reason is not None:
             raise ValidationException(f"成果包已失效：{stale_reason}")
         if not Path(package.file_uri).is_file():
@@ -390,6 +495,34 @@ class DeliveryService:
             db,
             task.project_id,
         )
+        thematic_products = await self.dao.get_thematic_map_products(db, task.id)
+        supervision_reports = await self.dao.get_supervision_reports(db, task.id)
+        dataset_assets = await self.dao.get_dataset_assets(
+            db,
+            task.project_id,
+            task.id,
+        )
+        imagery_steps = (
+            await self.dao.get_imagery_steps(db, imagery.id)
+            if imagery is not None
+            else []
+        )
+        archive_state = await self.dao.get_archive_state(
+            db,
+            task.project_id,
+            task.id,
+            getattr(imagery, "id", None),
+        )
+        thematic_artifacts = await self._load_thematic_artifacts(
+            thematic_products
+        )
+        supervision_artifacts = await self._load_supervision_artifacts(
+            supervision_reports
+        )
+        imagery_lineage = await self._build_imagery_lineage(
+            imagery,
+            imagery_steps,
+        )
         return {
             "plot_rows": plot_rows,
             "statistics": statistics,
@@ -399,83 +532,437 @@ class DeliveryService:
             "reviews": reviews,
             "quality_gate": quality_gate,
             "imagery": imagery,
+            "imagery_steps": imagery_steps,
+            "imagery_lineage": imagery_lineage,
+            "thematic_artifacts": thematic_artifacts,
+            "supervision_artifacts": supervision_artifacts,
+            "dataset_assets": dataset_assets,
+            "archive_state": archive_state,
         }
 
-    @staticmethod
-    def _build_manifest(source_data: dict) -> list[dict]:
-        """构建成果文件清单。
+    async def _load_thematic_artifacts(
+        self,
+        products: Sequence[ThematicMapProduct],
+    ) -> list[dict]:
+        """校验并读取待归档专题图实体。
 
         Args:
-            source_data: 成果包源数据。
+            products: 已完成专题图产品序列。
 
         Returns:
-            list[dict]: 成果文件清单。
+            list[dict]: 包含实体内容和来源证据的专题图归档项。
         """
-        return [
-            {
-                "path": "vector/farmland_plots.geojson",
-                "category": "矢量成果",
-                "format": "GeoJSON",
-                "record_count": len(source_data["plot_rows"]),
-                "description": "最终地块边界及种植属性",
+        artifacts: list[dict] = []
+        for product in products:
+            path = await asyncio.to_thread(
+                self.thematic_map_service.verify_product_file,
+                product,
+            )
+            content = await asyncio.to_thread(path.read_bytes)
+            artifacts.append(
+                {
+                    "path": (
+                        f"thematic_maps/{product.product_code}."
+                        f"{product.output_format}"
+                    ),
+                    "category": "专题图成果",
+                    "format": product.output_format.upper(),
+                    "record_count": None,
+                    "description": f"{product.map_number} · {product.map_name}",
+                    "content": content,
+                    "source_entity_code": product.product_code,
+                    "source_uri": product.file_uri,
+                }
+            )
+        return artifacts
+
+    async def _load_supervision_artifacts(
+        self,
+        reports: Sequence[SupervisionReport],
+    ) -> list[dict]:
+        """校验并读取待归档独立监理报告实体。
+
+        Args:
+            reports: 任务关联监理报告序列。
+
+        Returns:
+            list[dict]: 包含实体内容和来源证据的监理报告归档项。
+        """
+        artifacts: list[dict] = []
+        for report in reports:
+            path = await asyncio.to_thread(
+                self.supervision_service.verify_report_file,
+                report,
+            )
+            content = await asyncio.to_thread(path.read_bytes)
+            artifacts.append(
+                {
+                    "path": f"supervision/{report.report_code}.json",
+                    "category": "独立监理报告",
+                    "format": "JSON",
+                    "record_count": None,
+                    "description": "独立监理抽样、检查、整改、复检和县区评价报告",
+                    "content": content,
+                    "source_entity_code": report.report_code,
+                    "source_uri": report.file_uri,
+                }
+            )
+        return artifacts
+
+    async def _build_imagery_lineage(
+        self,
+        imagery: object | None,
+        steps: Sequence[ImageryProcessingStep],
+    ) -> dict:
+        """重新校验业务影像及处理产物并生成归档血缘。
+
+        Args:
+            imagery: 当前可验证业务影像。
+            steps: 当前影像处理步骤序列。
+
+        Returns:
+            dict: 仅引用受控实体 URI 和校验值的影像血缘清单。
+        """
+        if imagery is None:
+            return {"status": "not_provided", "asset": None, "steps": []}
+        source_path = await asyncio.to_thread(
+            self.imagery_service.resolve_verified_asset_source_path,
+            imagery,
+        )
+        step_items: list[dict] = []
+        for step in steps:
+            item = {
+                "step_code": step.step_code,
+                "step_name": step.step_name,
+                "sequence": step.sequence,
+                "status": step.status,
+                "progress": step.progress,
+                "parameters": step.parameters,
+                "output_uri": step.output_uri,
+                "completed_at": step.completed_at,
+                "updated_at": step.updated_at,
+                "physical_evidence": None,
+            }
+            if step.status == "completed" and step.output_uri:
+                artifact_path, evidence = await asyncio.to_thread(
+                    self.imagery_service.resolve_verified_step_artifact_path,
+                    step,
+                )
+                item["physical_evidence"] = {
+                    "file_size_bytes": artifact_path.stat().st_size,
+                    "checksum_sha256": evidence["checksum_sha256"],
+                }
+            step_items.append(item)
+        return {
+            "status": "verified_reference",
+            "asset": {
+                "asset_code": imagery.asset_code,
+                "asset_name": imagery.asset_name,
+                "sensor_type": imagery.sensor_type,
+                "acquired_at": imagery.acquired_at,
+                "processing_level": imagery.processing_level,
+                "data_status": imagery.data_status,
+                "file_uri": imagery.file_uri,
+                "file_size_bytes": source_path.stat().st_size,
+                "checksum_sha256": imagery.checksum_sha256,
+                "file_format": imagery.file_format,
+                "crs": imagery.crs,
+                "band_count": imagery.band_count,
+                "raster_metadata": imagery.raster_metadata,
             },
+            "steps": step_items,
+        }
+
+    @classmethod
+    def _build_archive_entries(
+        cls,
+        task: object,
+        source_data: dict,
+        quality_summary: dict,
+    ) -> list[DeliveryArchiveEntry]:
+        """生成标准目录下全部内嵌交付实体和报告。
+
+        Args:
+            task: 当前作业任务。
+            source_data: 已校验交付源数据。
+            quality_summary: 质量与归档快照摘要。
+
+        Returns:
+            list[DeliveryArchiveEntry]: 待原子写入 ZIP 的文件集合。
+        """
+        quality_issues = [
             {
-                "path": "statistics/area_statistics.csv",
-                "category": "统计成果",
-                "format": "CSV",
-                "record_count": len(source_data["statistics"].by_village),
-                "description": "村级、地类和作物面积汇总",
-            },
+                "plot_code": item.plot_code,
+                "rule_code": item.rule_code,
+                "issue_type": item.issue_type,
+                "severity": item.severity,
+                "description": item.description,
+                "status": item.status,
+                "source": item.source,
+                "created_at": item.created_at,
+            }
+            for item in source_data["quality_issues"]
+        ]
+        reviews = [
             {
-                "path": "disasters/disaster_patches.geojson",
-                "category": "灾害成果",
-                "format": "GeoJSON",
-                "record_count": source_data["disasters"].total_patches,
-                "description": "灾害等级和受灾范围图斑",
-            },
+                "review_level": item.review_level,
+                "action": item.action,
+                "reviewer": item.reviewer,
+                "reviewer_code": item.reviewer_code,
+                "reviewer_role": item.reviewer_role,
+                "comment": item.comment,
+                "created_at": item.created_at,
+            }
+            for item in source_data["reviews"]
+        ]
+        dataset_catalog = [
             {
-                "path": "field/field_verifications.geojson",
-                "category": "外业核查",
-                "format": "GeoJSON",
-                "record_count": len(source_data["field_rows"]),
-                "description": "外业核查点及空间匹配结论",
+                "asset_code": item.asset_code,
+                "asset_name": item.asset_name,
+                "asset_type": item.asset_type,
+                "source_name": item.source_name,
+                "source_uri": item.source_uri,
+                "source_version": item.source_version,
+                "checksum_sha256": item.checksum_sha256,
+                "crs": item.crs,
+                "time_start": item.time_start,
+                "time_end": item.time_end,
+                "security_classification": item.security_classification,
+                "data_status": item.data_status,
+                "verification_status": item.verification_status,
+                "metadata": item.metadata_payload,
+                "registered_by": item.registered_by,
+                "registered_by_code": item.registered_by_code,
+                "registered_by_role": item.registered_by_role,
+                "created_at": item.created_at,
+                "updated_at": item.updated_at,
+            }
+            for item in source_data["dataset_assets"]
+        ]
+        archive_index = {
+            "schema_version": "delivery-archive-v2",
+            "task_code": task.task_code,
+            "task_name": task.task_name,
+            "categories": {
+                "source_imagery": {
+                    "status": source_data["imagery_lineage"]["status"],
+                    "count": 1 if source_data["imagery"] is not None else 0,
+                },
+                "imagery_processing_artifacts": {
+                    "status": "referenced",
+                    "count": quality_summary["imagery_step_count"],
+                },
+                "dataset_catalog": {
+                    "status": "included",
+                    "count": quality_summary["dataset_asset_count"],
+                },
+                "thematic_maps": {
+                    "status": (
+                        "included"
+                        if quality_summary["thematic_map_count"] > 0
+                        else "not_provided"
+                    ),
+                    "count": quality_summary["thematic_map_count"],
+                },
+                "supervision_reports": {
+                    "status": (
+                        "included"
+                        if quality_summary["supervision_report_count"] > 0
+                        else "not_provided"
+                    ),
+                    "count": quality_summary["supervision_report_count"],
+                },
+                "field_evidence": {
+                    "status": quality_summary["field_evidence_status"],
+                    "count": quality_summary["field_verification_count"],
+                },
+                "disaster_evidence": {
+                    "status": quality_summary["disaster_evidence_status"],
+                    "count": quality_summary["disaster_patch_count"],
+                },
             },
+        }
+        entries = [
+            cls._text_entry(
+                "vector/farmland_plots.geojson",
+                "矢量成果",
+                "GeoJSON",
+                len(source_data["plot_rows"]),
+                "最终地块边界及种植属性",
+                cls._build_plot_geojson(source_data["plot_rows"]),
+            ),
+            cls._text_entry(
+                "statistics/area_statistics.csv",
+                "统计成果",
+                "CSV",
+                len(source_data["statistics"].by_village),
+                "村级、地类和作物面积汇总",
+                cls._build_statistics_csv(source_data["statistics"]),
+            ),
+            cls._text_entry(
+                "disasters/disaster_patches.geojson",
+                "灾害成果",
+                "GeoJSON",
+                source_data["disasters"].total_patches,
+                "灾害等级和受灾范围图斑",
+                cls._json_text(source_data["disasters"].feature_collection),
+            ),
+            cls._text_entry(
+                "field/field_verifications.geojson",
+                "外业核查",
+                "GeoJSON",
+                len(source_data["field_rows"]),
+                "外业核查点及空间匹配结论",
+                cls._build_field_geojson(source_data["field_rows"]),
+            ),
+            cls._text_entry(
+                "quality/quality_issues.json",
+                "质量检查",
+                "JSON",
+                len(quality_issues),
+                "质量问题和整改状态清单",
+                cls._json_text(quality_issues),
+            ),
+            cls._text_entry(
+                "review/review_records.json",
+                "审核记录",
+                "JSON",
+                len(reviews),
+                "三级审核、版本和操作审计记录",
+                cls._json_text(reviews),
+            ),
+            cls._text_entry(
+                "reports/quality_report.md",
+                "质量报告",
+                "Markdown",
+                None,
+                "成果质量检查报告",
+                cls._build_quality_report(task, quality_summary),
+            ),
+            cls._text_entry(
+                "reports/acceptance_report.md",
+                "验收报告",
+                "Markdown",
+                None,
+                "项目成果验收报告",
+                cls._build_acceptance_report(task, source_data, quality_summary),
+            ),
+            cls._text_entry(
+                "archive/imagery_lineage.json",
+                "影像血缘",
+                "JSON",
+                quality_summary["imagery_step_count"],
+                "业务影像源实体及全部处理产物校验引用",
+                cls._json_text(source_data["imagery_lineage"]),
+                source_entity_code=quality_summary["imagery_asset_code"],
+                source_uri=getattr(source_data["imagery"], "file_uri", None),
+                evidence_status="referenced",
+            ),
+            cls._text_entry(
+                "archive/dataset_catalog.json",
+                "多源数据目录",
+                "JSON",
+                len(dataset_catalog),
+                "项目级及任务级数据资产来源、版本、密级和校验目录",
+                cls._json_text(dataset_catalog),
+            ),
+            cls._text_entry(
+                "archive/archive_index.json",
+                "归档索引",
+                "JSON",
+                len(archive_index["categories"]),
+                "各类成果的已纳入、仅引用或未提供状态",
+                cls._json_text(archive_index),
+            ),
+        ]
+        for artifact in (
+            source_data["thematic_artifacts"]
+            + source_data["supervision_artifacts"]
+        ):
+            entries.append(DeliveryArchiveEntry(**artifact))
+        return entries
+
+    @staticmethod
+    def _text_entry(
+        path: str,
+        category: str,
+        file_format: str,
+        record_count: int | None,
+        description: str,
+        content: str,
+        *,
+        source_entity_code: str | None = None,
+        source_uri: str | None = None,
+        evidence_status: str = "included",
+    ) -> DeliveryArchiveEntry:
+        """将 UTF-8 文本转换为归档实体。
+
+        Args:
+            path: ZIP 内相对路径。
+            category: 成果分类。
+            file_format: 文件格式。
+            record_count: 业务记录数量。
+            description: 文件说明。
+            content: UTF-8 文本内容。
+            source_entity_code: 可选来源实体编号。
+            source_uri: 可选来源实体地址。
+            evidence_status: 内嵌、引用或未提供状态。
+
+        Returns:
+            DeliveryArchiveEntry: 可写入 ZIP 的字节实体。
+        """
+        return DeliveryArchiveEntry(
+            path=path,
+            category=category,
+            format=file_format,
+            record_count=record_count,
+            description=description,
+            content=content.encode("utf-8"),
+            source_entity_code=source_entity_code,
+            source_uri=source_uri,
+            evidence_status=evidence_status,
+        )
+
+    @staticmethod
+    def _build_manifest(entries: list[DeliveryArchiveEntry]) -> list[dict]:
+        """构建带逐文件大小和 SHA-256 的成果清单。
+
+        Args:
+            entries: 已生成或已校验的 ZIP 文件实体。
+
+        Returns:
+            list[dict]: 成果文件清单，末项为清单自身。
+        """
+        manifest = [
             {
-                "path": "quality/quality_issues.json",
-                "category": "质量检查",
-                "format": "JSON",
-                "record_count": len(source_data["quality_issues"]),
-                "description": "质量问题和整改状态清单",
-            },
-            {
-                "path": "review/review_records.json",
-                "category": "审核记录",
-                "format": "JSON",
-                "record_count": len(source_data["reviews"]),
-                "description": "三级审核、版本和操作审计记录",
-            },
-            {
-                "path": "reports/quality_report.md",
-                "category": "质量报告",
-                "format": "Markdown",
-                "record_count": None,
-                "description": "成果质量检查报告",
-            },
-            {
-                "path": "reports/acceptance_report.md",
-                "category": "验收报告",
-                "format": "Markdown",
-                "record_count": None,
-                "description": "项目成果验收报告",
-            },
+                "path": entry.path,
+                "category": entry.category,
+                "format": entry.format,
+                "record_count": entry.record_count,
+                "description": entry.description,
+                "file_size_bytes": len(entry.content),
+                "checksum_sha256": hashlib.sha256(entry.content).hexdigest(),
+                "source_entity_code": entry.source_entity_code,
+                "source_uri": entry.source_uri,
+                "evidence_status": entry.evidence_status,
+            }
+            for entry in entries
+        ]
+        manifest.append(
             {
                 "path": "manifest.json",
                 "category": "成果清单",
                 "format": "JSON",
-                "record_count": 9,
-                "description": "交付包内容和校验元数据",
-            },
-        ]
+                "record_count": len(entries),
+                "description": "交付包逐文件校验值、来源和验收摘要",
+                "file_size_bytes": None,
+                "checksum_sha256": None,
+                "source_entity_code": None,
+                "source_uri": None,
+                "evidence_status": "included",
+            }
+        )
+        return manifest
 
     @staticmethod
     def _build_quality_summary(task: object, source_data: dict) -> dict:
@@ -494,6 +981,7 @@ class DeliveryService:
         imagery = source_data["imagery"]
         field_count = len(field_rows)
         disaster_count = source_data["disasters"].total_patches
+        archive_state = source_data["archive_state"]
         return {
             "quality_score": float(quality_gate.average_score or 0),
             "plot_count": len(source_data["plot_rows"]),
@@ -525,14 +1013,37 @@ class DeliveryService:
                 and imagery.correction_status == "completed"
             ),
             "review_record_count": len(source_data["reviews"]),
+            "thematic_map_count": archive_state.thematic_map_count,
+            "thematic_map_latest_at": (
+                archive_state.thematic_map_latest_at.isoformat()
+                if archive_state.thematic_map_latest_at
+                else None
+            ),
+            "supervision_report_count": archive_state.supervision_report_count,
+            "supervision_report_latest_at": (
+                archive_state.supervision_report_latest_at.isoformat()
+                if archive_state.supervision_report_latest_at
+                else None
+            ),
+            "dataset_asset_count": archive_state.dataset_asset_count,
+            "dataset_asset_latest_at": (
+                archive_state.dataset_asset_latest_at.isoformat()
+                if archive_state.dataset_asset_latest_at
+                else None
+            ),
+            "imagery_step_count": archive_state.imagery_step_count,
+            "imagery_step_latest_at": (
+                archive_state.imagery_step_latest_at.isoformat()
+                if archive_state.imagery_step_latest_at
+                else None
+            ),
             "task_status": task.status,
         }
 
     def _write_zip(
         self,
         package_path: Path,
-        task: object,
-        source_data: dict,
+        entries: list[DeliveryArchiveEntry],
         manifest: list[dict],
         quality_summary: dict,
     ) -> None:
@@ -540,8 +1051,7 @@ class DeliveryService:
 
         Args:
             package_path: ZIP 输出路径。
-            task: 当前作业任务。
-            source_data: 成果包源数据。
+            entries: 已生成或已校验的归档实体。
             manifest: 成果文件清单。
             quality_summary: 质量与验收摘要。
 
@@ -549,65 +1059,8 @@ class DeliveryService:
             None: 无返回值。
         """
         with ZipFile(package_path, "w", ZIP_DEFLATED) as archive:
-            archive.writestr(
-                "vector/farmland_plots.geojson",
-                self._build_plot_geojson(source_data["plot_rows"]),
-            )
-            archive.writestr(
-                "statistics/area_statistics.csv",
-                self._build_statistics_csv(source_data["statistics"]),
-            )
-            archive.writestr(
-                "disasters/disaster_patches.geojson",
-                self._json_text(source_data["disasters"].feature_collection),
-            )
-            archive.writestr(
-                "field/field_verifications.geojson",
-                self._build_field_geojson(source_data["field_rows"]),
-            )
-            archive.writestr(
-                "quality/quality_issues.json",
-                self._json_text(
-                    [
-                        {
-                            "plot_code": item.plot_code,
-                            "rule_code": item.rule_code,
-                            "issue_type": item.issue_type,
-                            "severity": item.severity,
-                            "description": item.description,
-                            "status": item.status,
-                            "source": item.source,
-                            "created_at": item.created_at,
-                        }
-                        for item in source_data["quality_issues"]
-                    ]
-                ),
-            )
-            archive.writestr(
-                "review/review_records.json",
-                self._json_text(
-                    [
-                        {
-                            "review_level": item.review_level,
-                            "action": item.action,
-                            "reviewer": item.reviewer,
-                            "reviewer_code": item.reviewer_code,
-                            "reviewer_role": item.reviewer_role,
-                            "comment": item.comment,
-                            "created_at": item.created_at,
-                        }
-                        for item in source_data["reviews"]
-                    ]
-                ),
-            )
-            archive.writestr(
-                "reports/quality_report.md",
-                self._build_quality_report(task, quality_summary),
-            )
-            archive.writestr(
-                "reports/acceptance_report.md",
-                self._build_acceptance_report(task, source_data, quality_summary),
-            )
+            for entry in entries:
+                archive.writestr(entry.path, entry.content)
             archive.writestr(
                 "manifest.json",
                 self._json_text(
@@ -753,6 +1206,10 @@ class DeliveryService:
 - 已整改问题：{summary['resolved_issue_count']}
 - 外业核查记录：{summary['field_verification_count']}
 - 待处置外业记录：{summary['pending_field_count']}
+- 实体专题图：{summary['thematic_map_count']} 张
+- 独立监理报告：{summary['supervision_report_count']} 份
+- 多源数据资产目录：{summary['dataset_asset_count']} 项
+- 已校验影像处理产物：{summary['imagery_step_count']} 项
 
 ## 质量结论
 
@@ -807,16 +1264,25 @@ class DeliveryService:
 - 受灾面积：{summary['affected_area_ha']} 公顷
 - 外业核查：{summary['field_verification_count']} 条
 - 审核及操作记录：{summary['review_record_count']} 条
+- 专题图成果：{summary['thematic_map_count']} 张
+- 独立监理报告：{summary['supervision_report_count']} 份
+- 多源数据资产：{summary['dataset_asset_count']} 项
+- 影像处理产物：{summary['imagery_step_count']} 项
 
 ## 专项证据状态
 
 - 外业核查：{field_text}
 - 灾害监测：{disaster_text}
 - 业务影像：{summary['imagery_asset_code'] or '未关联'}
+- 专题图：{'已纳入实体成果' if summary['thematic_map_count'] > 0 else '未提供'}
+- 独立监理：{'已纳入实体报告' if summary['supervision_report_count'] > 0 else '未提供'}
 
 ## 验收结论
 
-本成果包包含最终地块数据、属性、面积统计、完整质量问题清单、审核记录和质量报告。外业与灾害文件是否包含业务记录以上述专项证据状态为准，不以空集合冒充已完成成果。
+本成果包包含最终地块数据、属性、面积统计、完整质量问题清单、审核记录、
+质量报告、影像血缘和数据资产目录。已存在的专题图与独立监理报告以通过大小
+和 SHA-256 复核的原始实体写入；外业、灾害、专题图和监理证据是否存在以上述
+专项证据状态为准，不以空集合冒充已完成成果。
 
 文件清单与校验摘要已写入 manifest.json，可进入甲方成果交付和归档环节。
 """
