@@ -53,6 +53,58 @@ def test_production_batch_rejects_same_temporal_asset() -> None:
         )
 
 
+def test_production_overview_returns_dataset_import_batch_summary() -> None:
+    """验证生产总览返回真实数据资产入库批次数量和审计摘要。"""
+    generated_at = datetime.now(UTC)
+    dao = AsyncMock()
+    workbench_dao = AsyncMock()
+    workbench_dao.get_project_by_code.return_value = SimpleNamespace(id=1)
+    workbench_dao.get_task_by_code.return_value = SimpleNamespace(
+        id=2,
+        project_id=1,
+    )
+    dao.list_assets.return_value = []
+    dao.list_dataset_import_batches.return_value = [
+        SimpleNamespace(
+            batch_code="DSBATCH-20260723-001",
+            item_count=2,
+            total_size_bytes=128,
+            manifest_sha256="a" * 64,
+            imported_by="赵志远",
+            imported_by_code="manager-zhao-zhiyuan",
+            imported_by_role="project_manager",
+            import_comment="依据公开数据交接清单执行多源实体原子批量入库",
+            created_at=generated_at,
+        )
+    ]
+    dao.list_lineages.return_value = []
+    dao.list_work_areas.return_value = []
+    dao.list_region_batch_assignments.return_value = []
+    dao.list_batches.return_value = []
+    dao.list_package_metrics.return_value = []
+    service = ProductionService(
+        dao=dao,
+        workbench_dao=workbench_dao,
+        user_service=AsyncMock(),
+        rule_service=AsyncMock(),
+    )
+
+    result = asyncio.run(
+        service.get_overview(
+            AsyncMock(),
+            "RS-2026",
+            "RS-2026-045",
+        )
+    )
+
+    assert result.metrics.dataset_import_batch_count == 1
+    assert len(result.dataset_import_batches) == 1
+    assert result.dataset_import_batches[0].batch_code == (
+        "DSBATCH-20260723-001"
+    )
+    assert result.dataset_import_batches[0].manifest_sha256 == "a" * 64
+
+
 class StubOverviewProductionService(ProductionService):
     """为写操作测试提供固定的提交后聚合结果。"""
 

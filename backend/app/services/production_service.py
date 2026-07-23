@@ -22,6 +22,7 @@ from app.models.workbench import (
 )
 from app.schemas.production import (
     DatasetAssetCreateRequest,
+    DatasetAssetImportBatchSummary,
     DatasetAssetResponse,
     ProductionBatchCreateRequest,
     ProductionBatchResponse,
@@ -224,6 +225,11 @@ class ProductionService:
         """
         project, task = await self._resolve_context(db, project_code, task_code)
         asset_rows = await self.dao.list_assets(db, project.id)
+        dataset_import_batches = await self.dao.list_dataset_import_batches(
+            db,
+            project.id,
+            task.id,
+        )
         lineage_rows = await self.dao.list_lineages(db, project.id)
         work_area_rows = await self.dao.list_work_areas(db, project.id, task.id)
         assignment_rows = await self.dao.list_region_batch_assignments(db, task.id)
@@ -319,6 +325,7 @@ class ProductionService:
                 pending_asset_verification_count=sum(
                     asset.verification_status != "verified" for asset in assets
                 ),
+                dataset_import_batch_count=len(dataset_import_batches),
                 batch_count=len(batch_responses),
                 active_batch_count=sum(
                     batch.status in active_batches for batch in batch_responses
@@ -334,6 +341,20 @@ class ProductionService:
             ),
             asset_type_counts=dict(asset_type_counts),
             assets=assets,
+            dataset_import_batches=[
+                DatasetAssetImportBatchSummary(
+                    batch_code=batch.batch_code,
+                    item_count=batch.item_count,
+                    total_size_bytes=batch.total_size_bytes,
+                    manifest_sha256=batch.manifest_sha256,
+                    imported_by=batch.imported_by,
+                    imported_by_code=batch.imported_by_code,
+                    imported_by_role=batch.imported_by_role,
+                    comment=batch.import_comment,
+                    created_at=batch.created_at,
+                )
+                for batch in dataset_import_batches
+            ],
             work_areas=work_areas,
             batches=batch_responses,
         )

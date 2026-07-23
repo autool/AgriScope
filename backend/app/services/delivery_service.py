@@ -16,6 +16,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.exceptions import NotFoundException, ValidationException
 from app.dao.delivery_dao import DeliveryArchiveState, DeliveryDAO
 from app.dao.workbench_dao import QualityGateSummary, WorkbenchDAO
+from app.models.dataset_asset_import import (
+    DatasetAssetImportBatch,
+    DatasetAssetImportBatchItem,
+)
+from app.models.dataset_asset_verification import DatasetAssetVerification
 from app.models.disaster_report import DisasterReport
 from app.models.growth_monitoring import GrowthMonitoringRun
 from app.models.statistics_report import StatisticsReport
@@ -23,6 +28,7 @@ from app.models.supervision import SupervisionReport
 from app.models.thematic_map import ThematicMapProduct
 from app.models.vector_export import VectorExportPackage
 from app.models.workbench import (
+    DatasetAsset,
     DeliveryPackage,
     ImageryProcessingStep,
     ReviewRecord,
@@ -672,6 +678,17 @@ class DeliveryService:
         verified_dataset_files = (
             await self.dataset_asset_service.load_verified_files(dataset_assets)
         )
+        dataset_import_batches = await self.dao.get_dataset_import_batches(
+            db,
+            task.project_id,
+            task.id,
+        )
+        dataset_import_batch_items = (
+            await self.dao.get_dataset_import_batch_items(
+                db,
+                [batch.id for batch in dataset_import_batches],
+            )
+        )
         imagery_steps = (
             await self.dao.get_imagery_steps(db, imagery.id)
             if imagery is not None
@@ -740,6 +757,8 @@ class DeliveryService:
             "growth_monitoring_runs": growth_monitoring_runs,
             "dataset_assets": dataset_assets,
             "verified_dataset_files": verified_dataset_files,
+            "dataset_import_batches": dataset_import_batches,
+            "dataset_import_batch_items": dataset_import_batch_items,
             "archive_state": archive_state,
         }
 
@@ -1088,6 +1107,141 @@ class DeliveryService:
             "steps": step_items,
         }
 
+    @staticmethod
+    def _build_dataset_import_batch_catalog(source_data: dict) -> list[dict]:
+        """复核并构造多源数据资产原子入库批次审计目录。
+
+        Args:
+            source_data: 已加载且已重新校验实体的交付源数据。
+
+        Returns:
+            list[dict]: 批次规范化清单和逐文件核验证据。
+        """
+        rows_by_batch: dict[int, list[object]] = {}
+        for row in source_data["dataset_import_batch_items"]:
+            batch = row[DatasetAssetImportBatch]
+            rows_by_batch.setdefault(batch.id, []).append(row)
+        verified_asset_codes = {
+            item.asset_code for item in source_data["verified_dataset_files"]
+        }
+        catalog: list[dict] = []
+        for batch in source_data["dataset_import_batches"]:
+            rows = rows_by_batch.get(batch.id, [])
+            if len(rows) != batch.item_count:
+                raise ValidationException(
+                    f"数据资产批次 {batch.batch_code} 成员数量校验失败"
+                )
+            sequences = [
+                row[DatasetAssetImportBatchItem].sequence for row in rows
+            ]
+            if sequences != list(range(1, batch.item_count + 1)):
+                raise ValidationException(
+                    f"数据资产批次 {batch.batch_code} 成员顺序校验失败"
+                )
+            if sum(
+                row[DatasetAssetImportBatchItem].file_size_bytes for row in rows
+            ) != batch.total_size_bytes:
+                raise ValidationException(
+                    f"数据资产批次 {batch.batch_code} 总大小校验失败"
+                )
+            payload = batch.manifest_payload
+            if not isinstance(payload, dict):
+                raise ValidationException(
+                    f"数据资产批次 {batch.batch_code} 缺少规范化清单"
+                )
+            calculated_manifest = hashlib.sha256(
+                json.dumps(
+                    payload,
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ).encode("utf-8")
+            ).hexdigest()
+            if calculated_manifest != batch.manifest_sha256:
+                raise ValidationException(
+                    f"数据资产批次 {batch.batch_code} 清单 SHA-256 校验失败"
+                )
+            payload_items = payload.get("items")
+            if not isinstance(payload_items, list) or len(payload_items) != len(rows):
+                raise ValidationException(
+                    f"数据资产批次 {batch.batch_code} 清单成员不完整"
+                )
+            members: list[dict] = []
+            for row, payload_item in zip(rows, payload_items, strict=True):
+                item = row[DatasetAssetImportBatchItem]
+                asset = row[DatasetAsset]
+                verification = row[DatasetAssetVerification]
+                if asset.asset_code not in verified_asset_codes:
+                    raise ValidationException(
+                        f"数据资产批次 {batch.batch_code} 的资产 "
+                        f"{asset.asset_code} 未通过交付实体复核"
+                    )
+                metadata = (
+                    payload_item.get("metadata")
+                    if isinstance(payload_item, dict)
+                    else None
+                )
+                if not isinstance(metadata, dict) or (
+                    payload_item.get("sequence") != item.sequence
+                    or metadata.get("filename") != item.original_filename
+                    or metadata.get("asset_code") != asset.asset_code
+                    or payload_item.get("file_size_bytes")
+                    != item.file_size_bytes
+                    or payload_item.get("checksum_sha256")
+                    != item.checksum_sha256
+                    or payload_item.get("media_type")
+                    != asset.physical_media_type
+                ):
+                    raise ValidationException(
+                        f"数据资产批次 {batch.batch_code} 的第 "
+                        f"{item.sequence} 个成员与清单不一致"
+                    )
+                asset_metadata = asset.metadata_payload or {}
+                if (
+                    item.checksum_sha256 != asset.checksum_sha256
+                    or item.checksum_sha256
+                    != verification.computed_checksum_sha256
+                    or verification.verification_status != "verified"
+                    or verification.file_uri != asset.physical_file_uri
+                    or asset_metadata.get("import_batch_code")
+                    != batch.batch_code
+                    or asset_metadata.get("import_batch_sequence")
+                    != item.sequence
+                    or asset_metadata.get("import_manifest_sha256")
+                    != batch.manifest_sha256
+                ):
+                    raise ValidationException(
+                        f"数据资产批次 {batch.batch_code} 的资产 "
+                        f"{asset.asset_code} 核验证据不一致"
+                    )
+                members.append({
+                    "sequence": item.sequence,
+                    "asset_code": asset.asset_code,
+                    "original_filename": item.original_filename,
+                    "file_size_bytes": item.file_size_bytes,
+                    "checksum_sha256": item.checksum_sha256,
+                    "media_type": asset.physical_media_type,
+                    "file_uri": asset.physical_file_uri,
+                    "verification_code": verification.verification_code,
+                    "verified_at": asset.verified_at,
+                    "verified_by_code": asset.verified_by_code,
+                    "verified_by_role": asset.verified_by_role,
+                })
+            catalog.append({
+                "batch_code": batch.batch_code,
+                "item_count": batch.item_count,
+                "total_size_bytes": batch.total_size_bytes,
+                "manifest_sha256": batch.manifest_sha256,
+                "manifest_payload": payload,
+                "imported_by": batch.imported_by,
+                "imported_by_code": batch.imported_by_code,
+                "imported_by_role": batch.imported_by_role,
+                "import_comment": batch.import_comment,
+                "created_at": batch.created_at,
+                "members": members,
+            })
+        return catalog
+
     @classmethod
     def _build_archive_entries(
         cls,
@@ -1181,6 +1335,9 @@ class DeliveryService:
             }
             for item in source_data["verified_dataset_files"]
         ]
+        dataset_import_batch_catalog = (
+            cls._build_dataset_import_batch_catalog(source_data)
+        )
         field_evidence_manifest = [
             {
                 "verification_code": item.verification_code,
@@ -1251,6 +1408,14 @@ class DeliveryService:
                         else "not_provided"
                     ),
                     "count": len(verified_dataset_file_catalog),
+                },
+                "dataset_import_batches": {
+                    "status": (
+                        "included"
+                        if dataset_import_batch_catalog
+                        else "not_provided"
+                    ),
+                    "count": len(dataset_import_batch_catalog),
                 },
                 "thematic_maps": {
                     "status": (
@@ -1477,6 +1642,14 @@ class DeliveryService:
                 "已通过路径、格式、大小和 SHA-256 复核的数据资产受控引用",
                 cls._json_text(verified_dataset_file_catalog),
                 evidence_status="verified_reference",
+            ),
+            cls._text_entry(
+                "archive/dataset_import_batches.json",
+                "数据资产原子入库批次",
+                "JSON",
+                len(dataset_import_batch_catalog),
+                "批次规范化清单、逐文件实体证据和稳定操作人审计",
+                cls._json_text(dataset_import_batch_catalog),
             ),
             cls._text_entry(
                 "archive/archive_index.json",
@@ -1781,6 +1954,9 @@ class DeliveryService:
                 archive_state.dataset_asset_latest_at.isoformat()
                 if archive_state.dataset_asset_latest_at
                 else None
+            ),
+            "dataset_import_batch_count": len(
+                source_data.get("dataset_import_batches", [])
             ),
             "imagery_step_count": archive_state.imagery_step_count,
             "imagery_step_latest_at": (

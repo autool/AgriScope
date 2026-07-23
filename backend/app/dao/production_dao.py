@@ -7,6 +7,10 @@ from sqlalchemy.engine import RowMapping
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased
 
+from app.models.dataset_asset_import import (
+    DatasetAssetImportBatch,
+    DatasetAssetImportBatchItem,
+)
 from app.models.dataset_asset_verification import DatasetAssetVerification
 from app.models.plot import FarmlandPlot
 from app.models.workbench import (
@@ -289,6 +293,89 @@ class ProductionDAO:
         db.add(verification)
         await db.flush()
         return verification
+
+    async def get_dataset_import_batch_by_code(
+        self,
+        db: AsyncSession,
+        batch_code: str,
+    ) -> DatasetAssetImportBatch | None:
+        """按业务编号查询数据资产入库批次。
+
+        Args:
+            db: 异步数据库会话。
+            batch_code: 批次编号。
+
+        Returns:
+            DatasetAssetImportBatch | None: 已存在批次或空值。
+        """
+        result = await db.execute(
+            select(DatasetAssetImportBatch).where(
+                DatasetAssetImportBatch.batch_code == batch_code
+            )
+        )
+        return result.scalar_one_or_none()
+
+    async def add_dataset_import_batch(
+        self,
+        db: AsyncSession,
+        batch: DatasetAssetImportBatch,
+    ) -> DatasetAssetImportBatch:
+        """写入数据资产原子入库批次。
+
+        Args:
+            db: 异步数据库会话。
+            batch: 批次实体。
+
+        Returns:
+            DatasetAssetImportBatch: 已写入会话的批次。
+        """
+        db.add(batch)
+        await db.flush()
+        return batch
+
+    async def add_dataset_import_batch_items(
+        self,
+        db: AsyncSession,
+        items: list[DatasetAssetImportBatchItem],
+    ) -> None:
+        """批量写入数据资产入库成员。
+
+        Args:
+            db: 异步数据库会话。
+            items: 批次成员实体列表。
+
+        Returns:
+            None: 无返回值。
+        """
+        if items:
+            db.add_all(items)
+            await db.flush()
+
+    async def list_dataset_import_batches(
+        self,
+        db: AsyncSession,
+        project_id: int,
+        task_id: int,
+    ) -> Sequence[DatasetAssetImportBatch]:
+        """查询当前项目任务的数据资产入库批次。
+
+        Args:
+            db: 异步数据库会话。
+            project_id: 项目主键。
+            task_id: 任务主键。
+
+        Returns:
+            Sequence[DatasetAssetImportBatch]: 按时间倒序的批次。
+        """
+        result = await db.execute(
+            select(DatasetAssetImportBatch)
+            .where(
+                DatasetAssetImportBatch.project_id == project_id,
+                DatasetAssetImportBatch.task_id == task_id,
+            )
+            .order_by(DatasetAssetImportBatch.created_at.desc())
+        )
+        return result.scalars().all()
 
     async def add_audit_event(
         self,

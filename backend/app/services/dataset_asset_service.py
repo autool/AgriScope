@@ -184,7 +184,7 @@ class DatasetAssetService:
             created_at=asset.created_at,
         )
 
-    async def _get_asset_response(
+    async def get_asset_response(
         self,
         db: AsyncSession,
         project_id: int,
@@ -207,7 +207,7 @@ class DatasetAssetService:
         parent_codes = await self.dao.list_parent_asset_codes(db, asset.id)
         return self.to_response(row, parent_codes)
 
-    def _prepare_upload(
+    def prepare_upload(
         self,
         file_handle: BinaryIO,
         original_filename: str,
@@ -264,7 +264,7 @@ class DatasetAssetService:
             temporary_path.unlink(missing_ok=True)
             raise
 
-    def _publish_upload(
+    def publish_upload(
         self,
         prepared: PreparedDatasetUpload,
         asset_code: str,
@@ -293,7 +293,20 @@ class DatasetAssetService:
             os.link(prepared.temporary_path, final_path)
         except FileExistsError as exc:
             raise ValidationException("数据资产实体目标文件已存在，请重试") from exc
-        prepared.temporary_path.unlink(missing_ok=True)
+        except OSError as exc:
+            raise ValidationException("数据资产实体原子发布失败") from exc
+        try:
+            prepared.temporary_path.unlink(missing_ok=True)
+        except OSError as exc:
+            try:
+                final_path.unlink(missing_ok=True)
+            except OSError as cleanup_exc:
+                raise ValidationException(
+                    "数据资产实体发布后临时文件与目标文件清理失败"
+                ) from cleanup_exc
+            raise ValidationException(
+                "数据资产实体发布后临时文件清理失败，目标文件已撤销"
+            ) from exc
         return final_path, self.STORAGE_PREFIX + relative_path.as_posix()
 
     def resolve_verified_file(self, asset: DatasetAsset) -> Path:
@@ -400,7 +413,7 @@ class DatasetAssetService:
             missing = [code for code in request.parent_asset_codes if code not in found]
             raise ValidationException(f"父资产不存在：{', '.join(missing)}")
         prepared = await asyncio.to_thread(
-            self._prepare_upload,
+            self.prepare_upload,
             file_handle,
             original_filename,
             request.asset_type,
@@ -424,7 +437,7 @@ class DatasetAssetService:
                 f"DSVERIFY-{now:%Y%m%dT%H%M%S}-{uuid4().hex[:10]}"
             )
             final_path, file_uri = await asyncio.to_thread(
-                self._publish_upload,
+                self.publish_upload,
                 prepared,
                 request.asset_code,
                 verification_code,
@@ -552,7 +565,7 @@ class DatasetAssetService:
             raise
         finally:
             prepared.temporary_path.unlink(missing_ok=True)
-        return await self._get_asset_response(db, project.id, request.asset_code)
+        return await self.get_asset_response(db, project.id, request.asset_code)
 
     async def verify_existing_asset(
         self,
@@ -595,7 +608,7 @@ class DatasetAssetService:
         if existing.verification_status == "verified":
             raise ValidationException("数据资产实体已经核验，无需重复补传")
         prepared = await asyncio.to_thread(
-            self._prepare_upload,
+            self.prepare_upload,
             file_handle,
             original_filename,
             existing.asset_type,
@@ -631,7 +644,7 @@ class DatasetAssetService:
             file_uri = None
             if checksum_match:
                 final_path, file_uri = await asyncio.to_thread(
-                    self._publish_upload,
+                    self.publish_upload,
                     prepared,
                     asset.asset_code,
                     verification_code,
@@ -725,7 +738,7 @@ class DatasetAssetService:
             prepared.temporary_path.unlink(missing_ok=True)
         if verification is None:
             raise ValidationException("数据资产实体核验未生成结果")
-        asset_response = await self._get_asset_response(db, project.id, asset_code)
+        asset_response = await self.get_asset_response(db, project.id, asset_code)
         return DatasetAssetVerificationResponse(
             verification_code=verification.verification_code,
             verification_status=verification.verification_status,

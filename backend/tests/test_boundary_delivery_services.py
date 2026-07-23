@@ -18,7 +18,12 @@ from app.core.exceptions import (
 )
 from app.dao.delivery_dao import DeliveryArchiveState
 from app.dao.workbench_dao import QualityGateSummary
-from app.models.workbench import DeliveryPackage
+from app.models.dataset_asset_import import (
+    DatasetAssetImportBatch,
+    DatasetAssetImportBatchItem,
+)
+from app.models.dataset_asset_verification import DatasetAssetVerification
+from app.models.workbench import DatasetAsset, DeliveryPackage
 from app.schemas.delivery import DeliveryGenerateRequest
 from app.services.boundary_service import BoundaryService
 from app.services.dataset_asset_service import DatasetAssetService
@@ -782,12 +787,84 @@ def test_delivery_generation_archives_verified_physical_evidence(
         verified_by_code="manager-zhao-zhiyuan",
         verified_by_role="project_manager",
         verification_comment="依据公开 STAC 来源清单核验目录实体",
-        metadata_payload={"stac_item_id": "S2B_TEST_L2A"},
+        metadata_payload={
+            "stac_item_id": "S2B_TEST_L2A",
+            "import_batch_code": "DSBATCH-DELIVERY-001",
+            "import_batch_sequence": 1,
+        },
         registered_by="赵志远",
         registered_by_code="manager-zhao-zhiyuan",
         registered_by_role="project_manager",
         created_at=generated_at,
         updated_at=generated_at,
+    )
+    dataset_batch_manifest = {
+        "schema_version": "dataset-asset-batch-v1",
+        "batch_code": "DSBATCH-DELIVERY-001",
+        "operator_code": "manager-zhao-zhiyuan",
+        "comment": "依据公开 STAC 来源清单执行原子批量入库",
+        "items": [{
+            "sequence": 1,
+            "metadata": {
+                "filename": "sentinel-source.csv",
+                "asset_code": "DATASET-001",
+                "asset_name": "公开 Sentinel-2 来源目录",
+                "asset_type": "table",
+                "source_name": "Element 84 Earth Search",
+                "source_uri": "https://earth-search.aws.element84.com/v1",
+                "source_version": "2026-07-16",
+                "crs": "EPSG:32651",
+                "extent_bbox": None,
+                "time_start": generated_at.isoformat(),
+                "time_end": generated_at.isoformat(),
+                "security_classification": "public",
+                "data_status": "operational",
+                "parent_asset_codes": [],
+                "lineage_relation_type": "derived_from",
+                "process_code": None,
+                "metadata": {"stac_item_id": "S2B_TEST_L2A"},
+            },
+            "file_size_bytes": dataset_path.stat().st_size,
+            "checksum_sha256": dataset_checksum,
+            "media_type": "text/csv",
+            "inspection": {"suffix": ".csv"},
+        }],
+    }
+    dataset_manifest_checksum = hashlib.sha256(
+        json.dumps(
+            dataset_batch_manifest,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode()
+    ).hexdigest()
+    dataset_asset.metadata_payload["import_manifest_sha256"] = (
+        dataset_manifest_checksum
+    )
+    dataset_import_batch = SimpleNamespace(
+        id=41,
+        batch_code="DSBATCH-DELIVERY-001",
+        item_count=1,
+        total_size_bytes=dataset_path.stat().st_size,
+        manifest_sha256=dataset_manifest_checksum,
+        manifest_payload=dataset_batch_manifest,
+        imported_by="赵志远",
+        imported_by_code="manager-zhao-zhiyuan",
+        imported_by_role="project_manager",
+        import_comment="依据公开 STAC 来源清单执行原子批量入库",
+        created_at=generated_at,
+    )
+    dataset_verification = SimpleNamespace(
+        verification_code="DSVERIFY-DELIVERY-001",
+        verification_status="verified",
+        computed_checksum_sha256=dataset_checksum,
+        file_uri=dataset_asset.physical_file_uri,
+    )
+    dataset_import_item = SimpleNamespace(
+        sequence=1,
+        original_filename="sentinel-source.csv",
+        file_size_bytes=dataset_path.stat().st_size,
+        checksum_sha256=dataset_checksum,
     )
     plot_row = SimpleNamespace(
         geometry=(
@@ -900,6 +977,13 @@ def test_delivery_generation_archives_verified_physical_evidence(
     dao.get_vector_exports.return_value = [vector_export_package]
     dao.get_growth_monitoring_runs.return_value = []
     dao.get_dataset_assets.return_value = [dataset_asset]
+    dao.get_dataset_import_batches.return_value = [dataset_import_batch]
+    dao.get_dataset_import_batch_items.return_value = [{
+        DatasetAssetImportBatch: dataset_import_batch,
+        DatasetAssetImportBatchItem: dataset_import_item,
+        DatasetAsset: dataset_asset,
+        DatasetAssetVerification: dataset_verification,
+    }]
     dao.get_imagery_steps.return_value = [imagery_step]
     dao.get_archive_state.return_value = archive_state
 
@@ -1085,6 +1169,7 @@ def test_delivery_generation_archives_verified_physical_evidence(
         assert "archive/imagery_lineage.json" in names
         assert "archive/dataset_catalog.json" in names
         assert "archive/verified_dataset_files.json" in names
+        assert "archive/dataset_import_batches.json" in names
         assert "archive/archive_index.json" in names
         assert "field/evidence_manifest.json" in names
         assert "field/evidence_events.json" in names
@@ -1108,6 +1193,10 @@ def test_delivery_generation_archives_verified_physical_evidence(
             "status": "verified_reference",
             "count": 1,
         }
+        assert archive_index["categories"]["dataset_import_batches"] == {
+            "status": "included",
+            "count": 1,
+        }
         dataset_catalog = json.loads(archive.read("archive/dataset_catalog.json"))
         assert dataset_catalog[0]["physical_file_uri"] == (
             "storage://datasets/DATASET-001/verified.csv"
@@ -1119,6 +1208,15 @@ def test_delivery_generation_archives_verified_physical_evidence(
         assert verified_dataset_files[0]["asset_code"] == "DATASET-001"
         assert verified_dataset_files[0]["evidence_status"] == (
             "verified_reference"
+        )
+        dataset_import_batches = json.loads(
+            archive.read("archive/dataset_import_batches.json")
+        )
+        assert dataset_import_batches[0]["batch_code"] == (
+            "DSBATCH-DELIVERY-001"
+        )
+        assert dataset_import_batches[0]["members"][0]["asset_code"] == (
+            "DATASET-001"
         )
         assert archive_index["categories"]["plot_attribute_imports"] == {
             "status": "included",
@@ -1138,6 +1236,7 @@ def test_delivery_generation_archives_verified_physical_evidence(
     assert response.quality_summary["statistics_report_count"] == 1
     assert response.quality_summary["vector_export_count"] == 1
     assert response.quality_summary["imagery_step_count"] == 1
+    assert response.quality_summary["dataset_import_batch_count"] == 1
     assert response.quality_summary["field_verified_artifact_count"] == 1
     assert response.quality_summary["field_import_workbook_count"] == 1
     assert response.quality_summary["plot_attribute_import_workbook_count"] == 1

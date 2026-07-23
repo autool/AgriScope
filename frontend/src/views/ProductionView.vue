@@ -17,6 +17,7 @@ import { useProductionStore } from '@/store/productionStore'
 import { useUserStore } from '@/store/userStore'
 import type {
   DatasetAsset,
+  DatasetAssetBatchCreatePayload,
   DatasetAssetCreatePayload,
   DatasetAssetUploadPayload,
   ProductionBatchCreatePayload,
@@ -62,6 +63,21 @@ const uploadAsset = async (
     message.success('数据实体已通过服务端格式、大小和 SHA-256 核验并登记')
   } catch {
     // 请求拦截器已显示安全错误。
+  }
+}
+
+const uploadAssetBatch = async (
+  payload: DatasetAssetBatchCreatePayload,
+  files: File[],
+): Promise<void> => {
+  try {
+    const result = await productionStore.uploadAssetBatch(payload, files)
+    datasetPanelRef.value?.closeBatchAfterSaved()
+    message.success(
+      `原子入库完成：${result.item_count} 个文件，清单 SHA-256 ${result.manifest_sha256.slice(0, 12)}…`,
+    )
+  } catch {
+    // 请求拦截器已显示安全错误，弹窗保留全部未保存元数据供修正重试。
   }
 }
 
@@ -177,7 +193,7 @@ onMounted(() => {
     <a-spin :spinning="loadingRef">
       <template v-if="overviewRef">
         <section class="metric-grid">
-          <article><DatabaseOutlined /><span><strong>{{ overviewRef.metrics.asset_count }}</strong><small>多源数据资产</small><em>{{ overviewRef.metrics.pending_asset_verification_count }} 项待实体核验</em></span></article>
+          <article><DatabaseOutlined /><span><strong>{{ overviewRef.metrics.asset_count }}</strong><small>多源数据资产</small><em>{{ overviewRef.metrics.dataset_import_batch_count }} 个原子批次 · {{ overviewRef.metrics.pending_asset_verification_count }} 项待核验</em></span></article>
           <article><DeploymentUnitOutlined /><span><strong>{{ overviewRef.metrics.active_batch_count }} / {{ overviewRef.metrics.batch_count }}</strong><small>活动 / 全部批次</small><em>按规则版本固化</em></span></article>
           <article><ApartmentOutlined /><span><strong>{{ overviewRef.metrics.package_count }}</strong><small>县区作业包</small><em>{{ overviewRef.metrics.assigned_plot_count.toLocaleString() }} 个显式图斑关联</em></span></article>
           <article :class="{ warning: overviewRef.metrics.overdue_package_count > 0 }"><AlertOutlined /><span><strong>{{ overviewRef.metrics.overdue_package_count }}</strong><small>逾期作业包</small><em>{{ overviewRef.metrics.completed_plot_count.toLocaleString() }} 个图斑已完成</em></span></article>
@@ -214,11 +230,13 @@ onMounted(() => {
               <DatasetCatalogPanel
                 ref="datasetPanelRef"
                 :assets="overviewRef.assets"
+                :import-batches="overviewRef.dataset_import_batches"
                 :saving="savingRef"
                 :can-manage="canManageDatasetsComputed"
                 :operator-code="operatorCodeComputed"
                 @register-reference="registerAsset"
                 @upload-entity="uploadAsset"
+                @upload-batch="uploadAssetBatch"
                 @verify-entity="verifyAsset"
                 @download-entity="downloadAsset"
               />

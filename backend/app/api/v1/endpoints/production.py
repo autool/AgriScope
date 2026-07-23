@@ -10,6 +10,8 @@ from pydantic import ValidationError
 from app.api.deps import DatabaseSession
 from app.core.exceptions import ValidationException
 from app.schemas.production import (
+    DatasetAssetBatchCreateRequest,
+    DatasetAssetBatchResponse,
     DatasetAssetCreateRequest,
     DatasetAssetResponse,
     DatasetAssetUploadRequest,
@@ -24,12 +26,19 @@ from app.schemas.production import (
     WorkPackageResponse,
     WorkPackageUpdateRequest,
 )
+from app.services.dataset_asset_batch_service import (
+    DatasetAssetBatchService,
+    DatasetAssetBatchUploadFile,
+)
 from app.services.dataset_asset_service import DatasetAssetService
 from app.services.production_service import ProductionService
 
 router = APIRouter(prefix="/api/v1/production", tags=["遥感生产调度"])
 service = ProductionService()
 dataset_asset_service = DatasetAssetService()
+dataset_asset_batch_service = DatasetAssetBatchService(
+    asset_service=dataset_asset_service,
+)
 
 
 @router.get("/overview", response_model=ProductionOverviewResponse)
@@ -116,6 +125,59 @@ async def upload_dataset_asset(
         )
     finally:
         await file.close()
+
+
+@router.post(
+    "/dataset-assets/batch",
+    response_model=DatasetAssetBatchResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+async def upload_dataset_asset_batch(
+    files: Annotated[
+        list[UploadFile],
+        File(description="1–20 个多源数据资产实体文件"),
+    ],
+    manifest_json: Annotated[str, Form(min_length=1)],
+    db: DatabaseSession,
+    project_code: Annotated[str, Query(min_length=1, max_length=50)] = "RS-2026",
+    task_code: Annotated[str, Query(min_length=1, max_length=50)] = "RS-2026-045",
+) -> DatasetAssetBatchResponse:
+    """按逐文件清单原子导入 1–20 个多源数据实体。
+
+    Args:
+        files: 批次内全部物理文件。
+        manifest_json: 批次编号、逐文件元数据、操作人和依据 JSON。
+        db: FastAPI 注入的异步数据库会话。
+        project_code: 项目编号。
+        task_code: 作业任务编号。
+
+    Returns:
+        DatasetAssetBatchResponse: 批次摘要和全部已核验资产。
+    """
+    try:
+        request = DatasetAssetBatchCreateRequest.model_validate_json(
+            manifest_json
+        )
+    except ValidationError as exc:
+        raise ValidationException("数据资产批量入库清单格式不合法") from exc
+    try:
+        return await dataset_asset_batch_service.upload_assets_batch(
+            db,
+            project_code,
+            task_code,
+            request,
+            [
+                DatasetAssetBatchUploadFile(
+                    filename=file.filename or "dataset.bin",
+                    file_handle=file.file,
+                    reported_media_type=file.content_type,
+                )
+                for file in files
+            ],
+        )
+    finally:
+        for file in files:
+            await file.close()
 
 
 @router.post(

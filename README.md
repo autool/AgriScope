@@ -40,6 +40,10 @@
 
 ![AgriScope 多源数据实体上传与核验](docs/images/dataset-asset-verification.png)
 
+### 多源数据资产原子批量入库
+
+![AgriScope 多源数据资产原子批量入库](docs/images/dataset-asset-batch-import.png)
+
 ### 公开 Sentinel-2 实体影像
 
 ![AgriScope 公开 Sentinel-2 实体影像](docs/images/imagery-public-sentinel.png)
@@ -111,6 +115,7 @@
 ## 核心能力
 
 - 卫星影像、解译图斑、灾害斑块、外业核查点和行政区划统一图层管理。
+- 多源数据目录支持一次选择 1–20 个影像、矢量、表格、DEM、控制、气象、管理、无人机或物联网实体，逐文件维护资产编号、名称、类型、CRS、密级、业务/演示状态和批内/存量父资产血缘。前端一次提交全部 `files` 与 `manifest_json`，服务端先临时校验全部格式、大小和 SHA-256，拒绝重名文件、重复编号、重复内容、存量校验值和循环血缘；全部通过后才以一次事务发布实体并写入资产、核验、血缘、批次、成员和审计。任一校验、发布、提交或回滚异常都会清理全部新文件，并保存可复算的规范化 manifest SHA-256。
 - 影像资产页支持一次选择 1–20 个 GeoTIFF、IMG 或 HDF，逐文件维护资产编号、名称和可选业务元数据补录；前端一次提交完整 multipart 清单，服务端先校验全部实体、文件名/编号/SHA-256 去重和标签冲突，再以一个数据库事务发布资产、六步处理流水线、批次成员与稳定用户审计。任一文件失败时整批数据库和实体文件回滚，并保存规范化批次清单 SHA-256。
 - 内置黑龙江省 1 条省界、13 条地级边界和 122 条县区边界真实数据快照。
 - 提供真实 Polygon 绘制、节点编辑、PostGIS 图斑分割与合并、即时撤销/重做、软删除、属性赋值、面积重算、版本和审计闭环。
@@ -152,7 +157,7 @@
 
 项目已将黑龙江省政府采购网公开的国土变更调查、疑似变化图斑提取、高分辨率影像处理、生态遥感与野外验证、河湖动态监测、生产建设遥感监管和农作物病虫疫情田间监测项目纳入产品范围。新增能力按依赖关系持续开发：
 
-1. 多源数据目录、技术规则包、生产批次和县区任务分包已实现。数据目录支持九类实体上传登记、仅登记外部来源、服务端格式/结构/大小/SHA-256 校验、错误校验值拒绝留痕、补传复核、受控下载和交付引用；后续继续补充多文件原子批量目录入库工具。
+1. 多源数据目录、技术规则包、生产批次和县区任务分包已实现。数据目录支持九类实体上传登记、仅登记外部来源、服务端格式/结构/大小/SHA-256 校验、错误校验值拒绝留痕、补传复核、受控下载和交付引用；多文件目录入库已支持 1–20 个实体一次 multipart、一次事务、批内血缘、规范化 manifest SHA-256、整批失败清理和交付复核。
 2. 多时相变化检测已实现真实影像资格、实体配准成果强制绑定、任务与规则快照、已配准目标栅格公共网格卷帘/闪烁/并排、外部候选 GeoJSON 导入、内置 RGB 差分自动候选发现、六类变化判读和不可变审计；后续继续补充多算法配置。
 3. 独立项目监理已实现真实任务图斑抽样、过程检查、问题整改、逐轮复检、县区评价和不可变实体报告；当前数据库无业务监理记录时保持真实空状态。
 4. GCP 仿射精校正、RPC/DEM 正射、平移自动配准、影像增强、基础多景镶嵌和全色融合已实现：支持 RPC-only 原始影像入库、控制点残差门禁、受控 DEM 覆盖校验、服务端相位相关位移与实体残差复核、变化检测强制绑定配准成果、百分位拉伸、直方图均衡化、2–20 景全局均值/标准差匀色、完整行政区覆盖率门禁，以及同景多光谱/单波段全色实体的分块直方图匹配 Brovey 融合。当前开发数据库已接入 Google Cloud Public Datasets / USGS 的 Landsat-8 场景 `LC08_L1TP_117028_20200724_20200807_01_T1`，按 MTL 系数生成 30m B2/B3/B4 与 15m B8 TOA 反射率实体。真实融合有效重叠率为 99.4537%，三波段最低光谱相关系数为 0.872138，空间细节增益为 1.903269，并保存 15m GeoTIFF、SHA-256 与完整输入血缘。区域网平差、高级缝线优化和全省规模压测仍待继续建设。
@@ -349,6 +354,8 @@ psql "$POSTGRES_DSN" -f scripts/migrations/20260721_delivery_role_scope.sql
 
 既有待核验或核验不通过资产可以补传实体。SHA-256 不一致时系统保存不可变 `rejected` 核验尝试但不发布文件；一致时保存受控 URI、原始文件名、大小、媒体类型、核验人、角色和人工依据。下载、生产批次创建和成果交付都会重新检查受控路径、格式、大小及 SHA-256；生产批次的时相影像只接受实体复核通过的 `imagery` 目录项。
 
+“原子批量入库”一次接收 1–20 个文件及一份逐文件清单。批次保存稳定操作人、至少 10 字依据、共同来源和每个成员的完整业务元数据；文件名按大小写不敏感去重，同时拒绝重复资产编号、批内/项目内重复 SHA-256、缺失父资产和批内循环血缘。所有文件先进入临时区并完成格式、签名、MIME、归档安全和服务端校验值检查，全部通过后才排他发布。数据库在同一事务写入 `dataset_assets`、`dataset_asset_verifications`、`dataset_lineages`、`dataset_asset_import_batches`、`dataset_asset_import_batch_items` 和生产审计；页面展示最近批次的成员数、总大小与 manifest SHA-256，失败时保留未提交表单供修正重试。
+
 生产批次创建时固化 `project_rule_configs.version` 和完整量化规则快照。县区拆包事务从当前任务和真实县区查询有效图斑，把每个 `plot_code` 写入 `work_package_plots`；计划面积和图斑量由数据库计算，后续进度同样根据显式关联和图斑解译状态实时聚合。批次/作业包创建、负责人/期限/状态变更均写入 `production_audit_events` 修改前后值和稳定用户角色快照。
 
 成果包列表与生成接口不会只信任任务的 `completed` 状态，还会即时复核可验证业务
@@ -362,6 +369,7 @@ psql "$POSTGRES_DSN" -f scripts/migrations/20260721_delivery_role_scope.sql
 报告直接写入 ZIP，影像源和大体量处理中间栅格通过 `archive/imagery_lineage.json`
 保存受控 URI、实体大小和 SHA-256 引用，多源资产写入 `archive/dataset_catalog.json`，
 已核验实体在生成时重新复核并写入 `archive/verified_dataset_files.json`，
+原子入库批次在重新计算 manifest SHA-256，并交叉校验成员顺序、大小、资产、核验记录和实体状态后写入 `archive/dataset_import_batches.json`，
 各类证据的“已纳入/校验后引用/未提供”状态写入 `archive/archive_index.json`。
 
 `manifest.json` 保存每个内嵌文件的路径、分类、格式、记录数、来源实体、文件大小和
@@ -858,6 +866,12 @@ psql "$POSTGRES_DSN" -f scripts/migrations/20260722_remove_seeded_task_audit.sql
 | GET | `/api/v1/plot/click` | 二三维地图点击查询 |
 | GET | `/api/v1/workbench/overview` | 获取项目、任务、影像和审核工作台概览 |
 | GET | `/api/v1/project-users` | 查询项目启用用户、角色和业务能力 |
+| GET | `/api/v1/production/overview` | 查询多源数据目录、原子入库批次、生产批次和县区作业包聚合状态 |
+| POST | `/api/v1/production/dataset-assets` | 仅登记外部数据来源并保持待实体核验状态 |
+| POST | `/api/v1/production/dataset-assets/upload` | 上传单个实体并由服务端校验格式、大小和 SHA-256 |
+| POST | `/api/v1/production/dataset-assets/batch` | 一次 multipart、一次事务原子导入 1–20 个多源数据实体及逐文件清单 |
+| POST | `/api/v1/production/dataset-assets/{asset_code}/verify` | 为既有目录项补传实体并保存通过或拒绝核验尝试 |
+| GET | `/api/v1/production/dataset-assets/{asset_code}/download` | 重新校验受控路径、格式、大小和 SHA-256 后下载实体 |
 | POST | `/api/v1/workbench/plots` | 创建人工解译图斑并生成初始版本 |
 | PATCH | `/api/v1/workbench/plots/{plot_code}/geometry` | 保存节点编辑边界并重算面积 |
 | DELETE | `/api/v1/workbench/plots/{plot_code}` | 软删除图斑并保留版本审计 |

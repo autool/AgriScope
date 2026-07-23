@@ -32,8 +32,8 @@ ReconciliationStatus = Literal["pending", "checking", "passed", "conflict"]
 PackageDeliveryStatus = Literal["pending", "submitted", "accepted", "returned"]
 
 
-class DatasetAssetMetadataRequest(BaseModel):
-    """多源数据资产通用来源、范围、密级和血缘字段。"""
+class DatasetAssetCommonMetadata(BaseModel):
+    """不含操作人字段的数据资产来源、范围、密级和血缘元数据。"""
 
     asset_code: str = Field(min_length=1, max_length=80, pattern=r"^[A-Za-z0-9_-]+$")
     asset_name: str = Field(min_length=1, max_length=200)
@@ -55,8 +55,6 @@ class DatasetAssetMetadataRequest(BaseModel):
     )
     process_code: str | None = Field(default=None, max_length=80)
     metadata: dict = Field(default_factory=dict)
-    operator_code: str = Field(min_length=1, max_length=50)
-
     model_config = ConfigDict(extra="forbid")
 
     @field_validator(
@@ -64,20 +62,33 @@ class DatasetAssetMetadataRequest(BaseModel):
         "source_name",
         "source_uri",
         "source_version",
-        "crs",
         "lineage_relation_type",
-        "process_code",
-        "operator_code",
     )
     @classmethod
-    def normalize_text(cls, value: str | None) -> str | None:
-        """清理资产登记文本。
+    def normalize_required_text(cls, value: str) -> str:
+        """清理资产必填文本。
 
         Args:
             value: 原始文本。
 
         Returns:
-            str | None: 去除首尾空格后的文本。
+            str: 去除首尾空格后的非空文本。
+        """
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("数据资产必填文本不得为空")
+        return normalized
+
+    @field_validator("crs", "process_code")
+    @classmethod
+    def normalize_optional_text(cls, value: str | None) -> str | None:
+        """清理资产可选文本。
+
+        Args:
+            value: 原始文本或空值。
+
+        Returns:
+            str | None: 标准化文本或空值。
         """
         if value is None:
             return None
@@ -124,6 +135,28 @@ class DatasetAssetMetadataRequest(BaseModel):
         return self
 
 
+class DatasetAssetMetadataRequest(DatasetAssetCommonMetadata):
+    """包含稳定操作人编码的单资产请求。"""
+
+    operator_code: str = Field(min_length=1, max_length=50)
+
+    @field_validator("operator_code")
+    @classmethod
+    def normalize_operator_code(cls, value: str) -> str:
+        """清理单资产操作人编码。
+
+        Args:
+            value: 原始操作人编码。
+
+        Returns:
+            str: 去除首尾空格后的操作人编码。
+        """
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("操作人编码不得为空")
+        return normalized
+
+
 class DatasetAssetCreateRequest(DatasetAssetMetadataRequest):
     """仅登记外部多源数据资产及调用方提供的校验值。"""
 
@@ -150,6 +183,92 @@ class DatasetAssetUploadRequest(DatasetAssetMetadataRequest):
         if len(normalized) < 10:
             raise ValueError("实体核验依据至少填写 10 个字符")
         return normalized
+
+
+class DatasetAssetBatchItemRequest(DatasetAssetCommonMetadata):
+    """原子批量入库清单中的一个文件和业务元数据。"""
+
+    filename: str = Field(min_length=1, max_length=255)
+
+    @field_validator("filename")
+    @classmethod
+    def normalize_filename(cls, value: str) -> str:
+        """清理批次清单原始文件名。
+
+        Args:
+            value: 浏览器选择的原始文件名。
+
+        Returns:
+            str: 去除首尾空格后的文件名。
+        """
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("批次文件名不得为空")
+        if "/" in normalized or "\\" in normalized:
+            raise ValueError("批次文件名不得包含路径片段")
+        return normalized
+
+
+class DatasetAssetBatchCreateRequest(BaseModel):
+    """一次 1–20 个多源实体的原子批量入库清单。"""
+
+    batch_code: str = Field(
+        min_length=1,
+        max_length=90,
+        pattern=r"^[A-Za-z0-9_-]+$",
+    )
+    operator_code: str = Field(min_length=1, max_length=50)
+    comment: str = Field(min_length=10, max_length=500)
+    items: list[DatasetAssetBatchItemRequest] = Field(min_length=1, max_length=20)
+
+    model_config = ConfigDict(extra="forbid")
+
+    @field_validator("batch_code", "operator_code")
+    @classmethod
+    def normalize_required_text(cls, value: str) -> str:
+        """清理批次编号和操作人编码。
+
+        Args:
+            value: 原始文本。
+
+        Returns:
+            str: 去除首尾空格后的文本。
+        """
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("批次编号和操作人编码不得为空")
+        return normalized
+
+    @field_validator("comment")
+    @classmethod
+    def normalize_comment(cls, value: str) -> str:
+        """清理并校验批量入库依据。
+
+        Args:
+            value: 原始批量入库依据。
+
+        Returns:
+            str: 至少 10 个字符的入库依据。
+        """
+        normalized = value.strip()
+        if len(normalized) < 10:
+            raise ValueError("批量入库依据至少填写 10 个字符")
+        return normalized
+
+    @model_validator(mode="after")
+    def validate_unique_items(self) -> Self:
+        """校验文件名和资产编号在批次内唯一。
+
+        Returns:
+            Self: 校验通过的批次清单。
+        """
+        filenames = [item.filename.casefold() for item in self.items]
+        if len(filenames) != len(set(filenames)):
+            raise ValueError("同一批次不得包含重复文件名")
+        asset_codes = [item.asset_code for item in self.items]
+        if len(asset_codes) != len(set(asset_codes)):
+            raise ValueError("同一批次不得包含重复资产编号")
+        return self
 
 
 class DatasetAssetVerifyRequest(BaseModel):
@@ -241,6 +360,26 @@ class DatasetAssetVerificationResponse(BaseModel):
     verification_error: str | None
     created_at: datetime
     asset: DatasetAssetResponse
+
+
+class DatasetAssetImportBatchSummary(BaseModel):
+    """数据资产原子批量入库批次摘要。"""
+
+    batch_code: str
+    item_count: int
+    total_size_bytes: int
+    manifest_sha256: str
+    imported_by: str
+    imported_by_code: str
+    imported_by_role: str
+    comment: str
+    created_at: datetime
+
+
+class DatasetAssetBatchResponse(DatasetAssetImportBatchSummary):
+    """数据资产批量入库结果和全部成员。"""
+
+    items: list[DatasetAssetResponse]
 
 
 class ProductionBatchCreateRequest(BaseModel):
@@ -409,6 +548,7 @@ class ProductionMetricsResponse(BaseModel):
 
     asset_count: int
     pending_asset_verification_count: int
+    dataset_import_batch_count: int
     batch_count: int
     active_batch_count: int
     package_count: int
@@ -425,6 +565,7 @@ class ProductionOverviewResponse(BaseModel):
     metrics: ProductionMetricsResponse
     asset_type_counts: dict[str, int]
     assets: list[DatasetAssetResponse]
+    dataset_import_batches: list[DatasetAssetImportBatchSummary]
     work_areas: list[WorkAreaResponse]
     batches: list[ProductionBatchResponse]
 

@@ -8,6 +8,7 @@ import {
   getProductionOverview,
   registerDatasetAsset,
   uploadDatasetAsset,
+  uploadDatasetAssetBatch,
   updateProductionBatchStatus,
   updateProductionWorkPackage,
   verifyDatasetAsset,
@@ -15,6 +16,8 @@ import {
 import { useWorkbenchStore } from '@/store/workbenchStore'
 import type {
   DatasetAssetCreatePayload,
+  DatasetAssetBatchCreatePayload,
+  DatasetAssetBatchResult,
   DatasetAssetUploadPayload,
   DatasetAssetVerificationResult,
   ProductionBatchCreatePayload,
@@ -73,6 +76,26 @@ export const useProductionStore = defineStore('production', () => {
         workbenchStore.taskCodeComputed,
       )
       await load()
+    } finally {
+      savingRef.value = false
+    }
+  }
+
+  /** 原子导入多文件数据资产批次并刷新目录。 */
+  const uploadAssetBatch = async (
+    payload: DatasetAssetBatchCreatePayload,
+    files: File[],
+  ): Promise<DatasetAssetBatchResult> => {
+    savingRef.value = true
+    try {
+      const result = await uploadDatasetAssetBatch(
+        payload,
+        files,
+        workbenchStore.projectCodeComputed,
+        workbenchStore.taskCodeComputed,
+      )
+      await load()
+      return result
     } finally {
       savingRef.value = false
     }
@@ -195,6 +218,7 @@ export const useProductionStore = defineStore('production', () => {
     load,
     registerAsset,
     uploadAsset,
+    uploadAssetBatch,
     verifyAsset,
     downloadAsset,
     createBatch,

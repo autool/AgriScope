@@ -98,6 +98,36 @@ export interface DatasetAssetVerificationResult {
   asset: DatasetAsset
 }
 
+export type DatasetAssetBatchItemPayload = Omit<
+  DatasetAssetMetadataPayload,
+  'operator_code'
+> & {
+  filename: string
+}
+
+export interface DatasetAssetBatchCreatePayload {
+  batch_code: string
+  operator_code: string
+  comment: string
+  items: DatasetAssetBatchItemPayload[]
+}
+
+export interface DatasetAssetImportBatchSummary {
+  batch_code: string
+  item_count: number
+  total_size_bytes: number
+  manifest_sha256: string
+  imported_by: string
+  imported_by_code: string
+  imported_by_role: UserRoleCode | 'independent_supervisor'
+  comment: string
+  created_at: string
+}
+
+export interface DatasetAssetBatchResult extends DatasetAssetImportBatchSummary {
+  items: DatasetAsset[]
+}
+
 export interface WorkArea {
   city_code: string
   city_name: string
@@ -155,6 +185,7 @@ export interface ProductionOverview {
   metrics: {
     asset_count: number
     pending_asset_verification_count: number
+    dataset_import_batch_count: number
     batch_count: number
     active_batch_count: number
     package_count: number
@@ -164,6 +195,7 @@ export interface ProductionOverview {
   }
   asset_type_counts: Record<string, number>
   assets: DatasetAsset[]
+  dataset_import_batches: DatasetAssetImportBatchSummary[]
   work_areas: WorkArea[]
   batches: ProductionBatch[]
 }

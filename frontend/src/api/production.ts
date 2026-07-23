@@ -2,6 +2,8 @@ import request from './request'
 
 import type {
   DatasetAsset,
+  DatasetAssetBatchCreatePayload,
+  DatasetAssetBatchResult,
   DatasetAssetCreatePayload,
   DatasetAssetUploadPayload,
   DatasetAssetVerificationResult,
@@ -52,6 +54,27 @@ export const uploadDatasetAsset = (
     headers: { 'Content-Type': 'multipart/form-data' },
     timeout: 300_000,
   })
+}
+
+/** 在一个 multipart 请求和一个业务事务中原子导入 1–20 个实体。 */
+export const uploadDatasetAssetBatch = (
+  payload: DatasetAssetBatchCreatePayload,
+  files: File[],
+  projectCode: string,
+  taskCode: string,
+) => {
+  const formData = new FormData()
+  files.forEach((file) => formData.append('files', file))
+  formData.append('manifest_json', JSON.stringify(payload))
+  return request.post<DatasetAssetBatchResult>(
+    '/v1/production/dataset-assets/batch',
+    formData,
+    {
+      params: contextParams(projectCode, taskCode),
+      headers: { 'Content-Type': 'multipart/form-data' },
+      timeout: 600_000,
+    },
+  )
 }
 
 /** 为既有待核验资产补传实体并保存核验尝试。 */

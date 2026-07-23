@@ -15,6 +15,7 @@ class Settings(BaseSettings):
     max_imagery_upload_bytes: int = 10 * 1024 * 1024 * 1024
     max_imagery_batch_upload_bytes: int = 20 * 1024 * 1024 * 1024
     max_dataset_asset_upload_bytes: int = 5 * 1024 * 1024 * 1024
+    max_dataset_asset_batch_upload_bytes: int = 20 * 1024 * 1024 * 1024
     max_dataset_archive_expanded_bytes: int = 20 * 1024 * 1024 * 1024
     max_uav_upload_bytes: int = 2 * 1024 * 1024 * 1024
     max_consultation_evidence_bytes: int = 50 * 1024 * 1024

@@ -5,9 +5,15 @@ from dataclasses import dataclass
 from datetime import datetime
 
 from sqlalchemy import func, or_, select, update
+from sqlalchemy.engine import RowMapping
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased
 
+from app.models.dataset_asset_import import (
+    DatasetAssetImportBatch,
+    DatasetAssetImportBatchItem,
+)
+from app.models.dataset_asset_verification import DatasetAssetVerification
 from app.models.disaster_report import DisasterReport
 from app.models.growth_monitoring import GrowthMonitoringRun
 from app.models.plot import FarmlandPlot
@@ -322,6 +328,77 @@ class DeliveryDAO:
             .order_by(DatasetAsset.asset_type, DatasetAsset.asset_code)
         )
         return result.scalars().all()
+
+    async def get_dataset_import_batches(
+        self,
+        db: AsyncSession,
+        project_id: int,
+        task_id: int,
+    ) -> Sequence[DatasetAssetImportBatch]:
+        """查询当前任务的数据资产原子入库批次。
+
+        Args:
+            db: 异步数据库会话。
+            project_id: 项目主键。
+            task_id: 任务主键。
+
+        Returns:
+            Sequence[DatasetAssetImportBatch]: 按创建时间排序的批次。
+        """
+        result = await db.execute(
+            select(DatasetAssetImportBatch)
+            .where(
+                DatasetAssetImportBatch.project_id == project_id,
+                DatasetAssetImportBatch.task_id == task_id,
+            )
+            .order_by(DatasetAssetImportBatch.created_at)
+        )
+        return result.scalars().all()
+
+    async def get_dataset_import_batch_items(
+        self,
+        db: AsyncSession,
+        batch_ids: list[int],
+    ) -> list[RowMapping]:
+        """查询数据资产批次成员及其资产和核验身份。
+
+        Args:
+            db: 异步数据库会话。
+            batch_ids: 批次主键列表。
+
+        Returns:
+            list[RowMapping]: 批次、成员、资产和核验记录映射行。
+        """
+        if not batch_ids:
+            return []
+        result = await db.execute(
+            select(
+                DatasetAssetImportBatch,
+                DatasetAssetImportBatchItem,
+                DatasetAsset,
+                DatasetAssetVerification,
+            )
+            .join(
+                DatasetAssetImportBatchItem,
+                DatasetAssetImportBatchItem.batch_id
+                == DatasetAssetImportBatch.id,
+            )
+            .join(
+                DatasetAsset,
+                DatasetAsset.id == DatasetAssetImportBatchItem.asset_id,
+            )
+            .join(
+                DatasetAssetVerification,
+                DatasetAssetVerification.id
+                == DatasetAssetImportBatchItem.verification_id,
+            )
+            .where(DatasetAssetImportBatch.id.in_(batch_ids))
+            .order_by(
+                DatasetAssetImportBatch.created_at,
+                DatasetAssetImportBatchItem.sequence,
+            )
+        )
+        return list(result.mappings().all())
 
     async def get_imagery_steps(
         self,
