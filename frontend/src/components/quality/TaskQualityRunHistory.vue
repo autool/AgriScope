@@ -31,6 +31,14 @@ const formatDateTime = (value: string): string => new Intl.DateTimeFormat(
   },
 ).format(new Date(value))
 
+const imagerySnapshotLabel = (
+  snapshot: (typeof runsComputed.value)[number]['imagery_snapshot'],
+): string => {
+  if (snapshot.state === 'operational') return snapshot.asset_code || '业务影像编号缺失'
+  if (snapshot.state === 'missing') return '无可用业务影像'
+  return '历史批次未固化'
+}
+
 const loadRuns = (): void => {
   void workbenchStore.loadTaskQualityRuns().catch(() => undefined)
 }
@@ -111,6 +119,8 @@ onMounted(loadRuns)
             <span><small>平均得分</small><strong>{{ run.average_score?.toFixed(2) || '--' }}</strong></span>
             <span><small>规则配置版本</small><strong>v{{ run.rule_config_version }}</strong></span>
             <span><small>自定义字段模式</small><strong>{{ run.custom_field_schema_digest.slice(0, 12) }}</strong></span>
+            <span><small>质量判定影像</small><strong>{{ imagerySnapshotLabel(run.imagery_snapshot) }}</strong></span>
+            <span><small>影像证据摘要</small><strong>{{ run.imagery_snapshot_digest.slice(0, 12) }}</strong></span>
           </div>
           <p v-if="run.comment">{{ run.comment }}</p>
           <div class="rule-ledger">

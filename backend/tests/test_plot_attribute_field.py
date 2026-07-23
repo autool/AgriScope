@@ -173,9 +173,11 @@ def test_create_field_versions_audit_and_invalidates_quality() -> None:
         return field
 
     dao.add_field.side_effect = add_field
+    quality_evidence_dao = AsyncMock()
     service = PlotAttributeFieldService(
         dao=dao,
         user_service=build_user_service(),
+        quality_evidence_dao=quality_evidence_dao,
     )
     db = AsyncMock()
 
@@ -201,7 +203,13 @@ def test_create_field_versions_audit_and_invalidates_quality() -> None:
     assert audit.action == "created"
     assert audit.new_values["field_code"] == "soil_type"
     assert audit.operator_role == "project_manager"
-    dao.invalidate_project_quality_evidence.assert_awaited_once_with(db, 3)
+    quality_evidence_dao.invalidate_project_quality_evidence.assert_awaited_once()
+    invalidation = (
+        quality_evidence_dao.invalidate_project_quality_evidence.await_args
+    )
+    assert invalidation.args == (db, 3)
+    assert invalidation.kwargs["operator_code"] == "manager-zhao-zhiyuan"
+    assert "soil_type" in invalidation.kwargs["reason"]
     db.commit.assert_awaited_once()
 
 

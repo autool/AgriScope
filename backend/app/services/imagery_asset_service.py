@@ -24,6 +24,7 @@ from app.core.config import settings
 from app.core.exceptions import NotFoundException, ValidationException
 from app.core.imagery_files import calculate_sha256, has_supported_raster_signature
 from app.dao.imagery_dao import ImageryDAO
+from app.dao.quality_evidence_dao import QualityEvidenceDAO
 from app.dao.workbench_dao import WorkbenchDAO
 from app.models.imagery_import import ImageryImportBatch, ImageryImportBatchItem
 from app.models.workbench import ImageryAsset, ImageryProcessingStep, ReviewRecord
@@ -147,6 +148,7 @@ class ImageryAssetService:
         dao: ImageryDAO | None = None,
         workbench_dao: WorkbenchDAO | None = None,
         project_user_service: ProjectUserService | None = None,
+        quality_evidence_dao: QualityEvidenceDAO | None = None,
     ) -> None:
         """初始化影像资产服务。
 
@@ -154,6 +156,7 @@ class ImageryAssetService:
             dao: 影像资产 DAO。
             workbench_dao: 项目、任务和审计 DAO。
             project_user_service: 项目成员能力服务。
+            quality_evidence_dao: 当前质量证据统一失效 DAO。
 
         Returns:
             None: 无返回值。
@@ -161,6 +164,7 @@ class ImageryAssetService:
         self.dao = dao or ImageryDAO()
         self.workbench_dao = workbench_dao or WorkbenchDAO()
         self.project_user_service = project_user_service or ProjectUserService()
+        self.quality_evidence_dao = quality_evidence_dao or QualityEvidenceDAO()
         self.storage_dir = (
             Path(__file__).resolve().parents[2] / "storage" / "imagery"
         )
@@ -1141,11 +1145,21 @@ class ImageryAssetService:
         manifest_names = {item.filename.casefold() for item in request.items}
         if set(file_by_name) != manifest_names:
             raise ValidationException("上传文件名与批次清单不完全一致")
+        contains_operational_imagery = any(
+            item.data_status == "operational" for item in request.items
+        )
+        previous_quality_imagery = (
+            await self.dao.get_latest_operational_asset(db, project.id)
+            if contains_operational_imagery
+            else None
+        )
 
         prepared: list[PreparedImageryUpload] = []
         published_paths: list[Path] = []
         assets: list[ImageryAsset] = []
         batch_checksums: set[str] = set()
+        invalidated_task_count = 0
+        current_quality_imagery: ImageryAsset | None = previous_quality_imagery
         try:
             for item in request.items:
                 source = file_by_name[item.filename.casefold()]
@@ -1220,6 +1234,45 @@ class ImageryAssetService:
                 assets.append(asset)
                 await self.dao.add_steps(db, self._default_steps(asset.id))
 
+            if contains_operational_imagery:
+                current_quality_imagery = (
+                    await self.dao.get_latest_operational_asset(db, project.id)
+                )
+                previous_id = (
+                    previous_quality_imagery.id
+                    if previous_quality_imagery is not None
+                    else None
+                )
+                current_id = (
+                    current_quality_imagery.id
+                    if current_quality_imagery is not None
+                    else None
+                )
+                if current_id is not None and current_id != previous_id:
+                    previous_label = (
+                        previous_quality_imagery.asset_code
+                        if previous_quality_imagery is not None
+                        else "无业务影像"
+                    )
+                    reason = (
+                        f"质量覆盖判定影像由 {previous_label} 切换为 "
+                        f"{current_quality_imagery.asset_code}（采集时间 "
+                        f"{current_quality_imagery.acquired_at.isoformat()}，"
+                        f"SHA256 {current_quality_imagery.checksum_sha256}），"
+                        "当前检查需按新影像范围重新执行"
+                    )
+                    invalidated_task_count = (
+                        await self.quality_evidence_dao
+                        .invalidate_project_quality_evidence(
+                            db,
+                            project.id,
+                            reason=reason,
+                            operator=operator.display_name,
+                            operator_code=operator.user_code,
+                            operator_role=operator.role_code,
+                        )
+                    )
+
             batch = await self.dao.add_import_batch(
                 db,
                 ImageryImportBatch(
@@ -1266,6 +1319,12 @@ class ImageryAssetService:
                         f"{len(prepared)} 个文件、"
                         f"{sum(item.file_size for item in prepared)} 字节，"
                         f"清单 SHA256 {manifest_checksum}；{request.comment}"
+                        + (
+                            f"；质量判定影像已更新并重开 "
+                            f"{invalidated_task_count} 个任务的质量门禁"
+                            if invalidated_task_count > 0
+                            else ""
+                        )
                     ),
                 ),
             )
@@ -1279,6 +1338,18 @@ class ImageryAssetService:
                 imported_by_role=batch.imported_by_role,
                 comment=batch.import_comment,
                 created_at=batch.created_at,
+                quality_recheck_required=invalidated_task_count > 0,
+                invalidated_task_count=invalidated_task_count,
+                previous_quality_imagery_code=(
+                    previous_quality_imagery.asset_code
+                    if previous_quality_imagery is not None
+                    else None
+                ),
+                current_quality_imagery_code=(
+                    current_quality_imagery.asset_code
+                    if current_quality_imagery is not None
+                    else None
+                ),
                 items=[
                     self._to_response(
                         asset,
@@ -1359,4 +1430,9 @@ class ImageryAssetService:
             batch_request,
             [ImageryBatchUploadFile(Path(original_filename).name, file_handle)],
         )
-        return response.items[0]
+        return response.items[0].model_copy(
+            update={
+                "quality_recheck_required": response.quality_recheck_required,
+                "invalidated_task_count": response.invalidated_task_count,
+            }
+        )

@@ -129,10 +129,12 @@ def test_rule_config_update_persists_values_and_audit() -> None:
         role_code="project_manager",
     )
     db = AsyncMock()
+    quality_evidence_dao = AsyncMock()
     service = RuleConfigService(
         dao=dao,
         workbench_dao=workbench_dao,
         project_user_service=user_service,
+        quality_evidence_dao=quality_evidence_dao,
     )
 
     response = asyncio.run(
@@ -158,7 +160,14 @@ def test_rule_config_update_persists_values_and_audit() -> None:
     assert audit.new_values["field_offset_threshold_m"] == 8
     assert audit.operator == "赵志远"
     assert audit.operator_code == "manager-zhao-zhiyuan"
-    dao.invalidate_project_quality_evidence.assert_awaited_once_with(db, 7)
+    quality_evidence_dao.invalidate_project_quality_evidence.assert_awaited_once()
+    invalidation = (
+        quality_evidence_dao.invalidate_project_quality_evidence.await_args
+    )
+    assert invalidation.args == (db, 7)
+    assert invalidation.kwargs["operator_code"] == "manager-zhao-zhiyuan"
+    assert "v1" in invalidation.kwargs["reason"]
+    assert "v2" in invalidation.kwargs["reason"]
     db.commit.assert_awaited_once()
 
 

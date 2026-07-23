@@ -13,7 +13,10 @@ import { computed, onMounted, ref } from 'vue'
 import ImageryBatchUploadModal from '@/components/imagery/ImageryBatchUploadModal.vue'
 import { useAssetStore } from '@/store/assetStore'
 import { useUserStore } from '@/store/userStore'
-import type { ImageryBatchManifest } from '@/types/imageryBatch'
+import type {
+  ImageryBatchManifest,
+  ImageryBatchResponse,
+} from '@/types/imageryBatch'
 import type {
   ImageryAssetItem,
   ImageryBusinessMetadataField,
@@ -30,6 +33,7 @@ const {
 } = storeToRefs(assetStore)
 const uploadVisibleRef = ref<boolean>(false)
 const selectedAssetCodeRef = ref<string | null>(null)
+const lastBatchRef = ref<ImageryBatchResponse | null>(null)
 
 const selectedAssetComputed = computed<ImageryAssetItem | null>(() => (
   catalogRef.value?.items.find(
@@ -90,11 +94,17 @@ const submitUpload = async (
 ): Promise<void> => {
   try {
     const batch = await assetStore.uploadBatch(files, manifest)
+    lastBatchRef.value = batch
     selectedAssetCodeRef.value = batch.items[0]?.asset_code || null
     uploadVisibleRef.value = false
     message.success(
       `批次 ${batch.batch_code} 已原子入库 ${batch.item_count} 景影像，清单 SHA256 ${batch.manifest_sha256.slice(0, 16)}…`,
     )
+    if (batch.quality_recheck_required) {
+      message.warning(
+        `最新业务影像已由 ${batch.previous_quality_imagery_code || '无'} 切换为 ${batch.current_quality_imagery_code || '--'}，已重开 ${batch.invalidated_task_count} 个任务的质量门禁`,
+      )
+    }
   } catch {
     // 请求拦截器已显示安全错误，避免组件事件产生未捕获 Promise。
   }
@@ -124,6 +134,15 @@ onMounted(() => {
       <article class="success"><CheckCircleOutlined /><span><strong>{{ catalogRef?.available ?? 0 }}</strong><small>实体文件可用</small></span></article>
       <article class="warning"><WarningOutlined /><span><strong>{{ catalogRef?.metadata_only ?? 0 }}</strong><small>仅元数据/文件缺失</small></span></article>
     </div>
+
+    <a-alert
+      v-if="lastBatchRef?.quality_recheck_required"
+      class="quality-recheck-alert"
+      type="warning"
+      show-icon
+      message="最新业务影像已变化，旧质量证据已失效"
+      :description="`质量判定影像由 ${lastBatchRef.previous_quality_imagery_code || '无'} 切换为 ${lastBatchRef.current_quality_imagery_code || '--'}；已重开 ${lastBatchRef.invalidated_task_count} 个任务，请重新运行全量质检后再提交。`"
+    />
 
     <a-spin :spinning="loadingRef">
       <div class="asset-content">
@@ -223,6 +242,7 @@ onMounted(() => {
 small { font-size: 8px; color: #89958f; }
 .asset-heading strong { font-size: 14px; color: #28362f; }
 .asset-metrics { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin: 10px 0; }
+.quality-recheck-alert { margin-bottom: 10px; }
 .asset-metrics article { gap: 10px; padding: 12px 14px; color: #477e61; background: #fff; border: 1px solid #dfe6e2; border-radius: 7px; }
 .asset-metrics article > :first-child { font-size: 20px; }
 .asset-metrics span { display: flex; flex-direction: column; }

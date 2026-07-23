@@ -391,6 +391,10 @@ class TaskQualityRun(Base):
             "char_length(custom_field_schema_digest) = 64",
             name="ck_task_quality_run_schema_digest",
         ),
+        CheckConstraint(
+            "char_length(imagery_snapshot_digest) = 64",
+            name="ck_task_quality_run_imagery_digest",
+        ),
         Index("idx_task_quality_runs_task_created", "task_id", "created_at"),
     )
 
@@ -411,6 +415,15 @@ class TaskQualityRun(Base):
     )
     rule_config_version: Mapped[int] = mapped_column(Integer, nullable=False)
     rule_config_snapshot: Mapped[dict] = mapped_column(
+        JSON,
+        nullable=False,
+        default=dict,
+    )
+    imagery_snapshot_digest: Mapped[str] = mapped_column(
+        String(64),
+        nullable=False,
+    )
+    imagery_snapshot: Mapped[dict] = mapped_column(
         JSON,
         nullable=False,
         default=dict,

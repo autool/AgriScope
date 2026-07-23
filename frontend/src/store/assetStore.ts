@@ -96,7 +96,13 @@ export const useAssetStore = defineStore('asset', () => {
         workbenchStore.taskCodeComputed,
         (progress) => { uploadProgressRef.value = progress },
       )
-      await Promise.all([load(), workbenchStore.refreshOverview()])
+      await Promise.all([
+        load(),
+        workbenchStore.refreshOverview(),
+        ...(asset.quality_recheck_required
+          ? [workbenchStore.loadTaskQualityRuns()]
+          : []),
+      ])
       return asset
     } finally {
       uploadingRef.value = false
@@ -127,7 +133,13 @@ export const useAssetStore = defineStore('asset', () => {
         workbenchStore.taskCodeComputed,
         (progress) => { uploadProgressRef.value = progress },
       )
-      await Promise.all([load(), workbenchStore.refreshOverview()])
+      await Promise.all([
+        load(),
+        workbenchStore.refreshOverview(),
+        ...(batch.quality_recheck_required
+          ? [workbenchStore.loadTaskQualityRuns()]
+          : []),
+      ])
       return batch
     } finally {
       uploadingRef.value = false

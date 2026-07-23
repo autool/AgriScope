@@ -366,6 +366,8 @@ CREATE TABLE IF NOT EXISTS task_quality_runs (
     task_updated_at_snapshot TIMESTAMPTZ NOT NULL,
     rule_config_version INTEGER NOT NULL,
     rule_config_snapshot JSONB NOT NULL DEFAULT '{}'::jsonb,
+    imagery_snapshot_digest VARCHAR(64) NOT NULL,
+    imagery_snapshot JSONB NOT NULL DEFAULT '{}'::jsonb,
     custom_field_schema_digest VARCHAR(64) NOT NULL,
     custom_field_snapshot JSONB NOT NULL DEFAULT '[]'::jsonb,
     checked_plot_count INTEGER NOT NULL,
@@ -400,6 +402,9 @@ CREATE TABLE IF NOT EXISTS task_quality_runs (
     ),
     CONSTRAINT ck_task_quality_run_schema_digest CHECK (
         char_length(custom_field_schema_digest) = 64
+    ),
+    CONSTRAINT ck_task_quality_run_imagery_digest CHECK (
+        char_length(imagery_snapshot_digest) = 64
     )
 );
 
@@ -423,6 +428,14 @@ BEGIN
         ALTER TABLE task_quality_runs
             ADD CONSTRAINT ck_task_quality_run_rule_version
             CHECK (rule_config_version >= 1);
+    END IF;
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conname = 'ck_task_quality_run_imagery_digest'
+    ) THEN
+        ALTER TABLE task_quality_runs
+            ADD CONSTRAINT ck_task_quality_run_imagery_digest
+            CHECK (char_length(imagery_snapshot_digest) = 64);
     END IF;
 END
 $$;

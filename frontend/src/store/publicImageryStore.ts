@@ -208,6 +208,9 @@ export const usePublicImageryStore = defineStore('publicImagery', () => {
         assetStore.load(),
         historyStore.load(),
         workbenchStore.refreshOverview(),
+        ...(response.batch.quality_recheck_required
+          ? [workbenchStore.loadTaskQualityRuns()]
+          : []),
       ])
       return response
     } catch (error) {

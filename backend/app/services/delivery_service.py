@@ -1357,6 +1357,12 @@ class DeliveryService:
                 "task_updated_at_snapshot": item.task_updated_at_snapshot,
                 "rule_config_version": item.rule_config_version,
                 "rule_config_snapshot": item.rule_config_snapshot,
+                "imagery_snapshot_digest": getattr(
+                    item,
+                    "imagery_snapshot_digest",
+                    None,
+                ),
+                "imagery_snapshot": getattr(item, "imagery_snapshot", None),
                 "custom_field_schema_digest": item.custom_field_schema_digest,
                 "custom_field_snapshot": item.custom_field_snapshot,
                 "checked_plot_count": item.checked_plot_count,

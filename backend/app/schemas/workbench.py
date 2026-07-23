@@ -623,6 +623,8 @@ class TaskQualityRunResponse(BaseModel):
     task_updated_at_snapshot: datetime
     rule_config_version: int
     rule_config_snapshot: dict
+    imagery_snapshot_digest: str
+    imagery_snapshot: dict
     custom_field_schema_digest: str
     custom_field_snapshot: list[dict]
     checked_plot_count: int

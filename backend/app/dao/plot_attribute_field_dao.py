@@ -2,23 +2,18 @@
 
 from collections.abc import Sequence
 
-from sqlalchemy import delete, func, select, text, update
+from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.plot_attribute_field import (
     ProjectPlotAttributeField,
     ProjectPlotAttributeFieldAudit,
 )
-from app.models.workbench import (
-    MonitoringProject,
-    MonitoringTask,
-    PlotQualityCheck,
-    QualityIssue,
-)
+from app.models.workbench import MonitoringProject
 
 
 class PlotAttributeFieldDAO:
-    """封装字段定义、审计和模式变更后的质量证据失效。"""
+    """封装项目字段定义、审计和存量值查询。"""
 
     async def get_project_by_code(
         self,
@@ -213,43 +208,3 @@ class PlotAttributeFieldDAO:
             {"project_id": project_id, "field_code": field_code},
         )
         return [row.value for row in result]
-
-    async def invalidate_project_quality_evidence(
-        self,
-        db: AsyncSession,
-        project_id: int,
-    ) -> None:
-        """字段模式变化后失效项目任务的派生质量证据。
-
-        Args:
-            db: 异步数据库会话。
-            project_id: 项目主键。
-
-        Returns:
-            None: 无返回值。
-        """
-        task_ids = select(MonitoringTask.id).where(
-            MonitoringTask.project_id == project_id
-        )
-        await db.execute(
-            delete(PlotQualityCheck).where(PlotQualityCheck.task_id.in_(task_ids))
-        )
-        await db.execute(
-            update(QualityIssue)
-            .where(
-                QualityIssue.task_id.in_(task_ids),
-                QualityIssue.source == "auto",
-                QualityIssue.issue_type == "quality_rule",
-                QualityIssue.status == "open",
-            )
-            .values(status="resolved", resolved_at=func.now())
-        )
-        await db.execute(
-            update(MonitoringTask)
-            .where(MonitoringTask.project_id == project_id)
-            .values(
-                status="interpreting",
-                quality_score=None,
-                updated_at=func.now(),
-            )
-        )

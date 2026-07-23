@@ -21,6 +21,7 @@ from app.core.rule_defaults import (
     DEFAULT_POSITIONAL_ACCURACY_PIXELS,
     DEFAULT_RULE_OPERATOR,
 )
+from app.dao.quality_evidence_dao import QualityEvidenceDAO
 from app.dao.rule_config_dao import RuleConfigDAO
 from app.dao.workbench_dao import WorkbenchDAO
 from app.models.workbench import ProjectRuleConfig, ProjectRuleConfigAudit
@@ -36,6 +37,7 @@ class RuleConfigService:
         dao: RuleConfigDAO | None = None,
         workbench_dao: WorkbenchDAO | None = None,
         project_user_service: ProjectUserService | None = None,
+        quality_evidence_dao: QualityEvidenceDAO | None = None,
     ) -> None:
         """初始化项目规则配置服务。
 
@@ -43,6 +45,7 @@ class RuleConfigService:
             dao: 规则配置 DAO。
             workbench_dao: 项目查询 DAO。
             project_user_service: 项目用户与角色校验服务。
+            quality_evidence_dao: 当前质量证据统一失效 DAO。
 
         Returns:
             None: 无返回值。
@@ -50,6 +53,7 @@ class RuleConfigService:
         self.dao = dao or RuleConfigDAO()
         self.workbench_dao = workbench_dao or WorkbenchDAO()
         self.project_user_service = project_user_service or ProjectUserService()
+        self.quality_evidence_dao = quality_evidence_dao or QualityEvidenceDAO()
 
     async def ensure_for_project(
         self,
@@ -256,7 +260,17 @@ class RuleConfigService:
                 new_values=new_values,
             ),
         )
-        await self.dao.invalidate_project_quality_evidence(db, project.id)
+        await self.quality_evidence_dao.invalidate_project_quality_evidence(
+            db,
+            project.id,
+            reason=(
+                f"项目质量规则由 v{previous_values['version']} 更新为 "
+                f"v{new_values['version']}，当前检查需按新阈值重新执行"
+            ),
+            operator=operator.display_name,
+            operator_code=operator.user_code,
+            operator_role=operator.role_code,
+        )
         await db.commit()
         await db.refresh(config)
         return self._to_response(project_code, config)

@@ -4,6 +4,7 @@ import json
 import logging
 from collections import Counter
 from datetime import UTC, datetime
+from hashlib import sha256
 from time import perf_counter
 from uuid import uuid4
 
@@ -20,6 +21,7 @@ from app.dao.workbench_dao import (
 from app.models.plot import FarmlandPlot
 from app.models.plot_attribute_field import ProjectPlotAttributeField
 from app.models.workbench import (
+    ImageryAsset,
     MonitoringTask,
     PlotEditOperation,
     PlotEditOperationEvent,
@@ -73,6 +75,11 @@ from app.services.project_user_service import ProjectUserService
 from app.services.rule_config_service import RuleConfigService
 
 logger = logging.getLogger(__name__)
+
+LEGACY_IMAGERY_SNAPSHOT = {"state": "legacy_unavailable"}
+LEGACY_IMAGERY_SNAPSHOT_DIGEST = (
+    "149142d0322d391de7bc805da4aa9fa41e49951e8f24c8bb207fc6ab99b6a5f7"
+)
 
 QUALITY_RULE_LABELS = {
     "GEOMETRY_VALID": "几何闭合与有效性",
@@ -180,6 +187,52 @@ class WorkbenchService:
         return snapshot
 
     @staticmethod
+    def _build_quality_imagery_snapshot(
+        imagery: ImageryAsset | None,
+    ) -> dict[str, object]:
+        """固化本次覆盖质量判定实际使用的最新业务影像。
+
+        Args:
+            imagery: 当前具有受控实体证据的最新 operational 影像。
+
+        Returns:
+            dict[str, object]: 可规范化计算摘要的影像身份和实体证据。
+        """
+        if imagery is None:
+            return {"state": "missing"}
+        return {
+            "state": "operational",
+            "asset_code": imagery.asset_code,
+            "acquired_at": imagery.acquired_at.isoformat(),
+            "checksum_sha256": imagery.checksum_sha256,
+            "file_size_bytes": imagery.file_size_bytes,
+            "file_uri": imagery.file_uri,
+            "resolution_m": (
+                str(imagery.resolution_m)
+                if imagery.resolution_m is not None
+                else None
+            ),
+        }
+
+    @staticmethod
+    def _snapshot_digest(snapshot: dict[str, object]) -> str:
+        """计算规范化 JSON 快照 SHA-256。
+
+        Args:
+            snapshot: 仅包含 JSON 标量、对象和数组的证据快照。
+
+        Returns:
+            str: 64 位小写 SHA-256。
+        """
+        payload = json.dumps(
+            snapshot,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        return sha256(payload).hexdigest()
+
+    @staticmethod
     def _to_task_quality_run_response(
         task_code: str,
         run: TaskQualityRun,
@@ -200,6 +253,15 @@ class WorkbenchService:
             task_updated_at_snapshot=run.task_updated_at_snapshot,
             rule_config_version=run.rule_config_version,
             rule_config_snapshot=run.rule_config_snapshot or {},
+            imagery_snapshot_digest=getattr(
+                run,
+                "imagery_snapshot_digest",
+                LEGACY_IMAGERY_SNAPSHOT_DIGEST,
+            ),
+            imagery_snapshot=(
+                getattr(run, "imagery_snapshot", None)
+                or LEGACY_IMAGERY_SNAPSHOT.copy()
+            ),
             custom_field_schema_digest=run.custom_field_schema_digest,
             custom_field_snapshot=run.custom_field_snapshot or [],
             checked_plot_count=run.checked_plot_count,
@@ -227,6 +289,7 @@ class WorkbenchService:
         task: MonitoringTask,
         gate_summary: QualityGateSummary,
         latest_run: TaskQualityRun | None,
+        current_imagery_snapshot_digest: str,
     ) -> list[str]:
         """判断当前任务是否仍可使用最近全量质检批次提交自检。
 
@@ -234,6 +297,7 @@ class WorkbenchService:
             task: 当前已锁定或已读取的作业任务。
             gate_summary: 当前任务逐图质量证据汇总。
             latest_run: 最近一次不可变全量质检批次。
+            current_imagery_snapshot_digest: 当前质量判定影像规范化摘要。
 
         Returns:
             list[str]: 阻断原因；空列表表示最近批次仍是当前提交证据。
@@ -268,6 +332,12 @@ class WorkbenchService:
             blockers.append("最近全量质检批次使用旧版任务快照语义，请重新运行全量质检")
         elif latest_run.task_updated_at_snapshot != task.updated_at:
             blockers.append("任务数据在最近全量质检后已发生变化，请重新运行全量质检")
+        run_imagery_snapshot = getattr(latest_run, "imagery_snapshot", {}) or {}
+        run_imagery_digest = getattr(latest_run, "imagery_snapshot_digest", "")
+        if run_imagery_snapshot.get("state") == "legacy_unavailable":
+            blockers.append("最近全量质检批次未固化影像来源，请重新运行全量质检")
+        elif run_imagery_digest != current_imagery_snapshot_digest:
+            blockers.append("项目最新业务影像已变化，请重新运行全量质检")
         if latest_run.task_plot_count != gate_summary.total_count:
             blockers.append("当前任务图斑数量与最近全量质检批次不一致")
         if (
@@ -2350,6 +2420,9 @@ class WorkbenchService:
         custom_field_schema_digest = (
             self.plot_attribute_field_service.schema_digest(custom_field_snapshot)
         )
+        quality_imagery = await self.dao.get_latest_imagery(db, task.project_id)
+        imagery_snapshot = self._build_quality_imagery_snapshot(quality_imagery)
+        imagery_snapshot_digest = self._snapshot_digest(imagery_snapshot)
 
         checks: list[dict[str, object]] = []
         issues: list[QualityIssue] = []
@@ -2434,6 +2507,8 @@ class WorkbenchService:
                 task_updated_at_snapshot=completed_at,
                 rule_config_version=int(getattr(config, "version", 1)),
                 rule_config_snapshot=rule_config_snapshot,
+                imagery_snapshot_digest=imagery_snapshot_digest,
+                imagery_snapshot=imagery_snapshot,
                 custom_field_schema_digest=custom_field_schema_digest,
                 custom_field_snapshot=custom_field_snapshot,
                 checked_plot_count=gate_summary.checked_count,
@@ -2521,10 +2596,20 @@ class WorkbenchService:
         )
         latest_run = runs[0] if runs else None
         gate_summary = await self.dao.get_quality_gate_summary(db, task.id)
+        current_imagery_snapshot_digest = ""
+        if latest_run is not None:
+            quality_imagery = await self.dao.get_latest_imagery(
+                db,
+                task.project_id,
+            )
+            current_imagery_snapshot_digest = self._snapshot_digest(
+                self._build_quality_imagery_snapshot(quality_imagery)
+            )
         submission_blockers = self._quality_submission_blockers(
             task,
             gate_summary,
             latest_run,
+            current_imagery_snapshot_digest,
         )
         return TaskQualityRunListResponse(
             task_code=task_code,
@@ -2749,10 +2834,20 @@ class WorkbenchService:
             db,
             task.id,
         )
+        current_imagery_snapshot_digest = ""
+        if latest_run is not None:
+            quality_imagery = await self.dao.get_latest_imagery(
+                db,
+                task.project_id,
+            )
+            current_imagery_snapshot_digest = self._snapshot_digest(
+                self._build_quality_imagery_snapshot(quality_imagery)
+            )
         submission_blockers = self._quality_submission_blockers(
             task,
             gate_summary,
             latest_run,
+            current_imagery_snapshot_digest,
         )
         if submission_blockers:
             raise ValidationException(submission_blockers[0])

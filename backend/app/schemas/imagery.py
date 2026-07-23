@@ -95,6 +95,8 @@ class ImageryAssetResponse(BaseModel):
     file_verified: bool
     file_error: str | None
     created_at: datetime
+    quality_recheck_required: bool = False
+    invalidated_task_count: int = 0
 
 
 class ImageryAssetListResponse(BaseModel):
@@ -227,6 +229,10 @@ class ImageryAssetBatchResponse(BaseModel):
     imported_by_role: str
     comment: str
     created_at: datetime
+    quality_recheck_required: bool = False
+    invalidated_task_count: int = 0
+    previous_quality_imagery_code: str | None = None
+    current_quality_imagery_code: str | None = None
     items: list[ImageryAssetResponse]
 
 

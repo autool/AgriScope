@@ -37,6 +37,11 @@ const runImport = async (): Promise<void> => {
     message.success(
       `批次 ${response.batch.batch_code} 已原子入库 ${response.batch.item_count} 景`,
     )
+    if (response.batch.quality_recheck_required) {
+      message.warning(
+        `最新业务影像已更新，已重开 ${response.batch.invalidated_task_count} 个任务的质量门禁`,
+      )
+    }
   } catch {
     return
   }
@@ -157,10 +162,12 @@ const runImport = async (): Promise<void> => {
 
     <a-alert
       v-if="lastImportRef"
-      type="success"
+      :type="lastImportRef.batch.quality_recheck_required ? 'warning' : 'success'"
       show-icon
       :message="`批次 ${lastImportRef.batch.batch_code} 已入库 ${lastImportRef.batch.item_count} 景`"
-      :description="`清单 SHA-256 ${lastImportRef.batch.manifest_sha256} · ${lastImportRef.batch.total_size_bytes} bytes`"
+      :description="lastImportRef.batch.quality_recheck_required
+        ? `质量判定影像由 ${lastImportRef.batch.previous_quality_imagery_code || '无'} 切换为 ${lastImportRef.batch.current_quality_imagery_code || '--'}，已重开 ${lastImportRef.batch.invalidated_task_count} 个任务；请重新运行全量质检。`
+        : `清单 SHA-256 ${lastImportRef.batch.manifest_sha256} · ${lastImportRef.batch.total_size_bytes} bytes`"
     >
       <template #icon><SafetyCertificateOutlined /></template>
     </a-alert>

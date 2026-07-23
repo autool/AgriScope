@@ -383,6 +383,8 @@ export interface ImageryAssetItem {
   file_verified: boolean
   file_error: string | null
   created_at: string
+  quality_recheck_required: boolean
+  invalidated_task_count: number
 }
 
 export interface ImageryAssetCatalog {
@@ -655,6 +657,16 @@ export interface TaskQualityRun {
   task_updated_at_snapshot: string
   rule_config_version: number
   rule_config_snapshot: Record<string, unknown>
+  imagery_snapshot_digest: string
+  imagery_snapshot: {
+    state: 'operational' | 'missing' | 'legacy_unavailable'
+    asset_code?: string
+    acquired_at?: string
+    checksum_sha256?: string | null
+    file_size_bytes?: number | null
+    file_uri?: string | null
+    resolution_m?: string | null
+  }
   custom_field_schema_digest: string
   custom_field_snapshot: Array<Record<string, unknown>>
   checked_plot_count: number

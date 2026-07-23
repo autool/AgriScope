@@ -175,6 +175,7 @@ def build_service(tmp_path: Path) -> tuple[ImageryAssetService, AsyncMock, Async
         dao=dao,
         workbench_dao=workbench_dao,
         project_user_service=project_user_service,
+        quality_evidence_dao=AsyncMock(),
     )
     service.storage_dir = tmp_path
     return service, dao, workbench_dao
@@ -368,7 +369,166 @@ def test_batch_upload_atomically_persists_two_real_rasters(tmp_path: Path) -> No
     assert [item.sequence for item in batch_items] == [1, 2]
     assert [item.asset_id for item in batch_items] == [10, 11]
     workbench_dao.add_review_record.assert_awaited_once()
+    dao.get_latest_operational_asset.assert_not_awaited()
+    service.quality_evidence_dao.invalidate_project_quality_evidence.assert_not_awaited()
     db.commit.assert_awaited_once()
+
+
+def test_first_operational_imagery_invalidates_project_quality_evidence(
+    tmp_path: Path,
+) -> None:
+    """验证首景业务影像成为质量基准后原子重开项目任务门禁。"""
+    service, dao, _ = build_service(tmp_path)
+    current_imagery = SimpleNamespace(
+        id=9,
+        asset_code="BATCH-OPERATIONAL-FIRST",
+        acquired_at=datetime(2026, 6, 18, tzinfo=UTC),
+        checksum_sha256="a" * 64,
+    )
+    dao.get_latest_operational_asset.side_effect = [None, current_imagery]
+    quality_evidence_dao = service.quality_evidence_dao
+    quality_evidence_dao.invalidate_project_quality_evidence.return_value = 3
+    request = ImageryAssetBatchCreateRequest.model_validate({
+        "batch_code": "IMB-OPERATIONAL-FIRST",
+        "operator_code": "interp-li-jing",
+        "comment": "首景业务影像入库后重新建立质量覆盖判定基准",
+        "items": [
+            {
+                "filename": "operational_first.tif",
+                "asset_code": "BATCH-OPERATIONAL-FIRST",
+                "asset_name": "首景业务影像",
+                "data_status": "operational",
+            },
+        ],
+    })
+    db = AsyncMock()
+
+    response = asyncio.run(
+        service.upload_assets_batch(
+            db,
+            "RS-2026",
+            "RS-2026-045",
+            request,
+            [
+                ImageryBatchUploadFile(
+                    "operational_first.tif",
+                    BytesIO(build_geotiff_bytes()),
+                ),
+            ],
+        )
+    )
+
+    assert response.quality_recheck_required is True
+    assert response.invalidated_task_count == 3
+    assert response.previous_quality_imagery_code is None
+    assert response.current_quality_imagery_code == "BATCH-OPERATIONAL-FIRST"
+    quality_evidence_dao.invalidate_project_quality_evidence.assert_awaited_once()
+    call = quality_evidence_dao.invalidate_project_quality_evidence.await_args
+    assert call.args == (db, 7)
+    assert call.kwargs["operator_code"] == "interp-li-jing"
+    assert "BATCH-OPERATIONAL-FIRST" in call.kwargs["reason"]
+    db.commit.assert_awaited_once()
+
+
+def test_older_operational_imagery_keeps_current_quality_evidence(
+    tmp_path: Path,
+) -> None:
+    """验证更旧业务影像不会替换实际最新影像或误清理质量证据。"""
+    service, dao, _ = build_service(tmp_path)
+    current_imagery = SimpleNamespace(
+        id=88,
+        asset_code="BATCH-OPERATIONAL-CURRENT",
+        acquired_at=datetime(2026, 6, 20, tzinfo=UTC),
+        checksum_sha256="b" * 64,
+    )
+    dao.get_latest_operational_asset.side_effect = [
+        current_imagery,
+        current_imagery,
+    ]
+    request = ImageryAssetBatchCreateRequest.model_validate({
+        "batch_code": "IMB-OPERATIONAL-OLDER",
+        "operator_code": "interp-li-jing",
+        "comment": "补录更旧历史业务影像但不改变当前质量判定基准",
+        "items": [
+            {
+                "filename": "operational_older.tif",
+                "asset_code": "BATCH-OPERATIONAL-OLDER",
+                "asset_name": "更旧业务影像",
+                "data_status": "operational",
+            },
+        ],
+    })
+
+    response = asyncio.run(
+        service.upload_assets_batch(
+            AsyncMock(),
+            "RS-2026",
+            "RS-2026-045",
+            request,
+            [
+                ImageryBatchUploadFile(
+                    "operational_older.tif",
+                    BytesIO(build_geotiff_bytes()),
+                ),
+            ],
+        )
+    )
+
+    assert response.quality_recheck_required is False
+    assert response.invalidated_task_count == 0
+    assert response.previous_quality_imagery_code == "BATCH-OPERATIONAL-CURRENT"
+    assert response.current_quality_imagery_code == "BATCH-OPERATIONAL-CURRENT"
+    service.quality_evidence_dao.invalidate_project_quality_evidence.assert_not_awaited()
+
+
+def test_operational_imagery_and_quality_invalidation_share_rollback(
+    tmp_path: Path,
+) -> None:
+    """验证质量证据失效后提交失败会回滚数据库并删除新影像实体。"""
+    service, dao, _ = build_service(tmp_path)
+    current_imagery = SimpleNamespace(
+        id=9,
+        asset_code="BATCH-OPERATIONAL-ROLLBACK",
+        acquired_at=datetime(2026, 6, 18, tzinfo=UTC),
+        checksum_sha256="c" * 64,
+    )
+    dao.get_latest_operational_asset.side_effect = [None, current_imagery]
+    service.quality_evidence_dao.invalidate_project_quality_evidence.return_value = 2
+    request = ImageryAssetBatchCreateRequest.model_validate({
+        "batch_code": "IMB-OPERATIONAL-ROLLBACK",
+        "operator_code": "interp-li-jing",
+        "comment": "验证业务影像与质量证据失效使用同一数据库事务",
+        "items": [
+            {
+                "filename": "operational_rollback.tif",
+                "asset_code": "BATCH-OPERATIONAL-ROLLBACK",
+                "asset_name": "事务回滚业务影像",
+                "data_status": "operational",
+            },
+        ],
+    })
+    db = AsyncMock()
+    db.commit.side_effect = RuntimeError("database commit failed")
+
+    with pytest.raises(RuntimeError, match="database commit failed"):
+        asyncio.run(
+            service.upload_assets_batch(
+                db,
+                "RS-2026",
+                "RS-2026-045",
+                request,
+                [
+                    ImageryBatchUploadFile(
+                        "operational_rollback.tif",
+                        BytesIO(build_geotiff_bytes()),
+                    ),
+                ],
+            )
+        )
+
+    service.quality_evidence_dao.invalidate_project_quality_evidence.assert_awaited_once()
+    db.rollback.assert_awaited_once()
+    assert not any(path.is_file() for path in tmp_path.glob("assets/**/*"))
 
 
 def test_batch_upload_removes_published_files_when_commit_fails(

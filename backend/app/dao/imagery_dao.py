@@ -98,9 +98,37 @@ class ImageryDAO:
                 func.ST_AsGeoJSON(ImageryAsset.spatial_extent).label("footprint"),
             )
             .where(ImageryAsset.project_id == project_id)
-            .order_by(ImageryAsset.acquired_at.desc())
+            .order_by(ImageryAsset.acquired_at.desc(), ImageryAsset.id.desc())
         )
         return list(result.mappings().all())
+
+    async def get_latest_operational_asset(
+        self,
+        db: AsyncSession,
+        project_id: int,
+    ) -> ImageryAsset | None:
+        """查询当前参与质量覆盖判定的最新业务影像。
+
+        Args:
+            db: 异步数据库会话。
+            project_id: 项目主键。
+
+        Returns:
+            ImageryAsset | None: 具有受控实体证据的最新 operational 影像。
+        """
+        result = await db.execute(
+            select(ImageryAsset)
+            .where(
+                ImageryAsset.project_id == project_id,
+                ImageryAsset.data_status == "operational",
+                ImageryAsset.file_uri.is_not(None),
+                ImageryAsset.file_size_bytes.is_not(None),
+                ImageryAsset.checksum_sha256.is_not(None),
+            )
+            .order_by(ImageryAsset.acquired_at.desc(), ImageryAsset.id.desc())
+            .limit(1)
+        )
+        return result.scalar_one_or_none()
 
     async def add_asset(
         self,

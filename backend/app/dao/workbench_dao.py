@@ -33,6 +33,7 @@ REVIEW_CYCLE_RESET_ACTIONS = {
     "reject",
     "rollback",
     "field_records_imported",
+    "quality_evidence_invalidated",
 }
 
 
@@ -241,7 +242,7 @@ class WorkbenchDAO:
                 ImageryAsset.file_size_bytes.is_not(None),
                 ImageryAsset.checksum_sha256.is_not(None),
             )
-            .order_by(ImageryAsset.acquired_at.desc())
+            .order_by(ImageryAsset.acquired_at.desc(), ImageryAsset.id.desc())
             .limit(1)
         )
         return result.scalar_one_or_none()
@@ -1947,7 +1948,7 @@ class WorkbenchDAO:
                   AND data_status = 'operational'
                   AND file_uri IS NOT NULL
                   AND checksum_sha256 IS NOT NULL
-                ORDER BY acquired_at DESC
+                ORDER BY acquired_at DESC, id DESC
                 LIMIT 1
             )
             SELECT
@@ -2061,7 +2062,7 @@ class WorkbenchDAO:
                   AND data_status = 'operational'
                   AND file_uri IS NOT NULL
                   AND checksum_sha256 IS NOT NULL
-                ORDER BY acquired_at DESC
+                ORDER BY acquired_at DESC, id DESC
                 LIMIT 1
             )
             SELECT

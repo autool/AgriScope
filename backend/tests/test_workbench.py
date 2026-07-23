@@ -1212,6 +1212,7 @@ def test_task_quality_check_batches_all_scoped_plots() -> None:
         passing_plot.plot_code: build_quality_metrics(),
         failing_plot.plot_code: build_quality_metrics(),
     }
+    dao.get_latest_imagery.return_value = None
     dao.get_quality_gate_summary.return_value = QualityGateSummary(
         total_count=2,
         checked_count=2,
@@ -1261,6 +1262,8 @@ def test_task_quality_check_batches_all_scoped_plots() -> None:
     assert quality_run.issue_count == 3
     assert quality_run.operator_code == "quality-wang-haifeng"
     assert len(quality_run.custom_field_schema_digest) == 64
+    assert quality_run.imagery_snapshot == {"state": "missing"}
+    assert len(quality_run.imagery_snapshot_digest) == 64
     assert quality_run.task_updated_at_snapshot == task.updated_at
     assert quality_run.created_at == task.updated_at
     dao.add_review_record.assert_awaited_once()
@@ -1288,6 +1291,7 @@ def test_task_quality_run_history_returns_immutable_snapshots() -> None:
     dao = AsyncMock()
     dao.get_task_by_code.return_value = SimpleNamespace(
         id=1,
+        project_id=9,
         status="interpreting",
         updated_at=created_at,
     )
@@ -1299,6 +1303,10 @@ def test_task_quality_run_history_returns_immutable_snapshots() -> None:
                 task_updated_at_snapshot=created_at,
                 rule_config_version=3,
                 rule_config_snapshot={"positional_accuracy_pixels": "2.00"},
+                imagery_snapshot_digest=(
+                    "149142d0322d391de7bc805da4aa9fa41e49951e8f24c8bb207fc6ab99b6a5f7"
+                ),
+                imagery_snapshot={"state": "legacy_unavailable"},
                 custom_field_schema_digest="a" * 64,
                 custom_field_snapshot=[
                     {
@@ -1343,6 +1351,7 @@ def test_task_quality_run_history_returns_immutable_snapshots() -> None:
         passing_count=0,
         average_score=58.8,
     )
+    dao.get_latest_imagery.return_value = None
 
     db = AsyncMock()
     response = asyncio.run(
@@ -1356,7 +1365,8 @@ def test_task_quality_run_history_returns_immutable_snapshots() -> None:
     assert response.total_count == 4
     assert response.latest_run_code == "QCR-TEST-001"
     assert response.submission_eligible is False
-    assert "阻断问题" in response.submission_blockers[-1]
+    assert any("阻断问题" in item for item in response.submission_blockers)
+    assert any("未固化影像来源" in item for item in response.submission_blockers)
     assert response.items[0].run_code == "QCR-TEST-001"
     assert response.items[0].rule_config_version == 3
     assert response.items[0].average_score == 58.8
@@ -1369,6 +1379,7 @@ def test_task_quality_run_history_marks_current_passing_run_eligible() -> None:
     completed_at = datetime.now(UTC)
     task = SimpleNamespace(
         id=1,
+        project_id=9,
         status="interpreting",
         updated_at=completed_at,
     )
@@ -1378,6 +1389,10 @@ def test_task_quality_run_history_marks_current_passing_run_eligible() -> None:
         task_updated_at_snapshot=completed_at,
         rule_config_version=2,
         rule_config_snapshot={"version": 2},
+        imagery_snapshot_digest=WorkbenchService._snapshot_digest(
+            {"state": "missing"}
+        ),
+        imagery_snapshot={"state": "missing"},
         custom_field_schema_digest="b" * 64,
         custom_field_snapshot=[],
         checked_plot_count=809,
@@ -1403,6 +1418,7 @@ def test_task_quality_run_history_marks_current_passing_run_eligible() -> None:
         passing_count=809,
         average_score=96.5,
     )
+    dao.get_latest_imagery.return_value = None
 
     response = asyncio.run(
         WorkbenchService(dao=dao).list_task_quality_runs(
@@ -1745,8 +1761,13 @@ def test_task_submit_succeeds_only_after_all_plots_pass() -> None:
         checked_plot_count=809,
         passing_plot_count=809,
         average_score=Decimal("96.50"),
+        imagery_snapshot_digest=WorkbenchService._snapshot_digest(
+            {"state": "missing"}
+        ),
+        imagery_snapshot={"state": "missing"},
     )
     dao.get_latest_task_quality_run_for_update.return_value = quality_run
+    dao.get_latest_imagery.return_value = None
     db = AsyncMock()
     user_service = AsyncMock()
     user_service.require_capability.return_value = build_project_user()
@@ -1822,7 +1843,12 @@ def test_task_submit_rejects_stale_task_quality_run() -> None:
         checked_plot_count=809,
         passing_plot_count=809,
         average_score=Decimal("96.50"),
+        imagery_snapshot_digest=WorkbenchService._snapshot_digest(
+            {"state": "missing"}
+        ),
+        imagery_snapshot={"state": "missing"},
     )
+    dao.get_latest_imagery.return_value = None
     user_service = AsyncMock()
     user_service.require_capability.return_value = build_project_user()
 

@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.exceptions import NotFoundException, ValidationException
 from app.dao.plot_attribute_field_dao import PlotAttributeFieldDAO
+from app.dao.quality_evidence_dao import QualityEvidenceDAO
 from app.models.plot_attribute_field import (
     ProjectPlotAttributeField,
     ProjectPlotAttributeFieldAudit,
@@ -33,18 +34,21 @@ class PlotAttributeFieldService:
         self,
         dao: PlotAttributeFieldDAO | None = None,
         user_service: ProjectUserService | None = None,
+        quality_evidence_dao: QualityEvidenceDAO | None = None,
     ) -> None:
         """初始化项目字段服务。
 
         Args:
             dao: 字段定义 DAO。
             user_service: 稳定项目用户权限服务。
+            quality_evidence_dao: 当前质量证据统一失效 DAO。
 
         Returns:
             None: 无返回值。
         """
         self.dao = dao or PlotAttributeFieldDAO()
         self.user_service = user_service or ProjectUserService()
+        self.quality_evidence_dao = quality_evidence_dao or QualityEvidenceDAO()
 
     @staticmethod
     def definition_snapshot(
@@ -385,7 +389,17 @@ class PlotAttributeFieldService:
                 operator_role=operator.role_code,
             ),
         )
-        await self.dao.invalidate_project_quality_evidence(db, project.id)
+        await self.quality_evidence_dao.invalidate_project_quality_evidence(
+            db,
+            project.id,
+            reason=(
+                f"新增活动地块字段 {field.field_code}（v{field.version}），"
+                "当前检查需按新字段模式重新执行"
+            ),
+            operator=operator.display_name,
+            operator_code=operator.user_code,
+            operator_role=operator.role_code,
+        )
         await db.commit()
         await db.refresh(field)
         return self._to_response(field)
@@ -505,7 +519,17 @@ class PlotAttributeFieldService:
                 operator_role=operator.role_code,
             ),
         )
-        await self.dao.invalidate_project_quality_evidence(db, project.id)
+        await self.quality_evidence_dao.invalidate_project_quality_evidence(
+            db,
+            project.id,
+            reason=(
+                f"地块字段 {field.field_code} 定义更新至 v{field.version}，"
+                "当前检查需按新字段模式重新执行"
+            ),
+            operator=operator.display_name,
+            operator_code=operator.user_code,
+            operator_role=operator.role_code,
+        )
         await db.commit()
         await db.refresh(field)
         return self._to_response(field)

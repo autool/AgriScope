@@ -28,5 +28,9 @@ export interface ImageryBatchResponse {
   imported_by_role: string
   comment: string
   created_at: string
+  quality_recheck_required: boolean
+  invalidated_task_count: number
+  previous_quality_imagery_code: string | null
+  current_quality_imagery_code: string | null
   items: ImageryAssetItem[]
 }
