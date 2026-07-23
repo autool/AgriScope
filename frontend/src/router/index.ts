@@ -6,6 +6,15 @@ const router = createRouter({
   history: createWebHistory(),
   routes: [
     {
+      path: '/uav-capture',
+      component: () => import('@/views/UavCaptureView.vue'),
+      meta: {
+        title: '无人机移动疑点采集',
+        description: 'GPS、现场照片实体与空间疑点原子提交',
+        standalone: true,
+      },
+    },
+    {
       path: '/field-capture',
       component: () => import('@/views/FieldCaptureView.vue'),
       meta: {

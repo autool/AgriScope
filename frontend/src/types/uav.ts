@@ -194,3 +194,44 @@ export interface UavFindingCreatePayload {
   description: string
   operator_code: string
 }
+
+export interface UavMobileCaptureOverview {
+  project_code: string
+  mission_count: number
+  missions: UavMission[]
+}
+
+export interface UavMobileCaptureDraft {
+  capture_code: string
+  mission_code: string | null
+  captured_at: string | null
+  longitude: number | null
+  latitude: number | null
+  location_accuracy_m: number | null
+  finding_type: string | null
+  severity: 'minor' | 'major' | 'critical' | null
+  plot_code: string
+  description: string
+  device_label: string
+}
+
+export interface UavMobileCapturePayload {
+  capture_code: string
+  captured_at: string
+  longitude: number
+  latitude: number
+  location_accuracy_m: number
+  finding_type: string
+  severity: 'minor' | 'major' | 'critical'
+  plot_code?: string
+  description: string
+  device_label: string
+  operator_code: string
+}
+
+export interface UavMobileCaptureResult {
+  capture_code: string
+  artifact: UavArtifact
+  finding: UavFinding
+  idempotent_replay: boolean
+}

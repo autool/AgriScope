@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { MobileOutlined } from '@ant-design/icons-vue'
 import { message } from 'ant-design-vue'
 import { storeToRefs } from 'pinia'
 import { computed, ref, watch } from 'vue'
@@ -10,6 +11,7 @@ import UavFindingPanel from '@/components/uav/UavFindingPanel.vue'
 import UavMissionMap from '@/components/uav/UavMissionMap.vue'
 import { useUavStore } from '@/store/uavStore'
 import { useUserStore } from '@/store/userStore'
+import { useWorkbenchStore } from '@/store/workbenchStore'
 import type {
   AircraftUploadMetadata,
   ArtifactUploadMetadata,
@@ -21,6 +23,7 @@ import type {
 
 const uavStore = useUavStore()
 const userStore = useUserStore()
+const workbenchStore = useWorkbenchStore()
 const {
   canDownloadComputed,
   canManageAircraftComputed,
@@ -38,6 +41,9 @@ const selectedMissionComputed = computed(() => (
   overviewRef.value?.missions.find(
     (item) => item.mission_code === selectedMissionCodeRef.value,
   ) || overviewRef.value?.missions[0] || null
+))
+const mobileCaptureUrlComputed = computed(() => (
+  `/uav-capture?project_code=${encodeURIComponent(workbenchStore.projectCodeComputed)}`
 ))
 
 const loadOverview = async (): Promise<void> => {
@@ -157,6 +163,16 @@ const handleDownload = (artifactCode: string, filename: string): void => {
 
 <template>
   <div class="uav-view">
+    <section class="mobile-entry">
+      <span>
+        <small>MOBILE FIELD CAPTURE</small>
+        <strong>无人机现场疑点移动采集</strong>
+        <em>任务启动后，通过手机 GPS 将现场照片实体与空间疑点一次提交</em>
+      </span>
+      <a-button type="primary" :href="mobileCaptureUrlComputed" target="_blank">
+        <MobileOutlined /> 打开移动采集端
+      </a-button>
+    </section>
     <section class="summary-strip">
       <span><small>AIRCRAFT</small><strong>{{ overviewRef?.aircraft_count || 0 }}</strong><em>真实航空器</em></span>
       <span><small>MISSIONS</small><strong>{{ overviewRef?.mission_count || 0 }}</strong><em>{{ overviewRef?.active_mission_count || 0 }} 个执行中</em></span>
@@ -226,7 +242,12 @@ const handleDownload = (artifactCode: string, filename: string): void => {
 </template>
 
 <style scoped>
-.uav-view { display: grid; grid-template-rows: auto minmax(0, 1fr); gap: 10px; height: 100%; padding: 10px; background: #eef2f0; }
+.uav-view { display: grid; grid-template-rows: auto auto minmax(0, 1fr); gap: 10px; height: 100%; padding: 10px; background: #eef2f0; }
+.mobile-entry { display: flex; align-items: center; justify-content: space-between; padding: 10px 12px; background: #eef7f2; border: 1px solid #cfe2d7; border-radius: 8px; }
+.mobile-entry span { display: flex; min-width: 0; flex-direction: column; }
+.mobile-entry small { font-size: 7px; color: #6f8e7e; letter-spacing: .8px; }
+.mobile-entry strong { font-size: 12px; color: #2f5a44; }
+.mobile-entry em { overflow: hidden; font-size: 9px; font-style: normal; color: #708078; text-overflow: ellipsis; white-space: nowrap; }
 .summary-strip { display: grid; grid-template-columns: repeat(6, minmax(110px, 1fr)); gap: 7px; }
 .summary-strip span { display: flex; flex-direction: column; padding: 9px 11px; background: #fff; border: 1px solid #dfe5e2; border-radius: 7px; }
 .summary-strip small { font-size: 7px; color: #8b9791; letter-spacing: .8px; }

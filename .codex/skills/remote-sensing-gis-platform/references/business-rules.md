@@ -119,6 +119,13 @@
 - Persist explicit poor and good NDVI-delta thresholds. Publish an atomic UInt8 GeoTIFF with 0=NoData, 1=poor, 2=normal and 3=good. Vectorize poor pixels with 4-connectivity, then use PostGIS to clip them to task farmland, validate geometry, recompute geography hectares and apply the minimum-zone-area threshold. Reject rather than truncate above 500 accepted zones.
 - Store both source asset/step identities, acquisition times, controlled URIs, sizes, SHA256 values, NDVI bands, task farmland count/update snapshot, complete farmland area, common-footprint area, spatial coverage, valid-pixel ratio, both accepted gates, grid and class counts, algorithm version, stable operator role and generation basis. Atomically publish anomaly GeoJSON; before download or delivery, verify both outputs and revalidate both source-step URI/size/SHA256/NDVI snapshots. Delivery archive freshness must include referenced source-step update times as well as growth-run changes.
 
+## UAV mobile capture
+
+- Provide a standalone mobile-width route rather than compressing the desktop UAV workbench. List only missions in `in_progress`, `captured`, or `processed`, require an active persisted user with `operate_uav_missions`, and preserve a stable capture code for safe retry.
+- One mobile request must carry timezone-aware capture time, WGS84 coordinates, terminal horizontal accuracy, finding type/severity/description, optional task plot, device label, and a camera-selected JPEG/PNG/WebP. Browser geolocation requires HTTPS outside localhost; local drafts and unsubmitted photos are not evidence.
+- Lock the mission before checking idempotency or writing files. Revalidate that the point is covered by the persisted mission Polygon and any plot belongs to the mission task. Enforce a dedicated photo size limit, file suffix/signature agreement, decodable image structure and positive dimensions.
+- Atomically persist one verified `uav_artifacts` photo, one linked `uav_findings` row, and stable-user `uav_events`. Store the canonical payload SHA256, photo SHA256, GPS accuracy, capture channel and image dimensions. Retry returns the existing result only when payload and photo digests both match; conflicting reuse or partial idempotency state must fail without overwriting evidence.
+
 ## Thematic atlases
 
 - Build one current task atlas only from the complete set of checksum-verified PNG thematic-map products. Require 2–50 members, preserve an explicit user-defined order, and reject omissions, duplicates, invalid products, more than 250 MB of source pages, or browser preview images.

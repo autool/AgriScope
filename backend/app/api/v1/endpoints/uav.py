@@ -21,12 +21,17 @@ from app.schemas.uav import (
     MissionCreateRequest,
     MissionResponse,
     MissionStatusRequest,
+    MobileUavCaptureOverviewResponse,
+    MobileUavCaptureRequest,
+    MobileUavCaptureResponse,
     UavOverviewResponse,
 )
+from app.services.uav_mobile_capture_service import UavMobileCaptureService
 from app.services.uav_service import UavService
 
 router = APIRouter(prefix="/api/v1/uav", tags=["无人机任务"])
 service = UavService()
+mobile_capture_service = UavMobileCaptureService()
 
 
 def parse_json_object(value: str, field_name: str) -> dict:
@@ -65,6 +70,32 @@ async def get_uav_overview(
         UavOverviewResponse: 无人机工作台真实总览。
     """
     return await service.get_overview(db, project_code, operator_code)
+
+
+@router.get(
+    "/mobile-captures/overview",
+    response_model=MobileUavCaptureOverviewResponse,
+)
+async def get_mobile_uav_capture_overview(
+    db: DatabaseSession,
+    operator_code: Annotated[str, Query(min_length=1, max_length=50)],
+    project_code: Annotated[str, Query(min_length=1, max_length=50)] = "RS-2026",
+) -> MobileUavCaptureOverviewResponse:
+    """查询移动端可执行采集的已启动无人机任务。
+
+    Args:
+        db: 异步数据库会话。
+        operator_code: 移动采集人稳定编码。
+        project_code: 项目编号。
+
+    Returns:
+        MobileUavCaptureOverviewResponse: 轻量任务列表。
+    """
+    return await mobile_capture_service.get_capture_overview(
+        db,
+        project_code,
+        operator_code,
+    )
 
 
 @router.post(
@@ -297,6 +328,82 @@ async def upload_uav_artifact(
         request,
         file.filename or "artifact.bin",
         file.file,
+    )
+
+
+@router.post(
+    "/missions/{mission_code}/mobile-captures",
+    response_model=MobileUavCaptureResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+async def create_mobile_uav_capture(
+    mission_code: str,
+    db: DatabaseSession,
+    photo_file: Annotated[
+        UploadFile,
+        File(description="无人机现场疑点照片实体"),
+    ],
+    capture_code: Annotated[
+        str,
+        Form(min_length=1, max_length=50, pattern=r"^[A-Za-z0-9_-]+$"),
+    ],
+    captured_at: Annotated[datetime, Form()],
+    longitude: Annotated[float, Form(ge=-180, le=180)],
+    latitude: Annotated[float, Form(ge=-90, le=90)],
+    location_accuracy_m: Annotated[float, Form(gt=0, le=10_000)],
+    finding_type: Annotated[str, Form(min_length=2, max_length=60)],
+    severity: Annotated[Literal["minor", "major", "critical"], Form()],
+    description: Annotated[str, Form(min_length=4, max_length=3000)],
+    operator_code: Annotated[str, Form(min_length=1, max_length=50)],
+    plot_code: Annotated[str | None, Form(max_length=50)] = None,
+    device_label: Annotated[
+        str,
+        Form(min_length=1, max_length=100),
+    ] = "浏览器移动终端",
+    project_code: Annotated[str, Query(min_length=1, max_length=50)] = "RS-2026",
+) -> MobileUavCaptureResponse:
+    """原子提交移动 GPS、照片实体和任务范围内空间疑点。
+
+    Args:
+        mission_code: 已启动的无人机任务编号。
+        db: 异步数据库会话。
+        photo_file: 相机拍摄或相册选择的照片实体。
+        capture_code: 移动端稳定幂等编号。
+        captured_at: 带时区采集时间。
+        longitude: WGS84 经度。
+        latitude: WGS84 纬度。
+        location_accuracy_m: 终端水平定位精度。
+        finding_type: 疑点类型。
+        severity: 疑点严重度。
+        description: 现场说明。
+        operator_code: 移动采集人稳定编码。
+        plot_code: 可选关联任务图斑编号。
+        device_label: 终端标识说明。
+        project_code: 项目编号。
+
+    Returns:
+        MobileUavCaptureResponse: 已校验照片、疑点和幂等状态。
+    """
+    request = MobileUavCaptureRequest(
+        capture_code=capture_code,
+        captured_at=captured_at,
+        longitude=longitude,
+        latitude=latitude,
+        location_accuracy_m=location_accuracy_m,
+        finding_type=finding_type,
+        severity=severity,
+        plot_code=plot_code,
+        description=description,
+        device_label=device_label,
+        operator_code=operator_code,
+    )
+    return await mobile_capture_service.create_capture(
+        db,
+        project_code,
+        mission_code,
+        request,
+        photo_file.filename or "mobile-photo.jpg",
+        photo_file.file,
     )
 
 

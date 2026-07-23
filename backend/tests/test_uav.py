@@ -6,24 +6,28 @@ from datetime import UTC, datetime, timedelta
 from io import BytesIO
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import ANY, AsyncMock
 
 import numpy as np
 import pytest
+from PIL import Image
 from pydantic import ValidationError
 from rasterio.io import MemoryFile
 from rasterio.transform import from_origin
+from sqlalchemy.exc import SQLAlchemyError
 
 from app.core.exceptions import ValidationException
-from app.dao.uav_dao import ArtifactRecord
-from app.models.uav import UavAircraft, UavArtifact, UavMission
+from app.dao.uav_dao import ArtifactRecord, MissionRecord
+from app.models.uav import UavAircraft, UavArtifact, UavFinding, UavMission
 from app.schemas.uav import (
     AircraftCreateRequest,
     ArtifactUploadRequest,
     FindingCreateRequest,
     MissionCreateRequest,
     MissionStatusRequest,
+    MobileUavCaptureRequest,
 )
+from app.services.uav_mobile_capture_service import UavMobileCaptureService
 from app.services.uav_service import UavService
 
 
@@ -110,6 +114,26 @@ def build_mission(status: str = "planned") -> UavMission:
     )
 
 
+def build_mobile_capture_request(
+    *,
+    description: str = "航线下方发现疑似病虫害斑块，需要复核。",
+) -> MobileUavCaptureRequest:
+    """构造带时区 GPS 与稳定幂等编号的移动采集请求。"""
+    return MobileUavCaptureRequest(
+        capture_code="MOB-20260723-001",
+        captured_at=datetime(2026, 7, 23, 8, 30, tzinfo=UTC),
+        longitude=126.61234567,
+        latitude=45.81234567,
+        location_accuracy_m=8.5,
+        finding_type="疑似病虫害",
+        severity="major",
+        plot_code=None,
+        description=description,
+        device_label="外业手机 A01",
+        operator_code="manager-zhao-zhiyuan",
+    )
+
+
 def test_mission_schema_rejects_unclosed_boundary_and_low_overlap() -> None:
     """验证飞行范围必须闭合且重叠度达到航测要求。"""
     now = datetime.now(UTC)
@@ -160,6 +184,307 @@ def test_overview_preserves_empty_state() -> None:
     assert response.aircraft_count == 0
     assert response.missions == []
     assert response.verified_artifact_count == 0
+
+
+def test_mobile_overview_only_returns_started_capture_tasks() -> None:
+    """验证移动端不暴露计划中、已审核或已取消的飞行任务。"""
+    statuses = [
+        "planned",
+        "in_progress",
+        "captured",
+        "processed",
+        "reviewed",
+        "cancelled",
+    ]
+    records: list[MissionRecord] = []
+    for index, status in enumerate(statuses, start=1):
+        mission = build_mission(status)
+        mission.id = index
+        mission.mission_code = f"UAV-MISSION-{index:03d}"
+        records.append(
+            MissionRecord(
+                mission=mission,
+                task_code="RS-2026-045",
+                aircraft_code="UAV-HLJ-001",
+                aircraft_name="农情巡查一号机",
+                boundary_geojson={"type": "Polygon", "coordinates": []},
+            )
+        )
+    dao = AsyncMock()
+    dao.get_project_by_code.return_value = build_project()
+    dao.list_mission_records.return_value = records
+    user_service = AsyncMock()
+    user_service.require_capability.return_value = build_user("field_inspector")
+    service = UavMobileCaptureService(dao=dao, user_service=user_service)
+
+    response = asyncio.run(
+        service.get_capture_overview(
+            AsyncMock(),
+            "RS-2026",
+            "manager-zhao-zhiyuan",
+        )
+    )
+
+    assert response.mission_count == 3
+    assert [mission.status for mission in response.missions] == [
+        "in_progress",
+        "captured",
+        "processed",
+    ]
+    user_service.require_capability.assert_awaited_once_with(
+        ANY,
+        7,
+        "manager-zhao-zhiyuan",
+        "operate_uav_missions",
+    )
+
+
+def test_mobile_capture_atomically_persists_photo_finding_and_safe_replay(
+    tmp_path: Path,
+) -> None:
+    """验证移动 GPS、实体照片和疑点一次提交且相同重试不重复写入。"""
+    photo_buffer = BytesIO()
+    Image.new("RGB", (640, 480), (68, 117, 82)).save(photo_buffer, "JPEG")
+    photo_bytes = photo_buffer.getvalue()
+    mission = build_mission("in_progress")
+    request = build_mobile_capture_request()
+    now = datetime.now(UTC)
+    artifacts: list[UavArtifact] = []
+    findings: list[UavFinding] = []
+    dao = AsyncMock()
+    dao.get_project_by_code.return_value = build_project()
+    dao.get_mission_by_code.return_value = mission
+    dao.point_within_mission.return_value = True
+
+    async def get_artifact(*_: object, **__: object) -> UavArtifact | None:
+        return artifacts[0] if artifacts else None
+
+    async def get_finding(*_: object, **__: object) -> UavFinding | None:
+        return findings[0] if findings else None
+
+    async def add_artifact(_: object, artifact: UavArtifact) -> UavArtifact:
+        artifact.id = 31
+        artifact.created_at = now
+        artifacts.append(artifact)
+        return artifact
+
+    async def add_finding(_: object, finding: UavFinding) -> UavFinding:
+        finding.id = 41
+        finding.created_at = now
+        findings.append(finding)
+        return finding
+
+    dao.get_artifact_by_code.side_effect = get_artifact
+    dao.get_finding_by_code.side_effect = get_finding
+    dao.add_artifact.side_effect = add_artifact
+    dao.add_finding.side_effect = add_finding
+    user_service = AsyncMock()
+    user_service.require_capability.return_value = build_user("field_inspector")
+    service = UavMobileCaptureService(
+        dao=dao,
+        user_service=user_service,
+        storage_root=tmp_path,
+    )
+    db = AsyncMock()
+
+    first = asyncio.run(
+        service.create_capture(
+            db,
+            "RS-2026",
+            mission.mission_code,
+            request,
+            "capture.jpg",
+            BytesIO(photo_bytes),
+        )
+    )
+    replay = asyncio.run(
+        service.create_capture(
+            db,
+            "RS-2026",
+            mission.mission_code,
+            request,
+            "capture.jpg",
+            BytesIO(photo_bytes),
+        )
+    )
+
+    assert first.idempotent_replay is False
+    assert replay.idempotent_replay is True
+    assert first.artifact.checksum_sha256 == hashlib.sha256(photo_bytes).hexdigest()
+    assert first.artifact.metadata["location"]["horizontal_accuracy_m"] == 8.5
+    assert len(first.artifact.metadata["mobile_capture_payload_sha256"]) == 64
+    assert first.finding.status == "pending_review"
+    assert first.finding.artifact_code == first.artifact.artifact_code
+    assert len(artifacts) == 1
+    assert len(findings) == 1
+    assert dao.add_event.await_count == 2
+    assert db.commit.await_count == 2
+    assert len(list(tmp_path.rglob("*.jpg"))) == 1
+
+
+def test_mobile_capture_rejects_conflicting_reuse_and_invalid_photo(
+    tmp_path: Path,
+) -> None:
+    """验证同编号冲突载荷和伪图片均不会产生第二份证据。"""
+    mission = build_mission("captured")
+    original_request = build_mobile_capture_request()
+    payload_sha256 = UavMobileCaptureService._capture_digest(
+        mission.mission_code,
+        original_request,
+    )
+    photo_buffer = BytesIO()
+    Image.new("RGB", (320, 240), (42, 78, 58)).save(photo_buffer, "PNG")
+    photo_bytes = photo_buffer.getvalue()
+    photo_sha256 = hashlib.sha256(photo_bytes).hexdigest()
+    photo_path = (
+        tmp_path
+        / "missions"
+        / mission.mission_code
+        / "mobile-captures"
+        / f"{photo_sha256[:16]}_capture.png"
+    )
+    photo_path.parent.mkdir(parents=True)
+    photo_path.write_bytes(photo_bytes)
+    artifact = UavArtifact(
+        id=31,
+        mission_id=mission.id,
+        artifact_code="UAVMOB-A-MOB-20260723-001",
+        artifact_type="photo",
+        original_filename="capture.png",
+        file_uri=(
+            "storage://uav/missions/UAV-MISSION-001/mobile-captures/"
+            f"{photo_sha256[:16]}_capture.png"
+        ),
+        file_size_bytes=len(photo_bytes),
+        checksum_sha256=photo_sha256,
+        captured_at=original_request.captured_at,
+        file_format="png",
+        metadata_json={"mobile_capture_payload_sha256": payload_sha256},
+        verification_status="verified",
+        uploaded_by="赵志远",
+        uploaded_by_code="manager-zhao-zhiyuan",
+        uploaded_by_role="field_inspector",
+        created_at=datetime.now(UTC),
+    )
+    finding = UavFinding(
+        id=41,
+        mission_id=mission.id,
+        artifact_id=artifact.id,
+        finding_code="UAVMOB-F-MOB-20260723-001",
+        finding_type=original_request.finding_type,
+        severity=original_request.severity,
+        longitude=original_request.longitude,
+        latitude=original_request.latitude,
+        plot_code=None,
+        description=original_request.description,
+        status="pending_review",
+        created_by="赵志远",
+        created_by_code="manager-zhao-zhiyuan",
+        created_by_role="field_inspector",
+        created_at=datetime.now(UTC),
+    )
+    dao = AsyncMock()
+    dao.get_project_by_code.return_value = build_project()
+    dao.get_mission_by_code.return_value = mission
+    dao.point_within_mission.return_value = True
+    dao.get_artifact_by_code.return_value = artifact
+    dao.get_finding_by_code.return_value = finding
+    user_service = AsyncMock()
+    user_service.require_capability.return_value = build_user("field_inspector")
+    service = UavMobileCaptureService(
+        dao=dao,
+        user_service=user_service,
+        storage_root=tmp_path,
+    )
+    conflicting_request = build_mobile_capture_request(
+        description="同一编号被修改为另一条现场说明，必须拒绝覆盖。"
+    )
+
+    with pytest.raises(ValidationException, match="载荷或照片不一致"):
+        asyncio.run(
+            service.create_capture(
+                AsyncMock(),
+                "RS-2026",
+                mission.mission_code,
+                conflicting_request,
+                "capture.png",
+                BytesIO(photo_bytes),
+            )
+        )
+
+    dao.get_artifact_by_code.return_value = None
+    dao.get_finding_by_code.return_value = None
+    with pytest.raises(ValidationException, match="安全有效"):
+        asyncio.run(
+            service.create_capture(
+                AsyncMock(),
+                "RS-2026",
+                mission.mission_code,
+                MobileUavCaptureRequest(
+                    **{
+                        **original_request.model_dump(),
+                        "capture_code": "MOB-20260723-002",
+                    }
+                ),
+                "fake.jpg",
+                BytesIO(b"not-a-real-photo"),
+            )
+        )
+
+    assert not list(tmp_path.rglob("*fake.jpg"))
+    dao.add_artifact.assert_not_awaited()
+
+
+def test_mobile_capture_database_failure_removes_new_photo(tmp_path: Path) -> None:
+    """验证疑点事务失败时回滚并清除本次新发布照片。"""
+    photo_buffer = BytesIO()
+    Image.new("RGB", (320, 240), (61, 99, 74)).save(photo_buffer, "JPEG")
+    mission = build_mission("in_progress")
+    now = datetime.now(UTC)
+    dao = AsyncMock()
+    dao.get_project_by_code.return_value = build_project()
+    dao.get_mission_by_code.return_value = mission
+    dao.point_within_mission.return_value = True
+    dao.get_artifact_by_code.return_value = None
+    dao.get_finding_by_code.return_value = None
+
+    async def add_artifact(_: object, artifact: UavArtifact) -> UavArtifact:
+        artifact.id = 31
+        artifact.created_at = now
+        return artifact
+
+    async def add_finding(_: object, finding: UavFinding) -> UavFinding:
+        finding.id = 41
+        finding.created_at = now
+        return finding
+
+    dao.add_artifact.side_effect = add_artifact
+    dao.add_finding.side_effect = add_finding
+    dao.add_event.side_effect = SQLAlchemyError("simulated event write failure")
+    user_service = AsyncMock()
+    user_service.require_capability.return_value = build_user("field_inspector")
+    service = UavMobileCaptureService(
+        dao=dao,
+        user_service=user_service,
+        storage_root=tmp_path,
+    )
+    db = AsyncMock()
+
+    with pytest.raises(SQLAlchemyError, match="event write failure"):
+        asyncio.run(
+            service.create_capture(
+                db,
+                "RS-2026",
+                mission.mission_code,
+                build_mobile_capture_request(),
+                "rollback-photo.jpg",
+                BytesIO(photo_buffer.getvalue()),
+            )
+        )
+
+    db.rollback.assert_awaited_once()
+    db.commit.assert_not_awaited()
+    assert not list(tmp_path.rglob("*rollback-photo.jpg"))
 
 
 def test_aircraft_registration_stores_real_certificate(

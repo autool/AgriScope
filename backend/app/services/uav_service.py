@@ -181,6 +181,7 @@ class UavService:
         original_filename: str,
         scope: Path,
         allowed_suffixes: set[str],
+        max_bytes: int | None = None,
     ) -> StoredUpload:
         """原子保存上传文件并由服务端计算大小和 SHA-256。
 
@@ -189,6 +190,7 @@ class UavService:
             original_filename: 原始文件名。
             scope: 存储相对目录。
             allowed_suffixes: 允许扩展名集合。
+            max_bytes: 可选的当前业务文件大小上限。
 
         Returns:
             StoredUpload: 受控上传结果。
@@ -203,12 +205,13 @@ class UavService:
         upload_dir.mkdir(parents=True, exist_ok=True)
         temporary_path = upload_dir / f"{uuid4().hex}{suffix}.part"
         file_size = 0
+        size_limit = max_bytes or settings.max_uav_upload_bytes
         file_handle.seek(0)
         try:
             with temporary_path.open("wb") as output:
                 while chunk := file_handle.read(1024 * 1024):
                     file_size += len(chunk)
-                    if file_size > settings.max_uav_upload_bytes:
+                    if file_size > size_limit:
                         raise ValidationException(
                             "无人机文件超过平台允许的最大上传大小"
                         )
@@ -241,6 +244,29 @@ class UavService:
             )
         finally:
             temporary_path.unlink(missing_ok=True)
+
+    def _require_verified_artifact_path(self, artifact: UavArtifact) -> Path:
+        """重新校验无人机成果受控路径、大小和 SHA-256。
+
+        Args:
+            artifact: 无人机实体成果记录。
+
+        Returns:
+            Path: 已通过完整性复核的实体路径。
+        """
+        prefix = "storage://uav/"
+        if not artifact.file_uri.startswith(prefix):
+            raise ValidationException("无人机成果不在受控存储中")
+        path = (
+            self.storage_root / artifact.file_uri.removeprefix(prefix)
+        ).resolve()
+        if not path.is_relative_to(self.storage_root.resolve()) or not path.is_file():
+            raise ValidationException("无人机成果实体文件缺失")
+        if path.stat().st_size != artifact.file_size_bytes:
+            raise ValidationException("无人机成果实体大小已变化")
+        if calculate_sha256(path) != artifact.checksum_sha256:
+            raise ValidationException("无人机成果实体 SHA-256 校验失败")
+        return path
 
     @staticmethod
     def _inspect_raster(path: Path) -> RasterInspection:
@@ -1195,23 +1221,14 @@ class UavService:
         if record is None:
             raise NotFoundException("未找到无人机实体成果")
         artifact = record.artifact
-        prefix = "storage://uav/"
-        if not artifact.file_uri.startswith(prefix):
-            raise ValidationException("无人机成果不在受控存储中")
-        path = (
-            self.storage_root / artifact.file_uri.removeprefix(prefix)
-        ).resolve()
-        if not path.is_relative_to(self.storage_root.resolve()) or not path.is_file():
-            raise ValidationException("无人机成果实体文件缺失")
-        if path.stat().st_size != artifact.file_size_bytes:
-            raise ValidationException("无人机成果实体大小已变化")
-        checksum = await asyncio.to_thread(calculate_sha256, path)
-        if checksum != artifact.checksum_sha256:
-            raise ValidationException("无人机成果实体 SHA-256 校验失败")
+        path = await asyncio.to_thread(
+            self._require_verified_artifact_path,
+            artifact,
+        )
         media_type = mimetypes.guess_type(artifact.original_filename)[0]
         return ArtifactDownload(
             path=path,
             filename=artifact.original_filename,
             media_type=media_type or "application/octet-stream",
-            checksum_sha256=checksum,
+            checksum_sha256=artifact.checksum_sha256,
         )

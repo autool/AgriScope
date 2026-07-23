@@ -9,6 +9,9 @@ import type {
   UavFindingCreatePayload,
   UavMission,
   UavMissionAction,
+  UavMobileCaptureOverview,
+  UavMobileCapturePayload,
+  UavMobileCaptureResult,
   UavOverview,
 } from '@/types/uav'
 
@@ -22,6 +25,13 @@ export const getUavOverview = (
   projectCode: string,
   operatorCode: string,
 ) => request.get<UavOverview>('/v1/uav/overview', {
+  params: { project_code: projectCode, operator_code: operatorCode },
+})
+
+export const getUavMobileCaptureOverview = (
+  projectCode: string,
+  operatorCode: string,
+) => request.get<UavMobileCaptureOverview>('/v1/uav/mobile-captures/overview', {
   params: { project_code: projectCode, operator_code: operatorCode },
 })
 
@@ -100,6 +110,32 @@ export const uploadUavArtifact = (
   if (metadata.capturedAt) formData.append('captured_at', metadata.capturedAt)
   return request.post<UavArtifact>(
     `/v1/uav/missions/${encodeURIComponent(missionCode)}/artifacts`,
+    formData,
+    multipartConfig(projectCode),
+  )
+}
+
+export const createUavMobileCapture = (
+  projectCode: string,
+  missionCode: string,
+  photo: File,
+  payload: UavMobileCapturePayload,
+) => {
+  const formData = new FormData()
+  formData.append('photo_file', photo)
+  formData.append('capture_code', payload.capture_code)
+  formData.append('captured_at', payload.captured_at)
+  formData.append('longitude', String(payload.longitude))
+  formData.append('latitude', String(payload.latitude))
+  formData.append('location_accuracy_m', String(payload.location_accuracy_m))
+  formData.append('finding_type', payload.finding_type)
+  formData.append('severity', payload.severity)
+  formData.append('description', payload.description)
+  formData.append('device_label', payload.device_label)
+  formData.append('operator_code', payload.operator_code)
+  if (payload.plot_code) formData.append('plot_code', payload.plot_code)
+  return request.post<UavMobileCaptureResult>(
+    `/v1/uav/missions/${encodeURIComponent(missionCode)}/mobile-captures`,
     formData,
     multipartConfig(projectCode),
   )

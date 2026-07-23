@@ -236,9 +236,12 @@ the platform has persisted evidence and executable workflows.
   The TypeScript workbench provides an OpenLayers planning map with current imagery
   tiles, real administrative boundaries, mission Polygon drawing, task selection, and
   finding-coordinate picking while retaining all authoritative spatial validation on
-  the server. Downloads revalidate controlled path, size, and SHA-256. These implemented
-  contracts are not evidence that mobile collection, live flight-control integration,
-  long-term archival retention, or 10,000-device scale testing are complete.
+  the server. A standalone mobile route lists only executable missions and atomically
+  submits terminal GPS/accuracy/time, a signature-checked physical photo, and a linked
+  spatial finding under a stable capture code; exact payload/photo digest retries are
+  idempotent and conflicting reuse is rejected. Downloads revalidate controlled path,
+  size, and SHA-256. These implemented contracts are not evidence that live flight-control
+  integration, long-term archival retention, or 10,000-device scale testing are complete.
 
 ## Official sources
 

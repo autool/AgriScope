@@ -230,6 +230,70 @@ class FindingCreateRequest(BaseModel):
         return value.strip() or None if value is not None else None
 
 
+class MobileUavCaptureRequest(BaseModel):
+    """移动端一次提交 GPS、现场照片和空间疑点。"""
+
+    capture_code: str = Field(
+        min_length=1,
+        max_length=50,
+        pattern=r"^[A-Za-z0-9_-]+$",
+    )
+    captured_at: datetime
+    longitude: float = Field(ge=-180, le=180)
+    latitude: float = Field(ge=-90, le=90)
+    location_accuracy_m: float = Field(gt=0, le=10_000)
+    finding_type: str = Field(min_length=2, max_length=60)
+    severity: FindingSeverity
+    plot_code: str | None = Field(default=None, max_length=50)
+    description: str = Field(min_length=4, max_length=3000)
+    device_label: str = Field(default="浏览器移动终端", min_length=1, max_length=100)
+    operator_code: str = Field(min_length=1, max_length=50)
+
+    model_config = ConfigDict(extra="forbid")
+
+    @field_validator("captured_at")
+    @classmethod
+    def validate_mobile_capture_time(cls, value: datetime) -> datetime:
+        """校验移动采集时间包含时区。
+
+        Args:
+            value: 终端采集时间。
+
+        Returns:
+            datetime: 带时区采集时间。
+        """
+        return require_timezone(value)
+
+    @field_validator("finding_type", "description", "device_label", "operator_code")
+    @classmethod
+    def normalize_mobile_text(cls, value: str) -> str:
+        """清理移动采集文本。
+
+        Args:
+            value: 原始文本。
+
+        Returns:
+            str: 去除首尾空白的文本。
+        """
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("移动采集文本不得为空")
+        return normalized
+
+    @field_validator("plot_code")
+    @classmethod
+    def normalize_mobile_plot_code(cls, value: str | None) -> str | None:
+        """清理移动端可选图斑编号。
+
+        Args:
+            value: 原始图斑编号。
+
+        Returns:
+            str | None: 标准化编号或空值。
+        """
+        return value.strip() or None if value is not None else None
+
+
 class FindingReviewRequest(BaseModel):
     """人工确认或排除无人机疑点。"""
 
@@ -346,6 +410,23 @@ class FindingResponse(BaseModel):
     reviewed_by_role: str | None
     reviewed_at: datetime | None
     created_at: datetime
+
+
+class MobileUavCaptureResponse(BaseModel):
+    """原子移动采集结果。"""
+
+    capture_code: str
+    artifact: ArtifactResponse
+    finding: FindingResponse
+    idempotent_replay: bool
+
+
+class MobileUavCaptureOverviewResponse(BaseModel):
+    """移动端可执行飞行任务轻量总览。"""
+
+    project_code: str
+    mission_count: int
+    missions: list[MissionResponse]
 
 
 class UavEventResponse(BaseModel):
