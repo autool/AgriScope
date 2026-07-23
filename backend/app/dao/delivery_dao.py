@@ -28,6 +28,7 @@ from app.models.workbench import (
     ImageryProcessingStep,
     QualityIssue,
     TaskPlot,
+    TaskQualityRun,
 )
 
 
@@ -663,6 +664,27 @@ class DeliveryDAO:
             select(QualityIssue)
             .where(QualityIssue.task_id == task_id)
             .order_by(QualityIssue.created_at)
+        )
+        return result.scalars().all()
+
+    async def get_quality_runs(
+        self,
+        db: AsyncSession,
+        task_id: int,
+    ) -> Sequence[TaskQualityRun]:
+        """查询任务全部不可变全量质检批次。
+
+        Args:
+            db: 异步数据库会话。
+            task_id: 作业任务主键。
+
+        Returns:
+            Sequence[TaskQualityRun]: 按创建时间排列的质检批次账本。
+        """
+        result = await db.execute(
+            select(TaskQualityRun)
+            .where(TaskQualityRun.task_id == task_id)
+            .order_by(TaskQualityRun.created_at, TaskQualityRun.id)
         )
         return result.scalars().all()
 

@@ -1022,6 +1022,7 @@ def test_delivery_generation_archives_verified_physical_evidence(
     dao.get_next_version.return_value = 1
     dao.get_plot_rows.return_value = [plot_row]
     dao.get_quality_issues.return_value = []
+    dao.get_quality_runs.return_value = []
     dao.get_field_rows.return_value = [
         (field_record, '{"type":"Point","coordinates":[126.6,45.8]}')
     ]
@@ -1233,6 +1234,7 @@ def test_delivery_generation_archives_verified_physical_evidence(
         )
         assert any(name.startswith("field/import_sources/") for name in names)
         assert "attributes/import_manifest.json" in names
+        assert "quality/quality_runs.json" in names
         assert any(
             name.startswith("attributes/import_sources/PATTR-TEST-001/")
             for name in names

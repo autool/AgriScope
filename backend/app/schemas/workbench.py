@@ -528,7 +528,7 @@ class TaskQualityCheckRequest(BaseModel):
     """任务级全量质量检查请求。"""
 
     operator_code: str = Field(min_length=1, max_length=50)
-    comment: str | None = None
+    comment: str | None = Field(default=None, max_length=500)
 
     model_config = ConfigDict(extra="forbid")
 
@@ -598,6 +598,7 @@ class QualityRuleSummary(BaseModel):
 class TaskQualityCheckResponse(BaseModel):
     """任务级全量质量检查执行结果。"""
 
+    run_code: str
     task_code: str
     total_plot_count: int
     checked_plot_count: int
@@ -608,7 +609,43 @@ class TaskQualityCheckResponse(BaseModel):
     can_submit: bool
     duration_ms: int
     executed_at: datetime
+    rule_config_version: int
+    custom_field_schema_digest: str
     rule_summaries: list[QualityRuleSummary]
+
+
+class TaskQualityRunResponse(BaseModel):
+    """任务全量质检批次的不可变审计快照。"""
+
+    run_code: str
+    task_code: str
+    task_plot_count: int
+    task_updated_at_snapshot: datetime
+    rule_config_version: int
+    rule_config_snapshot: dict
+    custom_field_schema_digest: str
+    custom_field_snapshot: list[dict]
+    checked_plot_count: int
+    passing_plot_count: int
+    failed_plot_count: int
+    average_score: float | None
+    issue_count: int
+    can_submit: bool
+    duration_ms: int
+    rule_summaries: list[QualityRuleSummary]
+    operator: str
+    operator_code: str
+    operator_role: str
+    comment: str | None
+    created_at: datetime
+
+
+class TaskQualityRunListResponse(BaseModel):
+    """任务全量质检批次历史列表。"""
+
+    task_code: str
+    total_count: int
+    items: list[TaskQualityRunResponse]
 
 
 class QualityIssueItem(BaseModel):

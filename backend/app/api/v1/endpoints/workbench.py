@@ -27,6 +27,7 @@ from app.schemas.workbench import (
     QualityIssueResolveResponse,
     TaskQualityCheckRequest,
     TaskQualityCheckResponse,
+    TaskQualityRunListResponse,
     TaskSubmitRequest,
     TaskSummary,
     WorkbenchOverviewResponse,
@@ -371,6 +372,32 @@ async def run_task_quality_checks(
         db,
         task_code,
         request,
+    )
+
+
+@router.get(
+    "/tasks/{task_code}/quality-checks/runs",
+    response_model=TaskQualityRunListResponse,
+)
+async def list_task_quality_runs(
+    task_code: str,
+    db: DatabaseSession,
+    limit: Annotated[int, Query(ge=1, le=50)] = 10,
+) -> TaskQualityRunListResponse:
+    """查询任务最近的不可变全量质检批次账本。
+
+    Args:
+        task_code: 作业任务编号。
+        db: FastAPI 注入的异步数据库会话。
+        limit: 返回最近批次数量。
+
+    Returns:
+        TaskQualityRunListResponse: 历史总数和批次规则快照。
+    """
+    return await workbench_service.list_task_quality_runs(
+        db,
+        task_code,
+        limit,
     )
 
 

@@ -68,6 +68,7 @@ import type {
   ReviewActionResult,
   TaskQualityCheckPayload,
   TaskQualityCheckResult,
+  TaskQualityRunList,
   TaskSubmitPayload,
   RuleConfig,
   RuleConfigUpdatePayload,
@@ -327,6 +328,20 @@ export const runWorkbenchTaskQualityChecks = (
 ) => request.post<TaskQualityCheckResult>(
   `/v1/workbench/tasks/${taskCode}/quality-checks/run`,
   payload,
+)
+
+/**
+ * 查询任务最近的不可变全量质检批次账本。
+ * @param {string} taskCode 任务编号。
+ * @param {number} limit 返回最近批次数量。
+ * @returns {Promise<object>} 质检任务、规则和用户快照。
+ */
+export const getWorkbenchTaskQualityRuns = (
+  taskCode: string,
+  limit: number = 10,
+) => request.get<TaskQualityRunList>(
+  `/v1/workbench/tasks/${taskCode}/quality-checks/runs`,
+  { params: { limit } },
 )
 
 /**

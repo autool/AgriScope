@@ -12,6 +12,10 @@
 
 ![AgriScope 地块解译工作台](docs/images/interpretation-workbench.png)
 
+### 全量质检批次账本
+
+![AgriScope 全量质检批次账本](docs/images/task-quality-run-ledger.png)
+
 ### 地块属性 Excel 逐行维护
 
 ![AgriScope 地块属性 Excel 逐行维护](docs/images/plot-attribute-workbook.png)
@@ -160,6 +164,7 @@
 - 支持项目负责人配置最多 50 个项目级自定义地块属性，覆盖文本、数值、日期、是/否和单选类型；字段编码不可变，名称、必填规则、选项、顺序和启停状态均版本化审计。字段定义变化会重开项目质量门禁，停用字段历史值继续保留但不能编辑。
 - 支持从当前任务导出带 `expected_version` 的真实地块属性 XLSX，并按图斑逐行填写固定属性和当前活动自定义字段；工作簿通过隐藏模式页固化字段定义与 SHA-256，长单选项使用命名区域避免 Excel 255 字符限制。服务端严格检查工作簿结构、字段模式、任务范围和并发版本后整批原子回写，保存原始文件大小、SHA-256、稳定用户角色和完整不可变版本。
 - 支持质量规则检查、问题定位、操作历史和三级审核流程展示。
+- 支持任务级全量质检不可变批次账本：质检与当前检查结果、规则问题在一个事务内提交，保存任务图斑数量和更新时间快照、项目规则版本与阈值、活动自定义字段模式 SHA-256、覆盖/通过/失败数量、平均得分、问题数、耗时、逐规则汇总及稳定操作人角色。前端可复核最近历史，成果包内嵌完整 `quality/quality_runs.json`，不再用瞬时响应或自由文本冒充批次证据。
 - 支持人工审核问题填写复核依据后确认关闭；自动质检和外业问题仍必须通过各自复检流程闭环，不能人工绕过。
 - 支持图斑历史版本恢复、审核通过/退回/驳回和整改闭环。
 - 项目成员、角色和业务能力持久化；三级审核、版本回退、成果生成与下载均由后端角色门禁控制并记录用户编码和角色快照。
@@ -321,6 +326,7 @@ psql "$POSTGRES_DSN" -f scripts/migrations/20260722_imagery_registration_workflo
 psql "$POSTGRES_DSN" -f scripts/migrations/20260722_change_detection_registration_binding.sql
 psql "$POSTGRES_DSN" -f scripts/migrations/20260723_imagery_fusion_workflow.sql
 psql "$POSTGRES_DSN" -f scripts/migrations/20260723_dataset_asset_physical_verification.sql
+psql "$POSTGRES_DSN" -f scripts/migrations/20260723_task_quality_runs.sql
 ```
 
 其中 `POSTGRES_DSN` 使用 PostgreSQL 原生连接串。`task_plots` 明确保存任务与图斑的分配关系，质量检查、进度统计和提交门禁均以该作用域为准。
@@ -363,6 +369,14 @@ cd backend
 psql "$POSTGRES_DSN" -f scripts/migrations/20260722_invalidate_legacy_quality_cycle.sql
 psql "$POSTGRES_DSN" -f scripts/migrations/20260722_backfill_system_review_identity.sql
 ```
+
+任务级全量质检批次固定写入 `task_quality_runs`。真实全省联调批次
+`QCR-62858407449744A9B86778012E00D6C7` 在 46,511 毫秒内覆盖 35,020 个任务图斑，
+保存项目规则版本 1、2 个活动自定义字段的规范化模式摘要和 11 条逐规则汇总。
+当前 35,020 个图斑均未通过门禁，批次如实记录 110,806 条规则问题：其中
+35,019 个图斑缺少项目必填“土壤类型”，3,301 个耕地图斑缺少作物类型，2,009 个存在
+真实拓扑重叠，898 个超出登记县界，34,559 个未被当前公开子区影像覆盖；系统保留这些
+阻断项供整改，不把公开哈尔滨子区影像或 OSM 待判属性冒充全省可交付成果。
 
 ### 项目用户、审核与交付迁移
 
@@ -1048,6 +1062,7 @@ psql "$POSTGRES_DSN" -f scripts/migrations/20260722_remove_seeded_task_audit.sql
 | POST | `/api/v1/workbench/tasks/{task_code}/plot-operations/undo` | 撤销最近一个有效操作并生成新版本及事件审计 |
 | POST | `/api/v1/workbench/tasks/{task_code}/plot-operations/redo` | 重做最近一个未失效操作并生成新版本及事件审计 |
 | POST | `/api/v1/workbench/tasks/{task_code}/quality-checks/run` | 一次事务运行任务全部图斑质检并返回规则汇总 |
+| GET | `/api/v1/workbench/tasks/{task_code}/quality-checks/runs` | 查询最近的不可变全量质检任务、规则、自定义字段模式和稳定用户快照 |
 | GET | `/api/v1/workbench/tasks/{task_code}/quality-issues` | 分页筛选质量问题并返回关联图斑和规则统计 |
 | PATCH | `/api/v1/workbench/tasks/{task_code}/quality-issues/{issue_id}/resolve` | 授权审核人确认关闭人工审核问题并保存复核审计 |
 | POST | `/api/v1/workbench/tasks/{task_code}/plots/batch-attributes` | 对显式勾选图斑批量赋值并逐图生成新版本 |

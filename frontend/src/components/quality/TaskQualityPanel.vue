@@ -8,6 +8,7 @@ import { storeToRefs } from 'pinia'
 import { computed, ref } from 'vue'
 
 import QualityIssueQueue from '@/components/quality/QualityIssueQueue.vue'
+import TaskQualityRunHistory from '@/components/quality/TaskQualityRunHistory.vue'
 import { useUserStore } from '@/store/userStore'
 import { useWorkbenchStore } from '@/store/workbenchStore'
 
@@ -177,6 +178,8 @@ const submitForSelfCheck = async (): Promise<void> => {
         </div>
       </div>
     </template>
+
+    <TaskQualityRunHistory />
 
     <a-collapse ghost class="issue-collapse">
       <a-collapse-panel key="issues" header="问题图斑队列 · 筛选与地图定位">

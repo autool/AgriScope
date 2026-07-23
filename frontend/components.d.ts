@@ -138,6 +138,7 @@ declare module 'vue' {
     SupervisionPlanModal: typeof import('./src/components/supervision/SupervisionPlanModal.vue')['default']
     SupervisionPlanWorkspace: typeof import('./src/components/supervision/SupervisionPlanWorkspace.vue')['default']
     TaskQualityPanel: typeof import('./src/components/quality/TaskQualityPanel.vue')['default']
+    TaskQualityRunHistory: typeof import('./src/components/quality/TaskQualityRunHistory.vue')['default']
     TelemetryFaultPanel: typeof import('./src/components/monitoring/TelemetryFaultPanel.vue')['default']
     ThematicMapAtlasPanel: typeof import('./src/components/thematic-map/ThematicMapAtlasPanel.vue')['default']
     ThematicMapGenerationPanel: typeof import('./src/components/thematic-map/ThematicMapGenerationPanel.vue')['default']

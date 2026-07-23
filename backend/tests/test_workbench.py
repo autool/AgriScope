@@ -50,6 +50,7 @@ from app.schemas.workbench import (
 )
 from app.services.disaster_service import DisasterService
 from app.services.imagery_service import ImageryService
+from app.services.plot_attribute_field_service import PlotAttributeFieldService
 from app.services.project_user_service import ProjectUserService
 from app.services.review_service import ReviewService
 from app.services.statistics_service import StatisticsService
@@ -183,6 +184,10 @@ def build_plot_attribute_field_service() -> MagicMock:
     service = MagicMock()
     service.get_all_fields_by_project_id = AsyncMock(return_value=[])
     service.get_active_fields_by_project_id = AsyncMock(return_value=[])
+    service.build_schema_snapshot.side_effect = (
+        PlotAttributeFieldService.build_schema_snapshot
+    )
+    service.schema_digest.side_effect = PlotAttributeFieldService.schema_digest
     service.validate_custom_attributes.side_effect = (
         lambda _fields, submitted, existing=None: {
             **(existing or {}),
@@ -1228,11 +1233,14 @@ def test_task_quality_check_batches_all_scoped_plots() -> None:
     )
 
     assert response.total_plot_count == 2
+    assert response.run_code.startswith("QCR-")
     assert response.checked_plot_count == 2
     assert response.passing_plot_count == 1
     assert response.failed_plot_count == 1
     assert response.issue_count == 3
     assert response.can_submit is False
+    assert response.rule_config_version == 1
+    assert len(response.custom_field_schema_digest) == 64
     crop_summary = next(
         item for item in response.rule_summaries if item.rule_code == "LAND_CROP_LOGIC"
     )
@@ -1243,11 +1251,102 @@ def test_task_quality_check_batches_all_scoped_plots() -> None:
     assert len(checks) == 2
     dao.clear_task_quality_issues.assert_awaited_once_with(db, task.id)
     dao.add_quality_issues.assert_awaited_once()
+    dao.add_task_quality_run.assert_awaited_once()
+    quality_run = dao.add_task_quality_run.await_args.args[1]
+    assert quality_run.run_code == response.run_code
+    assert quality_run.task_plot_count == 2
+    assert quality_run.checked_plot_count == 2
+    assert quality_run.passing_plot_count == 1
+    assert quality_run.failed_plot_count == 1
+    assert quality_run.issue_count == 3
+    assert quality_run.operator_code == "quality-wang-haifeng"
+    assert len(quality_run.custom_field_schema_digest) == 64
     dao.add_review_record.assert_awaited_once()
     record = dao.add_review_record.await_args.args[1]
     assert record.reviewer_code == "quality-wang-haifeng"
     assert record.reviewer_role == "quality_inspector"
+    assert response.run_code in record.comment
+    assert "覆盖 2/2 个图斑" in record.comment
+    assert "全量质检单元测试" in record.comment
     db.commit.assert_awaited_once()
+
+
+def test_task_quality_check_request_limits_audit_comment() -> None:
+    """验证全量质检说明不会超过审核记录安全长度。"""
+    with pytest.raises(ValidationError):
+        TaskQualityCheckRequest(
+            operator_code="quality-wang-haifeng",
+            comment="质" * 501,
+        )
+
+
+def test_task_quality_run_history_returns_immutable_snapshots() -> None:
+    """验证任务质检历史返回规则、自定义字段和稳定用户快照。"""
+    created_at = datetime.now(UTC)
+    dao = AsyncMock()
+    dao.get_task_by_code.return_value = SimpleNamespace(id=1)
+    dao.list_task_quality_runs.return_value = (
+        [
+            SimpleNamespace(
+                run_code="QCR-TEST-001",
+                task_plot_count=35020,
+                task_updated_at_snapshot=created_at,
+                rule_config_version=3,
+                rule_config_snapshot={"positional_accuracy_pixels": "2.00"},
+                custom_field_schema_digest="a" * 64,
+                custom_field_snapshot=[
+                    {
+                        "field_code": "soil_type",
+                        "label": "土壤类型",
+                        "field_type": "single_select",
+                        "required": True,
+                        "options": ["黑土"],
+                        "display_order": 10,
+                        "version": 1,
+                    }
+                ],
+                checked_plot_count=35020,
+                passing_plot_count=0,
+                failed_plot_count=35020,
+                average_score=Decimal("58.80"),
+                issue_count=110806,
+                can_submit=False,
+                duration_ms=37462,
+                rule_summaries=[
+                    {
+                        "rule_code": "IMAGERY_COVERAGE",
+                        "label": "影像覆盖检查",
+                        "pass_count": 461,
+                        "warning_count": 0,
+                        "fail_count": 34559,
+                        "blocking_issue_count": 34559,
+                    }
+                ],
+                operator="赵志远",
+                operator_code="manager-zhao-zhiyuan",
+                operator_role="project_manager",
+                comment="全省真实图斑质量门禁验证",
+                created_at=created_at,
+            )
+        ],
+        4,
+    )
+
+    db = AsyncMock()
+    response = asyncio.run(
+        WorkbenchService(dao=dao).list_task_quality_runs(
+            db,
+            "RS-2026-045",
+            10,
+        )
+    )
+
+    assert response.total_count == 4
+    assert response.items[0].run_code == "QCR-TEST-001"
+    assert response.items[0].rule_config_version == 3
+    assert response.items[0].average_score == 58.8
+    assert response.items[0].rule_summaries[0].fail_count == 34559
+    dao.list_task_quality_runs.assert_awaited_once_with(db, 1, 10)
 
 
 def test_task_quality_check_rejects_submitted_task() -> None:

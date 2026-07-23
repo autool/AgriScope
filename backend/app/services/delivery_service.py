@@ -652,6 +652,7 @@ class DeliveryService:
         )
         disasters = await self.disaster_service.get_summary(db, task.task_code)
         quality_issues = await self.dao.get_quality_issues(db, task.id)
+        quality_runs = await self.dao.get_quality_runs(db, task.id)
         field_rows = await self.dao.get_field_rows(db, task.id)
         field_artifacts = (
             await self.field_artifact_service.load_verified_task_artifacts(
@@ -775,6 +776,7 @@ class DeliveryService:
             "statistics": statistics,
             "disasters": disasters,
             "quality_issues": quality_issues,
+            "quality_runs": quality_runs,
             "field_rows": field_rows,
             "field_artifacts": field_artifacts,
             "field_import_workbooks": field_import_workbooks,
@@ -1348,6 +1350,35 @@ class DeliveryService:
             }
             for item in source_data["quality_issues"]
         ]
+        quality_runs = [
+            {
+                "run_code": item.run_code,
+                "task_plot_count": item.task_plot_count,
+                "task_updated_at_snapshot": item.task_updated_at_snapshot,
+                "rule_config_version": item.rule_config_version,
+                "rule_config_snapshot": item.rule_config_snapshot,
+                "custom_field_schema_digest": item.custom_field_schema_digest,
+                "custom_field_snapshot": item.custom_field_snapshot,
+                "checked_plot_count": item.checked_plot_count,
+                "passing_plot_count": item.passing_plot_count,
+                "failed_plot_count": item.failed_plot_count,
+                "average_score": (
+                    float(item.average_score)
+                    if item.average_score is not None
+                    else None
+                ),
+                "issue_count": item.issue_count,
+                "can_submit": item.can_submit,
+                "duration_ms": item.duration_ms,
+                "rule_summaries": item.rule_summaries,
+                "operator": item.operator,
+                "operator_code": item.operator_code,
+                "operator_role": item.operator_role,
+                "comment": item.comment,
+                "created_at": item.created_at,
+            }
+            for item in source_data["quality_runs"]
+        ]
         reviews = [
             {
                 "review_level": item.review_level,
@@ -1666,6 +1697,14 @@ class DeliveryService:
                 len(plot_attribute_import_manifest),
                 "逐行属性工作簿批次、实体大小、SHA-256 和稳定用户角色清单",
                 cls._json_text(plot_attribute_import_manifest),
+            ),
+            cls._text_entry(
+                "quality/quality_runs.json",
+                "质量检查批次",
+                "JSON",
+                len(quality_runs),
+                "全量质检任务、规则、自定义字段模式、逐规则汇总和稳定用户快照",
+                cls._json_text(quality_runs),
             ),
             cls._text_entry(
                 "quality/quality_issues.json",

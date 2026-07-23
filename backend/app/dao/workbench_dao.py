@@ -23,6 +23,7 @@ from app.models.workbench import (
     QualityIssue,
     ReviewRecord,
     TaskPlot,
+    TaskQualityRun,
 )
 
 REVIEW_CYCLE_RESET_ACTIONS = {
@@ -2380,3 +2381,55 @@ class WorkbenchDAO:
         await db.flush()
         await db.refresh(record)
         return record
+
+    async def add_task_quality_run(
+        self,
+        db: AsyncSession,
+        run: TaskQualityRun,
+    ) -> TaskQualityRun:
+        """写入任务全量质检不可变批次账本。
+
+        Args:
+            db: 异步数据库会话。
+            run: 已完成质检的任务、规则和用户快照。
+
+        Returns:
+            TaskQualityRun: 已刷新主键和创建时间的质检批次。
+        """
+        db.add(run)
+        await db.flush()
+        await db.refresh(run)
+        return run
+
+    async def list_task_quality_runs(
+        self,
+        db: AsyncSession,
+        task_id: int,
+        limit: int,
+    ) -> tuple[Sequence[TaskQualityRun], int]:
+        """查询任务最近的全量质检批次及历史总数。
+
+        Args:
+            db: 异步数据库会话。
+            task_id: 作业任务主键。
+            limit: 返回最近批次数量。
+
+        Returns:
+            tuple[Sequence[TaskQualityRun], int]: 最近批次和历史总数。
+        """
+        total = int(
+            (
+                await db.execute(
+                    select(func.count(TaskQualityRun.id)).where(
+                        TaskQualityRun.task_id == task_id
+                    )
+                )
+            ).scalar_one()
+        )
+        result = await db.execute(
+            select(TaskQualityRun)
+            .where(TaskQualityRun.task_id == task_id)
+            .order_by(TaskQualityRun.created_at.desc(), TaskQualityRun.id.desc())
+            .limit(limit)
+        )
+        return result.scalars().all(), total

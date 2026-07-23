@@ -26,6 +26,7 @@ from app.models.workbench import (
     PlotVersion,
     QualityIssue,
     ReviewRecord,
+    TaskQualityRun,
 )
 from app.schemas.workbench import (
     BatchPlotAttributeUpdateRequest,
@@ -58,6 +59,8 @@ from app.schemas.workbench import (
     ReviewRecordResponse,
     TaskQualityCheckRequest,
     TaskQualityCheckResponse,
+    TaskQualityRunListResponse,
+    TaskQualityRunResponse,
     TaskSubmitRequest,
     TaskSummary,
     WorkbenchOverviewResponse,
@@ -130,6 +133,93 @@ class WorkbenchService:
             request_geometry.model_dump(),
             ensure_ascii=False,
             separators=(",", ":"),
+        )
+
+    @staticmethod
+    def _build_quality_rule_snapshot(config: object) -> dict[str, object]:
+        """固化本次全量质检使用的项目规则配置。
+
+        Args:
+            config: 项目级规则配置 ORM 对象。
+
+        Returns:
+            dict[str, object]: 可直接写入 JSONB 的规则版本与阈值快照。
+        """
+        decimal_fields = (
+            "field_offset_threshold_m",
+            "field_search_radius_m",
+            "positional_accuracy_pixels",
+            "construction_min_area_sqm",
+            "other_agricultural_min_area_sqm",
+            "completeness_rate_min",
+            "boundary_agreement_rate_min",
+            "land_class_accuracy_min",
+            "key_field_accuracy_min",
+            "max_cloud_cover_percent",
+        )
+        snapshot: dict[str, object] = {
+            "version": int(getattr(config, "version", 1)),
+            "max_capture_image_days": getattr(
+                config,
+                "max_capture_image_days",
+                None,
+            ),
+            "output_crs": getattr(config, "output_crs", None),
+            "output_projection": getattr(config, "output_projection", None),
+            "updated_by_code": getattr(config, "updated_by_code", None),
+            "updated_by_role": getattr(config, "updated_by_role", None),
+            "updated_at": (
+                getattr(config, "updated_at", None).isoformat()
+                if getattr(config, "updated_at", None) is not None
+                else None
+            ),
+        }
+        for field_name in decimal_fields:
+            value = getattr(config, field_name, None)
+            snapshot[field_name] = str(value) if value is not None else None
+        return snapshot
+
+    @staticmethod
+    def _to_task_quality_run_response(
+        task_code: str,
+        run: TaskQualityRun,
+    ) -> TaskQualityRunResponse:
+        """把任务质检批次 ORM 对象转换为类型化响应。
+
+        Args:
+            task_code: 作业任务编号。
+            run: 不可变全量质检批次。
+
+        Returns:
+            TaskQualityRunResponse: 可供前端和归档复核的批次证据。
+        """
+        return TaskQualityRunResponse(
+            run_code=run.run_code,
+            task_code=task_code,
+            task_plot_count=run.task_plot_count,
+            task_updated_at_snapshot=run.task_updated_at_snapshot,
+            rule_config_version=run.rule_config_version,
+            rule_config_snapshot=run.rule_config_snapshot or {},
+            custom_field_schema_digest=run.custom_field_schema_digest,
+            custom_field_snapshot=run.custom_field_snapshot or [],
+            checked_plot_count=run.checked_plot_count,
+            passing_plot_count=run.passing_plot_count,
+            failed_plot_count=run.failed_plot_count,
+            average_score=(
+                float(run.average_score) if run.average_score is not None else None
+            ),
+            issue_count=run.issue_count,
+            can_submit=run.can_submit,
+            duration_ms=run.duration_ms,
+            rule_summaries=[
+                QualityRuleSummary.model_validate(item)
+                for item in (run.rule_summaries or [])
+            ],
+            operator=run.operator,
+            operator_code=run.operator_code,
+            operator_role=run.operator_role,
+            comment=run.comment,
+            created_at=run.created_at,
         )
 
     async def _validate_geometry(
@@ -2160,6 +2250,7 @@ class WorkbenchService:
             raise NotFoundException(f"未找到任务 {task_code}")
         if task.status != "interpreting":
             raise ValidationException("仅解译中的任务可以重新运行全量质量检查")
+        task_updated_at_snapshot = task.updated_at
         operator = await self.project_user_service.require_capability(
             db,
             task.project_id,
@@ -2186,6 +2277,13 @@ class WorkbenchService:
                 db,
                 task.project_id,
             )
+        )
+        rule_config_snapshot = self._build_quality_rule_snapshot(config)
+        custom_field_snapshot = (
+            self.plot_attribute_field_service.build_schema_snapshot(custom_fields)
+        )
+        custom_field_schema_digest = (
+            self.plot_attribute_field_service.schema_digest(custom_field_snapshot)
         )
 
         checks: list[dict[str, object]] = []
@@ -2238,29 +2336,6 @@ class WorkbenchService:
             await self.dao.add_quality_issues(db, issues)
         await self.dao.upsert_plot_quality_checks(db, checks)
         gate_summary = await self.dao.get_quality_gate_summary(db, task.id)
-        task.quality_score = gate_summary.average_score
-        task.updated_at = datetime.now(UTC)
-        await self.dao.add_review_record(
-            db,
-            ReviewRecord(
-                task_id=task.id,
-                review_level="quality",
-                action="quality_batch_run",
-                reviewer=operator.display_name,
-                reviewer_code=operator.user_code,
-                reviewer_role=operator.role_code,
-                comment=(
-                    request.comment
-                    or (
-                        f"完成 {gate_summary.checked_count} 个图斑全量质检，"
-                        f"通过 {gate_summary.passing_count} 个，"
-                        f"发现 {len(issues)} 条规则问题"
-                    )
-                ),
-            ),
-        )
-        await db.commit()
-
         can_submit = (
             gate_summary.total_count > 0
             and gate_summary.checked_count == gate_summary.total_count
@@ -2279,7 +2354,66 @@ class WorkbenchService:
             )
             for rule_code, counter in rule_counters.items()
         ]
+        duration_ms = round((perf_counter() - started_counter) * 1000)
+        run_code = f"QCR-{uuid4().hex.upper()}"
+        task.quality_score = gate_summary.average_score
+        task.updated_at = datetime.now(UTC)
+        await self.dao.add_task_quality_run(
+            db,
+            TaskQualityRun(
+                run_code=run_code,
+                task_id=task.id,
+                project_id=task.project_id,
+                task_plot_count=len(plots),
+                task_updated_at_snapshot=task_updated_at_snapshot,
+                rule_config_version=int(getattr(config, "version", 1)),
+                rule_config_snapshot=rule_config_snapshot,
+                custom_field_schema_digest=custom_field_schema_digest,
+                custom_field_snapshot=custom_field_snapshot,
+                checked_plot_count=gate_summary.checked_count,
+                passing_plot_count=gate_summary.passing_count,
+                failed_plot_count=(
+                    gate_summary.total_count - gate_summary.passing_count
+                ),
+                average_score=gate_summary.average_score,
+                issue_count=len(issues),
+                can_submit=can_submit,
+                duration_ms=duration_ms,
+                rule_summaries=[item.model_dump() for item in rule_summaries],
+                operator=operator.display_name,
+                operator_code=operator.user_code,
+                operator_role=operator.role_code,
+                comment=request.comment,
+                created_at=started_at,
+            ),
+        )
+        summary_comment = (
+            f"质检批次 {run_code}：覆盖 {gate_summary.checked_count}/"
+            f"{gate_summary.total_count} 个图斑，通过 "
+            f"{gate_summary.passing_count} 个，发现 {len(issues)} 条问题，"
+            f"平均得分 {gate_summary.average_score or 0:.2f}，耗时 "
+            f"{duration_ms} 毫秒"
+        )
+        await self.dao.add_review_record(
+            db,
+            ReviewRecord(
+                task_id=task.id,
+                review_level="quality",
+                action="quality_batch_run",
+                reviewer=operator.display_name,
+                reviewer_code=operator.user_code,
+                reviewer_role=operator.role_code,
+                comment=(
+                    f"{summary_comment}；{request.comment}"
+                    if request.comment
+                    else summary_comment
+                ),
+            ),
+        )
+        await db.commit()
+
         return TaskQualityCheckResponse(
+            run_code=run_code,
             task_code=task_code,
             total_plot_count=gate_summary.total_count,
             checked_plot_count=gate_summary.checked_count,
@@ -2288,9 +2422,44 @@ class WorkbenchService:
             average_score=gate_summary.average_score,
             issue_count=len(issues),
             can_submit=can_submit,
-            duration_ms=round((perf_counter() - started_counter) * 1000),
+            duration_ms=duration_ms,
             executed_at=started_at,
+            rule_config_version=int(getattr(config, "version", 1)),
+            custom_field_schema_digest=custom_field_schema_digest,
             rule_summaries=rule_summaries,
+        )
+
+    async def list_task_quality_runs(
+        self,
+        db: AsyncSession,
+        task_code: str,
+        limit: int,
+    ) -> TaskQualityRunListResponse:
+        """查询任务最近的不可变全量质检批次。
+
+        Args:
+            db: 异步数据库会话。
+            task_code: 作业任务编号。
+            limit: 返回最近批次数量。
+
+        Returns:
+            TaskQualityRunListResponse: 历史总数和最近批次证据。
+        """
+        task = await self.dao.get_task_by_code(db, task_code)
+        if task is None:
+            raise NotFoundException(f"未找到任务 {task_code}")
+        runs, total_count = await self.dao.list_task_quality_runs(
+            db,
+            task.id,
+            limit,
+        )
+        return TaskQualityRunListResponse(
+            task_code=task_code,
+            total_count=total_count,
+            items=[
+                self._to_task_quality_run_response(task_code, run)
+                for run in runs
+            ],
         )
 
     async def get_task_quality_issues(

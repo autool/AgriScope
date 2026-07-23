@@ -12,6 +12,7 @@ import {
   getPlotBoundary,
   getPlotOperationHistoryState,
   getPlotVersions,
+  getWorkbenchTaskQualityRuns,
   getWorkbenchOverview,
   getWorkbenchPlot,
   mergeWorkbenchPlots,
@@ -47,6 +48,7 @@ import type {
   PlotVersionList,
   QualityCheckResult,
   TaskQualityCheckResult,
+  TaskQualityRunList,
   WorkbenchOverview,
 } from '@/types/workbench'
 import { getGeoJsonFeatureExtent } from '@/utils/geojson'
@@ -66,6 +68,8 @@ export const useWorkbenchStore = defineStore('workbench', () => {
   const qualityResultRef = ref<QualityCheckResult | null>(null)
   const taskQualityCheckingRef = ref<boolean>(false)
   const taskQualityResultRef = ref<TaskQualityCheckResult | null>(null)
+  const taskQualityRunsRef = ref<TaskQualityRunList | null>(null)
+  const taskQualityRunsLoadingRef = ref<boolean>(false)
   const taskSubmittingRef = ref<boolean>(false)
   const batchUpdatingPlotsRef = ref<boolean>(false)
   const creatingPlotRef = ref<boolean>(false)
@@ -699,10 +703,23 @@ export const useWorkbenchStore = defineStore('workbench', () => {
         { operator_code: user.user_code, comment: comment || null },
       )
       taskQualityResultRef.value = result
-      await refreshOverview()
+      await Promise.all([refreshOverview(), loadTaskQualityRuns()])
       return result
     } finally {
       taskQualityCheckingRef.value = false
+    }
+  }
+
+  /** 读取最近的不可变全量质检批次账本。 */
+  const loadTaskQualityRuns = async (limit: number = 10): Promise<void> => {
+    taskQualityRunsLoadingRef.value = true
+    try {
+      taskQualityRunsRef.value = await getWorkbenchTaskQualityRuns(
+        taskCodeComputed.value,
+        limit,
+      )
+    } finally {
+      taskQualityRunsLoadingRef.value = false
     }
   }
 
@@ -823,6 +840,8 @@ export const useWorkbenchStore = defineStore('workbench', () => {
     qualityResultRef,
     taskQualityCheckingRef,
     taskQualityResultRef,
+    taskQualityRunsRef,
+    taskQualityRunsLoadingRef,
     taskSubmittingRef,
     batchUpdatingPlotsRef,
     creatingPlotRef,
@@ -868,6 +887,7 @@ export const useWorkbenchStore = defineStore('workbench', () => {
     redoLastPlotOperation,
     checkSelectedPlotQuality,
     runTaskQualityChecks,
+    loadTaskQualityRuns,
     submitTaskForSelfCheck,
     batchUpdatePlotAttributes,
     selectByCoordinate,

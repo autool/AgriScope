@@ -12,6 +12,7 @@ from sqlalchemy import (
     Date,
     DateTime,
     ForeignKey,
+    Index,
     Integer,
     Numeric,
     String,
@@ -357,6 +358,92 @@ class PlotQualityCheck(Base):
     can_submit: Mapped[bool] = mapped_column(Boolean, nullable=False)
     rules: Mapped[list[dict]] = mapped_column(JSON, nullable=False, default=list)
     checked_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        nullable=False,
+    )
+
+
+class TaskQualityRun(Base):
+    """任务级全量质检的不可变批次账本。"""
+
+    __tablename__ = "task_quality_runs"
+    __table_args__ = (
+        CheckConstraint(
+            "task_plot_count >= 0 AND checked_plot_count >= 0 "
+            "AND passing_plot_count >= 0 AND failed_plot_count >= 0 "
+            "AND issue_count >= 0 AND duration_ms >= 0",
+            name="ck_task_quality_run_non_negative",
+        ),
+        CheckConstraint(
+            "checked_plot_count = passing_plot_count + failed_plot_count",
+            name="ck_task_quality_run_checked_balance",
+        ),
+        CheckConstraint(
+            "task_plot_count = checked_plot_count",
+            name="ck_task_quality_run_full_coverage",
+        ),
+        CheckConstraint(
+            "rule_config_version >= 1",
+            name="ck_task_quality_run_rule_version",
+        ),
+        CheckConstraint(
+            "char_length(custom_field_schema_digest) = 64",
+            name="ck_task_quality_run_schema_digest",
+        ),
+        Index("idx_task_quality_runs_task_created", "task_id", "created_at"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    run_code: Mapped[str] = mapped_column(String(80), unique=True, nullable=False)
+    task_id: Mapped[int] = mapped_column(
+        ForeignKey("monitoring_tasks.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    project_id: Mapped[int] = mapped_column(
+        ForeignKey("monitoring_projects.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    task_plot_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    task_updated_at_snapshot: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+    )
+    rule_config_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    rule_config_snapshot: Mapped[dict] = mapped_column(
+        JSON,
+        nullable=False,
+        default=dict,
+    )
+    custom_field_schema_digest: Mapped[str] = mapped_column(
+        String(64),
+        nullable=False,
+    )
+    custom_field_snapshot: Mapped[list[dict]] = mapped_column(
+        JSON,
+        nullable=False,
+        default=list,
+    )
+    checked_plot_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    passing_plot_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    failed_plot_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    average_score: Mapped[Decimal | None] = mapped_column(
+        Numeric(5, 2),
+        nullable=True,
+    )
+    issue_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    can_submit: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    duration_ms: Mapped[int] = mapped_column(Integer, nullable=False)
+    rule_summaries: Mapped[list[dict]] = mapped_column(
+        JSON,
+        nullable=False,
+        default=list,
+    )
+    operator: Mapped[str] = mapped_column(String(100), nullable=False)
+    operator_code: Mapped[str] = mapped_column(String(50), nullable=False)
+    operator_role: Mapped[str] = mapped_column(String(40), nullable=False)
+    comment: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         server_default=func.now(),
         nullable=False,

@@ -631,6 +631,7 @@ export interface QualityRuleSummary {
 }
 
 export interface TaskQualityCheckResult {
+  run_code: string
   task_code: string
   total_plot_count: number
   checked_plot_count: number
@@ -641,7 +642,39 @@ export interface TaskQualityCheckResult {
   can_submit: boolean
   duration_ms: number
   executed_at: string
+  rule_config_version: number
+  custom_field_schema_digest: string
   rule_summaries: QualityRuleSummary[]
+}
+
+export interface TaskQualityRun {
+  run_code: string
+  task_code: string
+  task_plot_count: number
+  task_updated_at_snapshot: string
+  rule_config_version: number
+  rule_config_snapshot: Record<string, unknown>
+  custom_field_schema_digest: string
+  custom_field_snapshot: Array<Record<string, unknown>>
+  checked_plot_count: number
+  passing_plot_count: number
+  failed_plot_count: number
+  average_score: number | null
+  issue_count: number
+  can_submit: boolean
+  duration_ms: number
+  rule_summaries: QualityRuleSummary[]
+  operator: string
+  operator_code: string
+  operator_role: string
+  comment: string | null
+  created_at: string
+}
+
+export interface TaskQualityRunList {
+  task_code: string
+  total_count: number
+  items: TaskQualityRun[]
 }
 
 export interface QualityIssueItem {
