@@ -132,7 +132,7 @@ export const useImageryStore = defineStore('imagery', () => {
   }
 
   /**
-   * 使用已验证 Sentinel-2 L2A 源级证据满足定标或大气校正要求。
+   * 使用已验证 Sentinel-2 L2A 或 Landsat Collection 2 L2 源级证据。
    * Args:
    *   stepCode: 辐射定标或大气校正步骤编码。
    *   payload: 明确产品级别、无算法确认和承认依据。

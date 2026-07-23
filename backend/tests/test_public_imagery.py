@@ -160,7 +160,12 @@ def test_engine_applies_stac_scale_offset_and_preserves_public_lineage(
         tags = dataset.tags()
         assert tags["STAC_ITEM_ID"] == item.item_id
         assert tags["STAC_SCALE_OFFSET_APPLIED"] == "true"
+        assert tags["SOURCE_SCALE_APPLIED"] == "true"
         assert tags["SURFACE_REFLECTANCE"] == "true"
+        assert tags["REFLECTANCE_QUANTITY"] == "SURFACE_REFLECTANCE"
+        assert tags["SOURCE_PROCESSING_BASELINE"] == (
+            "USGS Landsat Collection 2 Level-2"
+        )
         assert tags["SOURCE_CLASSIFICATION"] == "public_open_data"
         assert "sig=" not in str(tags).lower()
 

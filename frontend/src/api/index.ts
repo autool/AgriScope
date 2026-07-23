@@ -795,7 +795,7 @@ export const executeImageryProcessingStep = (
 )
 
 /**
- * 使用实体 L2A 源产品级别证据满足定标或大气校正步骤。
+ * 使用实体 Sentinel-2 L2A 或 Landsat Collection 2 L2 证据满足处理步骤。
  * @param {string} assetCode 影像资产编号。
  * @param {string} stepCode 辐射定标或大气校正步骤编码。
  * @param {object} payload 稳定用户、产品级别、无算法确认和承认依据。

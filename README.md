@@ -60,6 +60,10 @@
 
 ![AgriScope 公开 Landsat 历史语料检索与实体入库](docs/images/imagery-public-landsat.png)
 
+### Landsat Collection 2 Level-2 源级承认
+
+![AgriScope Landsat Collection 2 Level-2 源级承认](docs/images/imagery-landsat-source-acceptance.png)
+
 ### GCP 几何精校正
 
 ![AgriScope GCP 几何精校正](docs/images/imagery-gcp-correction.png)
@@ -159,6 +163,7 @@
 - 支持 2–20 景不同影像资产的全局均值/标准差匀色、首景优先或重叠均值合成和真实行政区覆盖率验收。服务端按栅格块处理并限制输出像元数，以完整行政区作为覆盖率分母，只有通过门槛的 GeoTIFF 才会原子落盘并保存输入血缘、大小和 SHA-256。
 - 支持从 Element 84 Earth Search 公共 STAC 查询并裁取 Sentinel-2 L2A 蓝、绿、红、近红外四个同网格 COG；强制读取 Raster Extension 的 `scale`、`offset` 和 `nodata` 并转换为浮点 BOA 地表反射率，再复用平台入库门禁。保存 STAC 条目、原始波段 URL、产品 URI、处理基线、公开许可、空间范围、文件大小和 SHA-256。
 - 历史影像抽屉提供公开 Landsat 语料工作台：前端按真实 WGS84 窗口、日期和云量检索，后端固定访问 Microsoft Planetary Computer 的 `landsat-c2-l2` collection，只返回具备 Blue/Green/Red/NIR 四个 Raster Extension 标度的候选。导入只接收 Item ID，不接收浏览器 URL；服务端重新读取 STAC Item、临时申请 SAS、验证完整覆盖和同网格 COG，应用 `scale`/`offset`/`nodata` 后生成浮点地表反射率 GeoTIFF，再通过统一影像批次门禁原子保存实体、大小、SHA-256、WRS、产品、许可和非法定成果说明。SAS 不写入浏览器响应、数据库、日志或实体标签。
+- 源级承认按产品族独立执行。Sentinel-2 继续要求 MSI L2A、已应用 STAC 标度和浮点 BOA 反射率；Landsat 仅接受平台受控导入的 Collection 2 Level-2 实体，并重新校验当前 SHA-256、Planetary Computer/USGS 血缘、产品与 STAC Item 一致性、WRS、四个有序浮点 Blue/Green/Red/NIR 波段、完整标度清单、无签名 Azure COG 地址和公开许可。辐射定标与大气校正可复用同一实体并记录 `algorithm_executed=false`，但几何校正、裁剪、增强和波段产品仍需生成各自实体。
 - 支持历史影像覆盖矩阵与问题追溯：后端以完整 13 个地级区域、122 个县区真实 geography 面积为分母，批量计算每景 WGS84 足迹的县区覆盖率并保留零覆盖单元；时间线重新校验源文件和处理步骤实体 SHA-256，展示入库、必选步骤待办、产物失效、历史替换和演示数据状态，不生成固定年份或虚构历史时相。
 - 影像预处理页不再使用固定瓦片冒充当前资产预览：服务端从所选实体源栅格生成带源文件 SHA-256、WGS84 范围、波段索引和 PNG 校验值的真实快视图；真彩色、标准假彩色和 NDVI 仅从已通过实体校验的 `band_products` 七波段产物生成，缺失时明确显示不可用。快视图只用于核验，不计入处理完成率。
 - 支持创建绑定两期真实影像、规则版本、任务图斑范围和已校验实体配准成果的多时相变化检测任务；前端不能再手工填写偏差或任意证据 URI。服务端以配准 GeoTIFF 作为后时相来源，将两期栅格生成共同拉伸、带 SHA 清单的卷帘/闪烁/并排预览；既可原子导入外部候选 GeoJSON，也可从服务端注册表选择“RGB 平均绝对差分”或“RGB 变化向量幅值”，基于实体公共网格执行各自真实评分公式和四邻域连通域矢量化。平台保存算法编码、名称、版本、公式、参数、源/成果 SHA 与实体 GeoJSON，避免只换名称复用相同结果，也不将当前 RGB 能力描述为 NDVI 或地类分类。自动候选保持“未分类”，必须由人工归入六类之一后才能确认，重分类与排除均保留不可变审计历史。
@@ -763,9 +768,12 @@ GeoTIFF，保存无签名源 URL、STAC Item、USGS 产品、WRS、Collection 2 
 - 实体大小：4,664,058 bytes
 - SHA-256：`3d3cbc1dec5b86ef686f4a03450113ae3bc0b407a782b410a0899f05790356c8`
 
-该实体已进入影像资产、原子入库批次、处理步骤和历史覆盖矩阵。Landsat Collection 2 L2
-虽然已经提供地表反射率，但当前流水线仍把辐射/大气步骤显示为待审计，不复用仅针对
-Sentinel-2 L2A 的源级承认规则，也不把单景子区描述为完整省域历史档案。
+该实体已进入影像资产、原子入库批次、处理步骤和历史覆盖矩阵。辐射定标与大气校正
+已经分别通过 Landsat 专用源级证据校验：两步均复用同一 4,664,058 字节实体，处理器版本
+为 `landsat-c2-l2-source-acceptance-v1`，审核事件保存稳定项目负责人和人工依据，处理进度
+为 40%。系统没有复制源文件，也没有运行或声称运行 DOS1、LEDAPS/LaSRC 等重复算法；
+几何校正、行政区裁剪、增强和波段产品仍保持真实待处理。该单景子区不描述为完整省域
+历史档案。
 
 ### 公开 Landsat-8 全色融合来源导入
 
@@ -798,12 +806,16 @@ poetry run python -m scripts.import_public_landsat_pansharpening \
 或在空数据库中复现。脚本不把 Collection 1 L1 数据描述为大气校正后的地表反射率，
 也不会把公开 Landsat 数据标成涉密或法定调查成果。
 
-对导入器已实际应用 STAC 标度的 Sentinel-2 L2A，可在辐射定标和大气校正步骤选择
-“L2A 源级承认”。服务端会重新校验实体大小、SHA256、平台/载荷、L2A、
-`SOURCE_SCALE_APPLIED=true`、`BOA_REFLECTANCE`、产品 URI、处理基线，以及公开数据的
-STAC Item 和许可链接。承认步骤复用同一实体，不复制文件、不运行 DOS1，并在步骤证据
-和审核记录中保存 `algorithm_executed=false`。几何重投影、行政区裁剪和波段产品仍须
-生成新的校验值实体，不能一并跳过。
+对已实际应用 STAC 标度的受控源产品，可在辐射定标和大气校正步骤选择源级承认。
+服务端不只核对 `processing_level`：Sentinel-2 L2A 需要平台/载荷、浮点 BOA 反射率、
+产品 URI、处理基线、STAC Item 和许可；Landsat Collection 2 Level-2 还需要
+Planetary Computer/USGS 来源、产品与 Item 一致、WRS Path/Row、Blue/Green/Red/NIR
+有序波段、完整 `STAC_CALIBRATION`、四个无签名 Azure COG URL 和公开许可。任一证据
+缺失、标度非法、来源 URL 带签名或文件 SHA-256 失效都会拒绝承认。
+
+承认步骤复用同一实体，不复制文件、不执行重复算法，并在步骤证据和审核记录中保存
+产品族、产品族专用处理器版本、`algorithm_executed=false`、稳定用户角色和人工依据。
+几何重投影、行政区裁剪、影像增强和波段产品仍须生成新的校验值实体，不能一并跳过。
 
 几何校正步骤可选择普通坐标系重投影或 GCP 仿射精校正。GCP 模式要求录入 3–100 个
 不共线控制点，每个点保存影像列/行、地面 X/Y/Z、控制点编号和真实来源；前端不自动
@@ -1011,7 +1023,7 @@ psql "$POSTGRES_DSN" -f scripts/migrations/20260722_remove_seeded_task_audit.sql
 | GET | `/api/v1/imagery-assets/{asset_code}/quicklooks/{product_code}.png` | 读取带 PNG SHA-256 ETag 的源影像、真彩色、假彩色或 NDVI 快视图 |
 | POST | `/api/v1/imagery-assets/{asset_code}/processing/{step_code}/run` | 校验并登记外部处理实体产物 |
 | POST | `/api/v1/imagery-assets/{asset_code}/processing/{step_code}/execute` | 使用内置处理器执行步骤并生成受控实体产物 |
-| POST | `/api/v1/imagery-assets/{asset_code}/processing/{step_code}/accept-source` | 复核 Sentinel-2 L2A 实体与血缘后，无重复算法地承认定标或大气校正要求 |
+| POST | `/api/v1/imagery-assets/{asset_code}/processing/{step_code}/accept-source` | 按 Sentinel-2 L2A 或 Landsat Collection 2 L2 产品族复核实体、SHA-256 与完整血缘后，无重复算法地承认定标或大气校正要求 |
 | GET | `/api/v1/imagery-assets` | 查询项目真实影像资产目录 |
 | POST | `/api/v1/imagery-assets` | 上传影像文件并自动读取栅格与空间元数据 |
 | POST | `/api/v1/imagery-assets/batch` | 原子导入 1–20 个影像实体及逐文件清单，任一失败时整批回滚 |

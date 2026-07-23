@@ -89,8 +89,19 @@ const capabilityTextComputed = computed<string>(() => (
     : '当前身份无影像处理权限'
 ))
 
+const sourceAcceptanceLevelComputed = computed<'L2A' | 'L2' | null>(() => {
+  const level = props.processingLevel?.toUpperCase()
+  return level === 'L2A' || level === 'L2' ? level : null
+})
+
+const sourceAcceptanceProductComputed = computed<string>(() => (
+  sourceAcceptanceLevelComputed.value === 'L2A'
+    ? 'Sentinel-2 L2A BOA 地表反射率'
+    : 'Landsat Collection 2 Level-2 地表反射率'
+))
+
 const sourceAcceptanceEligibleComputed = computed<boolean>(() => (
-  props.processingLevel?.toUpperCase() === 'L2A'
+  sourceAcceptanceLevelComputed.value !== null
   && ['radiometric', 'atmospheric'].includes(props.step?.step_code || '')
 ))
 
@@ -254,12 +265,17 @@ const submit = async (): Promise<void> => {
   savingRef.value = true
   try {
     if (modeRef.value === 'source-accept') {
+      const expectedProcessingLevel = sourceAcceptanceLevelComputed.value
+      if (!expectedProcessingLevel) {
+        message.warning('当前产品级别不支持源级承认')
+        return
+      }
       await imageryStore.acceptSourceLevelStep(step.step_code, {
-        expected_processing_level: 'L2A',
+        expected_processing_level: expectedProcessingLevel,
         confirm_no_algorithm_execution: true,
         justification: commentRef.value.trim(),
       })
-      emit('success', `${step.step_name}已通过 L2A 源产品证据承认`)
+      emit('success', `${step.step_name}已通过 ${expectedProcessingLevel} 源产品证据承认`)
     } else if (modeRef.value === 'execute') {
       await imageryStore.executeStep(
         step.step_code,
@@ -472,12 +488,12 @@ watch(
       <a-tab-pane
         v-if="sourceAcceptanceEligibleComputed"
         key="source-accept"
-        tab="L2A 源级承认"
+        :tab="`${sourceAcceptanceLevelComputed} 源级承认`"
       >
         <a-alert
           type="warning"
           show-icon
-          message="服务端将重新核验源实体 SHA-256、L2A、STAC 标度应用、BOA 反射率及来源许可；不会复制文件，也不会执行 DOS1 等重复算法。"
+          :message="`服务端将重新核验源实体 SHA-256、${sourceAcceptanceProductComputed}、STAC 标度、产品血缘和公开许可；不会复制文件，也不会执行重复算法。`"
         />
         <div class="source-acceptance-form">
           <p>
@@ -485,7 +501,7 @@ watch(
             审计记录会明确标注“未执行算法”。
           </p>
           <a-checkbox v-model:checked="sourceAcceptanceConfirmedRef">
-            我确认仅承认已存在的 Sentinel-2 L2A 产品能力，不把跳过描述为算法执行
+            我确认仅承认已存在的 {{ sourceAcceptanceProductComputed }} 产品能力，不把跳过描述为算法执行
           </a-checkbox>
         </div>
       </a-tab-pane>

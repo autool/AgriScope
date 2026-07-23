@@ -284,7 +284,7 @@ export interface ImageryStepExecutePayload {
 
 export interface ImagerySourceLevelAcceptPayload {
   operator_code: string
-  expected_processing_level: 'L2A'
+  expected_processing_level: 'L2A' | 'L2'
   confirm_no_algorithm_execution: true
   justification: string
 }

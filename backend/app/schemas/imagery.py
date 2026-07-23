@@ -364,7 +364,7 @@ class ImagerySourceLevelAcceptRequest(BaseModel):
     """使用已验证源产品级别满足处理步骤的受控承认请求。"""
 
     operator_code: str = Field(min_length=1, max_length=50)
-    expected_processing_level: Literal["L2A"] = "L2A"
+    expected_processing_level: Literal["L2A", "L2"] = "L2A"
     confirm_no_algorithm_execution: bool
     justification: str = Field(min_length=10, max_length=500)
 

@@ -97,7 +97,9 @@ const stepBlocked = (step: ImageryProcessingStep): boolean => (
 )
 
 const sourceAcceptanceAvailable = (step: ImageryProcessingStep): boolean => (
-  processingRef.value?.processing_level?.toUpperCase() === 'L2A'
+  ['L2A', 'L2'].includes(
+    processingRef.value?.processing_level?.toUpperCase() || '',
+  )
   && ['radiometric', 'atmospheric'].includes(step.step_code)
 )
 
@@ -109,6 +111,15 @@ const sourceAccepted = (step: ImageryProcessingStep): boolean => {
     && 'execution_mode' in evidence
     && evidence.execution_mode === 'source_level_acceptance'
   )
+}
+
+const sourceAcceptanceLabel = (step: ImageryProcessingStep): string => {
+  const evidence = step.parameters.artifact_evidence
+  if (typeof evidence !== 'object' || evidence === null) return '已校验源实体'
+  const level = 'expected_processing_level' in evidence
+    ? String(evidence.expected_processing_level)
+    : '源产品'
+  return `复用已校验 ${level} 源实体，未执行重复算法`
 }
 
 const geometricEvidenceSummary = (step: ImageryProcessingStep): string | null => {
@@ -324,7 +335,7 @@ onMounted(() => {
               <a-progress :percent="step.progress" :show-info="false" size="small" />
               <p>{{ step.artifact_error || step.output_uri || '尚未登记实体产物' }}</p>
               <p v-if="step.output_verified" class="artifact-evidence">
-                {{ sourceAccepted(step) ? '复用已校验 L2A 源实体，未执行重复算法' : `${step.processor_name} ${step.processor_version}` }} ·
+                {{ sourceAccepted(step) ? sourceAcceptanceLabel(step) : `${step.processor_name} ${step.processor_version}` }} ·
                 {{ step.output_size_bytes }} bytes ·
                 SHA256 {{ step.output_checksum_sha256?.slice(0, 12) }}…
               </p>

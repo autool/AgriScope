@@ -2,8 +2,10 @@
 
 import asyncio
 import json
+import math
 from datetime import UTC, datetime
 from pathlib import Path
+from urllib.parse import urlparse
 from uuid import uuid4
 
 import numpy as np
@@ -35,20 +37,33 @@ from app.services.project_user_service import ProjectUserService
 class ImageryService:
     """查询影像处理进度并执行受控流水线步骤。"""
 
-    SOURCE_LEVEL_ACCEPTANCE_STEPS = {
-        "radiometric": "源文件已按 STAC 标度转换为 L2A 地表反射率",
-        "atmospheric": "Sentinel-2 L2A 已完成大气校正并提供地表反射率",
+    SOURCE_LEVEL_ACCEPTANCE_BASIS = {
+        "sentinel_2_l2a": {
+            "radiometric": "源文件已按 STAC 标度转换为 Sentinel-2 L2A BOA 地表反射率",
+            "atmospheric": "Sentinel-2 L2A 已完成大气校正并提供 BOA 地表反射率",
+        },
+        "landsat_collection2_l2": {
+            "radiometric": (
+                "源文件已按 Raster Extension 标度转换为 "
+                "Landsat Collection 2 Level-2 地表反射率"
+            ),
+            "atmospheric": (
+                "USGS Landsat Collection 2 Level-2 已提供"
+                "大气校正后的地表反射率"
+            ),
+        },
     }
-    SOURCE_LEVEL_REQUIRED_TAGS = (
+    SOURCE_LEVEL_COMMON_REQUIRED_TAGS = (
         "PLATFORM",
         "INSTRUMENT",
         "PROCESSING_LEVEL",
         "SOURCE_PROVIDER",
         "SOURCE_PRODUCT_URI",
-        "SOURCE_PROCESSING_BASELINE",
-        "SOURCE_SCALE_APPLIED",
-        "REFLECTANCE_QUANTITY",
     )
+    SOURCE_LEVEL_PROCESSOR_VERSIONS = {
+        "sentinel_2_l2a": "sentinel-l2a-source-acceptance-v1",
+        "landsat_collection2_l2": "landsat-c2-l2-source-acceptance-v1",
+    }
 
     def __init__(
         self,
@@ -339,7 +354,7 @@ class ImageryService:
         source_path: Path,
         expected_processing_level: str,
     ) -> dict:
-        """从当前实体栅格复核可承认的 Sentinel-2 L2A 证据。
+        """从实体栅格区分并复核 Sentinel-2 或 Landsat 源级证据。
 
         Args:
             source_path: 已通过路径、大小和 SHA256 校验的上游实体。
@@ -355,7 +370,9 @@ class ImageryService:
                     for key, value in dataset.tags().items()
                 }
                 missing_tags = [
-                    key for key in cls.SOURCE_LEVEL_REQUIRED_TAGS if not tags.get(key)
+                    key
+                    for key in cls.SOURCE_LEVEL_COMMON_REQUIRED_TAGS
+                    if not tags.get(key)
                 ]
                 if missing_tags:
                     raise ValidationException(
@@ -364,17 +381,37 @@ class ImageryService:
                 processing_level = tags["PROCESSING_LEVEL"].upper()
                 if processing_level != expected_processing_level.upper():
                     raise ValidationException("源文件处理级别与承认请求不一致")
-                if not tags["PLATFORM"].upper().startswith("SENTINEL-2"):
-                    raise ValidationException("当前仅支持 Sentinel-2 L2A 源级承认")
-                if tags["INSTRUMENT"].upper() != "MSI":
-                    raise ValidationException("Sentinel-2 源产品载荷必须为 MSI")
-                if tags["SOURCE_SCALE_APPLIED"].lower() != "true":
+                source_processing_baseline = (
+                    tags.get("SOURCE_PROCESSING_BASELINE")
+                    or tags.get("PROCESSING_BASELINE")
+                )
+                if not source_processing_baseline:
+                    raise ValidationException("源产品缺少处理基线证据")
+                scale_applied = (
+                    tags.get("SOURCE_SCALE_APPLIED")
+                    or tags.get("STAC_SCALE_OFFSET_APPLIED")
+                    or ""
+                ).lower()
+                if scale_applied != "true":
                     raise ValidationException("源文件尚未应用 STAC 反射率标度")
-                if tags["REFLECTANCE_QUANTITY"].upper() != "BOA_REFLECTANCE":
-                    raise ValidationException("源文件不是 L2A 地表反射率")
                 if any(dtype not in {"float32", "float64"} for dtype in dataset.dtypes):
                     raise ValidationException("源文件像元尚未转换为浮点反射率")
-                if tags.get("SECURITY_CLASSIFICATION", "").lower() == "public":
+                source_profile, reflectance_quantity = (
+                    cls._resolve_source_level_profile(
+                        tags,
+                        processing_level,
+                        dataset.count,
+                        dataset.descriptions,
+                    )
+                )
+                security_classification = (
+                    tags.get("SECURITY_CLASSIFICATION")
+                    or tags.get("SOURCE_CLASSIFICATION")
+                )
+                if str(security_classification or "").lower() in {
+                    "public",
+                    "public_open_data",
+                }:
                     public_missing = [
                         key
                         for key in ("STAC_ITEM_ID", "SOURCE_LICENSE_URL")
@@ -391,16 +428,16 @@ class ImageryService:
                     "processing_level": processing_level,
                     "source_provider": tags["SOURCE_PROVIDER"],
                     "source_product_uri": tags["SOURCE_PRODUCT_URI"],
-                    "source_processing_baseline": tags[
-                        "SOURCE_PROCESSING_BASELINE"
-                    ],
+                    "source_processing_baseline": source_processing_baseline,
+                    "source_profile": source_profile,
                     "stac_item_id": tags.get("STAC_ITEM_ID"),
+                    "stac_collection": tags.get("STAC_COLLECTION"),
                     "source_license_url": tags.get("SOURCE_LICENSE_URL"),
-                    "security_classification": tags.get(
-                        "SECURITY_CLASSIFICATION"
-                    ),
+                    "security_classification": security_classification,
                     "source_scale_applied": True,
-                    "reflectance_quantity": tags["REFLECTANCE_QUANTITY"],
+                    "reflectance_quantity": reflectance_quantity,
+                    "wrs_path": tags.get("WRS_PATH"),
+                    "wrs_row": tags.get("WRS_ROW"),
                     "raster_width": dataset.width,
                     "raster_height": dataset.height,
                     "band_count": dataset.count,
@@ -410,6 +447,176 @@ class ImageryService:
                 }
         except RasterioIOError as exc:
             raise ValidationException("源产品无法由 Rasterio 读取") from exc
+
+    @classmethod
+    def _resolve_source_level_profile(
+        cls,
+        tags: dict[str, str],
+        processing_level: str,
+        band_count: int,
+        band_descriptions: tuple[str | None, ...],
+    ) -> tuple[str, str]:
+        """按物理标签识别受支持产品族并执行族内严格门禁。
+
+        Args:
+            tags: 大写规范化栅格标签。
+            processing_level: 已与请求一致的处理级别。
+            band_count: 实体波段数量。
+            band_descriptions: 实体波段描述。
+
+        Returns:
+            tuple[str, str]: 产品族编码和反射率类型。
+        """
+        platform = tags["PLATFORM"].upper()
+        instrument = tags["INSTRUMENT"].upper()
+        reflectance_quantity = str(tags.get("REFLECTANCE_QUANTITY") or "").upper()
+        if platform.startswith("SENTINEL-2"):
+            if processing_level != "L2A" or instrument != "MSI":
+                raise ValidationException("Sentinel-2 源级承认要求 MSI L2A 产品")
+            if reflectance_quantity != "BOA_REFLECTANCE":
+                raise ValidationException("Sentinel-2 源文件不是 L2A BOA 地表反射率")
+            return "sentinel_2_l2a", reflectance_quantity
+        if platform.startswith("LANDSAT-"):
+            if processing_level != "L2":
+                raise ValidationException("Landsat 源级承认仅支持 Collection 2 Level-2")
+            cls._validate_landsat_source_level_tags(
+                tags,
+                instrument,
+                band_count,
+                band_descriptions,
+            )
+            if reflectance_quantity not in {
+                "SURFACE_REFLECTANCE",
+                "BOA_REFLECTANCE",
+            }:
+                if tags.get("SURFACE_REFLECTANCE", "").lower() != "true":
+                    raise ValidationException("Landsat 源文件不是地表反射率")
+                reflectance_quantity = "SURFACE_REFLECTANCE"
+            return "landsat_collection2_l2", reflectance_quantity
+        raise ValidationException("当前源产品平台不支持源级承认")
+
+    @classmethod
+    def _validate_landsat_source_level_tags(
+        cls,
+        tags: dict[str, str],
+        instrument: str,
+        band_count: int,
+        band_descriptions: tuple[str | None, ...],
+    ) -> None:
+        """校验 Landsat Collection 2 Level-2 特有来源和标度证据。
+
+        Args:
+            tags: 大写规范化栅格标签。
+            instrument: Landsat 载荷名称。
+            band_count: 实体波段数量。
+            band_descriptions: 实体波段描述。
+
+        Returns:
+            None: 全部门禁通过后无返回值。
+        """
+        if instrument not in {"TM", "ETM", "ETM+", "OLI", "OLI_TIRS", "OLI-TIRS"}:
+            raise ValidationException("Landsat 源产品载荷不属于受支持光学传感器")
+        if tags.get("STAC_COLLECTION") != "landsat-c2-l2":
+            raise ValidationException("Landsat 源产品不属于受控 Collection 2 Level-2")
+        missing_tags = [
+            key
+            for key in (
+                "STAC_ITEM_ID",
+                "STAC_ITEM_URL",
+                "WRS_PATH",
+                "WRS_ROW",
+                "STAC_CALIBRATION",
+                "SOURCE_BLUE_URL",
+                "SOURCE_GREEN_URL",
+                "SOURCE_RED_URL",
+                "SOURCE_NIR_URL",
+            )
+            if not tags.get(key)
+        ]
+        if missing_tags:
+            raise ValidationException(
+                "Landsat 源产品缺少受控证据：" + ", ".join(missing_tags)
+            )
+        provider = tags["SOURCE_PROVIDER"].upper()
+        baseline = (
+            tags.get("SOURCE_PROCESSING_BASELINE")
+            or tags.get("PROCESSING_BASELINE")
+            or ""
+        ).upper()
+        if "PLANETARY COMPUTER" not in provider or "USGS" not in provider:
+            raise ValidationException("Landsat 来源提供方证据不合法")
+        if "LANDSAT COLLECTION 2 LEVEL-2" not in baseline:
+            raise ValidationException("Landsat 处理基线不是 Collection 2 Level-2")
+        if tags["SOURCE_PRODUCT_URI"] != tags["STAC_ITEM_ID"]:
+            raise ValidationException("Landsat 产品编号与 STAC Item ID 不一致")
+        cls._validate_landsat_public_urls(tags)
+        normalized_descriptions = tuple(
+            str(description or "").strip().upper()
+            for description in band_descriptions
+        )
+        if band_count < 4 or normalized_descriptions[:4] != (
+            "BLUE",
+            "GREEN",
+            "RED",
+            "NIR",
+        ):
+            raise ValidationException(
+                "Landsat 源产品必须提供 Blue/Green/Red/NIR 四波段"
+            )
+        try:
+            calibration = json.loads(tags["STAC_CALIBRATION"])
+        except json.JSONDecodeError as exc:
+            raise ValidationException("Landsat STAC 标度清单不是合法 JSON") from exc
+        if not isinstance(calibration, list) or len(calibration) != 4:
+            raise ValidationException("Landsat STAC 标度清单必须完整覆盖四个波段")
+        expected_assets = ("blue", "green", "red", "nir08")
+        for entry, expected_asset in zip(calibration, expected_assets, strict=True):
+            if not isinstance(entry, dict) or entry.get("asset") != expected_asset:
+                raise ValidationException("Landsat STAC 标度清单波段顺序不合法")
+            for key in ("scale", "offset"):
+                value = entry.get(key)
+                if (
+                    isinstance(value, bool)
+                    or not isinstance(value, int | float)
+                    or not math.isfinite(float(value))
+                ):
+                    raise ValidationException("Landsat STAC 标度清单缺少数值参数")
+            if float(entry["scale"]) <= 0:
+                raise ValidationException("Landsat STAC 标度 scale 必须大于 0")
+
+    @staticmethod
+    def _validate_landsat_public_urls(tags: dict[str, str]) -> None:
+        """校验 Landsat STAC Item 与四个无签名 Azure COG 来源地址。
+
+        Args:
+            tags: 大写规范化栅格标签。
+
+        Returns:
+            None: 来源地址全部通过后无返回值。
+        """
+        item_url = urlparse(tags["STAC_ITEM_URL"])
+        if (
+            item_url.scheme != "https"
+            or item_url.hostname != "planetarycomputer.microsoft.com"
+            or item_url.query
+            or not item_url.path.endswith(f"/{tags['STAC_ITEM_ID']}")
+        ):
+            raise ValidationException("Landsat STAC Item URL 不属于受控来源")
+        for key in (
+            "SOURCE_BLUE_URL",
+            "SOURCE_GREEN_URL",
+            "SOURCE_RED_URL",
+            "SOURCE_NIR_URL",
+        ):
+            parsed = urlparse(tags[key])
+            hostname = parsed.hostname or ""
+            if (
+                parsed.scheme != "https"
+                or not hostname.endswith(".blob.core.windows.net")
+                or parsed.query
+                or not parsed.path.lower().endswith((".tif", ".tiff"))
+            ):
+                raise ValidationException("Landsat 波段 URL 不属于无签名 Azure COG")
 
     @staticmethod
     def _update_asset_status(asset: object, step_code: str) -> None:
@@ -808,7 +1015,7 @@ class ImageryService:
         task_code: str,
         request: ImagerySourceLevelAcceptRequest,
     ) -> ImageryProcessingResponse:
-        """用物理 L2A 源产品证据满足定标或大气校正要求。
+        """用物理 Sentinel-2 L2A 或 Landsat C2 L2 证据满足处理要求。
 
         Args:
             db: 异步数据库会话。
@@ -820,8 +1027,7 @@ class ImageryService:
         Returns:
             ImageryProcessingResponse: 承认后的完整流水线状态。
         """
-        acceptance_basis = self.SOURCE_LEVEL_ACCEPTANCE_STEPS.get(step_code)
-        if acceptance_basis is None:
+        if step_code not in {"radiometric", "atmospheric"}:
             raise ValidationException("源产品级别只能承认辐射定标或大气校正步骤")
         asset = await self.dao.get_asset_by_code_for_update(db, asset_code)
         task = await self.workbench_dao.get_task_by_code(db, task_code)
@@ -851,6 +1057,11 @@ class ImageryService:
             source_path,
             request.expected_processing_level,
         )
+        source_profile = str(source_evidence["source_profile"])
+        acceptance_basis = self.SOURCE_LEVEL_ACCEPTANCE_BASIS[
+            source_profile
+        ][step_code]
+        processor_version = self.SOURCE_LEVEL_PROCESSOR_VERSIONS[source_profile]
         invalidated_steps = self._invalidate_downstream_steps(asset, steps, step)
         relative_path = source_path.relative_to(self.storage_dir).as_posix()
         await self._persist_step_completion(
@@ -860,13 +1071,14 @@ class ImageryService:
             step,
             relative_path,
             "受控源产品级别承认",
-            "sentinel-l2a-source-acceptance-v1",
+            processor_version,
             operator,
             request.justification,
             evidence_extra={
                 "execution_mode": "source_level_acceptance",
                 "algorithm_executed": False,
                 "expected_processing_level": request.expected_processing_level,
+                "source_profile": source_profile,
                 "acceptance_basis": acceptance_basis,
                 "source_evidence": source_evidence,
                 "invalidated_downstream_steps": invalidated_steps,

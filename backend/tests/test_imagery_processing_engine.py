@@ -1,6 +1,7 @@
 """平台内置影像预处理执行引擎测试。"""
 
 import asyncio
+import json
 import warnings
 from datetime import UTC, datetime
 from pathlib import Path
@@ -77,6 +78,76 @@ def write_l2a_reflectance_raster(path: Path, *, scale_applied: bool = True) -> N
             SECURITY_CLASSIFICATION="public",
             STAC_ITEM_ID="S2B_TEST_L2A",
             SOURCE_LICENSE_URL="https://example.test/sentinel-license",
+        )
+
+
+def write_landsat_l2_reflectance_raster(
+    path: Path,
+    *,
+    collection: str = "landsat-c2-l2",
+    calibration: list[dict] | None = None,
+) -> None:
+    """写出带完整 Landsat Collection 2 L2 源级证据的浮点反射率。"""
+    rows, columns = 8, 10
+    base = np.linspace(0.01, 0.7, rows * columns, dtype="float32").reshape(
+        rows,
+        columns,
+    )
+    data = np.stack([base, base * 0.95, base * 0.85, base * 1.25])
+    calibration_payload = calibration or [
+        {
+            "asset": asset_name,
+            "scale": 0.0000275,
+            "offset": -0.2,
+            "nodata": 0,
+        }
+        for asset_name in ("blue", "green", "red", "nir08")
+    ]
+    with rasterio.open(
+        path,
+        "w",
+        driver="GTiff",
+        width=columns,
+        height=rows,
+        count=4,
+        dtype="float32",
+        crs="EPSG:32652",
+        transform=from_origin(305355, 5085975, 30, 30),
+    ) as output:
+        output.write(data)
+        output.descriptions = ("Blue", "Green", "Red", "NIR")
+        output.update_tags(
+            PLATFORM="landsat-5",
+            INSTRUMENT="TM",
+            PROCESSING_LEVEL="L2",
+            SOURCE_PROVIDER="Microsoft Planetary Computer / USGS Landsat",
+            SOURCE_PRODUCT_URI="LT05_L2SP_118028_19861209_02_T1",
+            PROCESSING_BASELINE="USGS Landsat Collection 2 Level-2",
+            STAC_SCALE_OFFSET_APPLIED="true",
+            SURFACE_REFLECTANCE="true",
+            SOURCE_CLASSIFICATION="public_open_data",
+            STAC_COLLECTION=collection,
+            STAC_ITEM_ID="LT05_L2SP_118028_19861209_02_T1",
+            STAC_ITEM_URL=(
+                "https://planetarycomputer.microsoft.com/api/stac/v1/collections/"
+                "landsat-c2-l2/items/LT05_L2SP_118028_19861209_02_T1"
+            ),
+            SOURCE_LICENSE_URL="https://www.usgs.gov/landsat-missions/landsat-data-access",
+            SOURCE_BLUE_URL=(
+                "https://landsateuwest.blob.core.windows.net/landsat-c2/blue.TIF"
+            ),
+            SOURCE_GREEN_URL=(
+                "https://landsateuwest.blob.core.windows.net/landsat-c2/green.TIF"
+            ),
+            SOURCE_RED_URL=(
+                "https://landsateuwest.blob.core.windows.net/landsat-c2/red.TIF"
+            ),
+            SOURCE_NIR_URL=(
+                "https://landsateuwest.blob.core.windows.net/landsat-c2/nir.TIF"
+            ),
+            WRS_PATH="118",
+            WRS_ROW="28",
+            STAC_CALIBRATION=json.dumps(calibration_payload),
         )
 
 
@@ -815,6 +886,150 @@ def test_service_accepts_verified_l2a_source_without_copying_or_processing(
     assert review_record.action == "source_level_accepted"
     assert review_record.reviewer_code == "manager-zhao-zhiyuan"
     db.commit.assert_awaited_once()
+
+
+def test_service_accepts_verified_landsat_collection2_l2_for_two_steps(
+    tmp_path: Path,
+) -> None:
+    """验证 Landsat C2 L2 源实体可依次承认定标和大气校正且不复制。"""
+    asset_dir = tmp_path / "assets" / "LANDSAT5_19861209_HRB"
+    asset_dir.mkdir(parents=True)
+    source_path = asset_dir / "source.tif"
+    write_landsat_l2_reflectance_raster(source_path)
+    asset = SimpleNamespace(
+        id=18,
+        project_id=7,
+        asset_code="LANDSAT5_19861209_HRB",
+        asset_name="1986 Landsat-5 公开历史地表反射率",
+        sensor_type="landsat-5 TM",
+        acquired_at=datetime(1986, 12, 9, 1, 39, tzinfo=UTC),
+        cloud_cover=2,
+        resolution_m=30,
+        processing_level="L2",
+        calibration_status="pending",
+        correction_status="pending",
+        file_uri=(
+            "storage://imagery/assets/LANDSAT5_19861209_HRB/source.tif"
+        ),
+        file_size_bytes=source_path.stat().st_size,
+        checksum_sha256=calculate_sha256(source_path),
+    )
+    radiometric_step = SimpleNamespace(
+        step_code="radiometric",
+        step_name="辐射定标",
+        sequence=1,
+        status="pending",
+        progress=0,
+        parameters={},
+        output_uri=None,
+        started_at=None,
+        completed_at=None,
+        updated_at=None,
+    )
+    atmospheric_step = SimpleNamespace(
+        step_code="atmospheric",
+        step_name="大气校正",
+        sequence=2,
+        status="pending",
+        progress=0,
+        parameters={},
+        output_uri=None,
+        started_at=None,
+        completed_at=None,
+        updated_at=None,
+    )
+    dao = AsyncMock()
+    dao.get_asset_by_code_for_update.return_value = asset
+    dao.get_asset_by_code.return_value = asset
+    dao.get_step_for_update.side_effect = [radiometric_step, atmospheric_step]
+    dao.get_steps.return_value = [radiometric_step, atmospheric_step]
+    workbench_dao = AsyncMock()
+    workbench_dao.get_task_by_code.return_value = SimpleNamespace(
+        id=1,
+        project_id=7,
+    )
+    project_user_service = AsyncMock()
+    project_user_service.require_capability.return_value = SimpleNamespace(
+        user_code="manager-zhao-zhiyuan",
+        display_name="赵志远",
+        role_code="project_manager",
+    )
+    processing_engine = MagicMock()
+    service = ImageryService(
+        dao=dao,
+        workbench_dao=workbench_dao,
+        project_user_service=project_user_service,
+        processing_engine=processing_engine,
+    )
+    service.storage_dir = tmp_path
+    db = AsyncMock()
+    request = ImagerySourceLevelAcceptRequest(
+        operator_code="manager-zhao-zhiyuan",
+        expected_processing_level="L2",
+        confirm_no_algorithm_execution=True,
+        justification="已核验 USGS Landsat Collection 2 Level-2 地表反射率与 STAC 标度",
+    )
+
+    first_response = asyncio.run(
+        service.accept_source_level_step(
+            db,
+            asset.asset_code,
+            "radiometric",
+            "RS-2026-045",
+            request,
+        )
+    )
+    second_response = asyncio.run(
+        service.accept_source_level_step(
+            db,
+            asset.asset_code,
+            "atmospheric",
+            "RS-2026-045",
+            request,
+        )
+    )
+
+    radiometric_evidence = radiometric_step.parameters["artifact_evidence"]
+    atmospheric_evidence = atmospheric_step.parameters["artifact_evidence"]
+    assert first_response.completion_rate == 50
+    assert second_response.completion_rate == 100
+    assert radiometric_evidence["source_profile"] == "landsat_collection2_l2"
+    assert atmospheric_evidence["source_evidence"]["wrs_path"] == "118"
+    assert atmospheric_evidence["source_evidence"]["wrs_row"] == "28"
+    assert radiometric_evidence["processor_version"] == (
+        "landsat-c2-l2-source-acceptance-v1"
+    )
+    assert atmospheric_evidence["processor_version"] == (
+        "landsat-c2-l2-source-acceptance-v1"
+    )
+    assert asset.calibration_status == "completed"
+    assert asset.correction_status == "in_progress"
+    assert list(tmp_path.rglob("*.tif")) == [source_path]
+    processing_engine.execute.assert_not_called()
+    assert db.commit.await_count == 2
+    actions = [
+        call.args[1].action
+        for call in workbench_dao.add_review_record.await_args_list
+    ]
+    assert actions == ["source_level_accepted", "source_level_accepted"]
+
+
+def test_service_rejects_landsat_l2_without_complete_stac_calibration(
+    tmp_path: Path,
+) -> None:
+    """验证 Landsat 四波段标度清单不完整时不能绕过处理步骤。"""
+    source_path = tmp_path / "landsat-incomplete.tif"
+    write_landsat_l2_reflectance_raster(
+        source_path,
+        calibration=[
+            {"asset": "blue", "scale": 0.0000275, "offset": -0.2},
+            {"asset": "green", "scale": 0.0000275, "offset": -0.2},
+            {"asset": "red", "scale": 0.0000275, "offset": -0.2},
+        ],
+    )
+
+    with pytest.raises(ValidationException, match="完整覆盖四个波段"):
+        ImageryService._inspect_source_level_evidence(source_path, "L2")
 
 
 def test_service_rejects_l2a_source_without_applied_stac_scale(
