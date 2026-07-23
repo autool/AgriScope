@@ -81,6 +81,7 @@ declare module 'vue' {
     FieldVerificationPanel: typeof import('./src/components/panels/FieldVerificationPanel.vue')['default']
     GrowthMonitoringCreateModal: typeof import('./src/components/growth/GrowthMonitoringCreateModal.vue')['default']
     GrowthMonitoringPanel: typeof import('./src/components/growth/GrowthMonitoringPanel.vue')['default']
+    ImageryBatchUploadModal: typeof import('./src/components/imagery/ImageryBatchUploadModal.vue')['default']
     ImageryFusionPanel: typeof import('./src/components/imagery/ImageryFusionPanel.vue')['default']
     ImageryGcpEditor: typeof import('./src/components/imagery/ImageryGcpEditor.vue')['default']
     ImageryHistoryPanel: typeof import('./src/components/imagery/ImageryHistoryPanel.vue')['default']

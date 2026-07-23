@@ -1,6 +1,7 @@
 """真实遥感影像文件入库与元数据提取测试。"""
 
 import asyncio
+import json
 import warnings
 from datetime import UTC, datetime
 from io import BytesIO
@@ -11,16 +12,27 @@ from unittest.mock import AsyncMock
 import numpy as np
 import pytest
 import rasterio
+from fastapi import FastAPI
+from httpx import ASGITransport, AsyncClient
 from pydantic import ValidationError
 from rasterio.errors import NotGeoreferencedWarning
 from rasterio.io import MemoryFile
 from rasterio.rpc import RPC
 from rasterio.transform import from_origin
 
+from app.api.v1.endpoints import imagery as imagery_endpoint
+from app.core.database import get_db
 from app.core.exceptions import ValidationException
 from app.models.workbench import ImageryAsset
-from app.schemas.imagery import ImageryAssetCreateRequest
-from app.services.imagery_asset_service import ImageryAssetService
+from app.schemas.imagery import (
+    ImageryAssetBatchCreateRequest,
+    ImageryAssetBatchResponse,
+    ImageryAssetCreateRequest,
+)
+from app.services.imagery_asset_service import (
+    ImageryAssetService,
+    ImageryBatchUploadFile,
+)
 
 
 def build_geotiff_bytes(
@@ -132,6 +144,7 @@ def build_service(tmp_path: Path) -> tuple[ImageryAssetService, AsyncMock, Async
     dao = AsyncMock()
     dao.get_asset_by_code.return_value = None
     dao.get_asset_by_checksum.return_value = None
+    dao.get_import_batch_by_code.return_value = None
 
     async def add_asset(_: object, asset: ImageryAsset) -> ImageryAsset:
         asset.id = 9
@@ -139,6 +152,13 @@ def build_service(tmp_path: Path) -> tuple[ImageryAssetService, AsyncMock, Async
         return asset
 
     dao.add_asset.side_effect = add_asset
+
+    async def add_import_batch(_: object, batch: object):
+        batch.id = 5
+        batch.created_at = datetime.now(UTC)
+        return batch
+
+    dao.add_import_batch.side_effect = add_import_batch
     workbench_dao = AsyncMock()
     workbench_dao.get_project_by_code.return_value = SimpleNamespace(id=7)
     workbench_dao.get_task_by_code.return_value = SimpleNamespace(
@@ -170,6 +190,42 @@ def test_imagery_request_requires_timezone() -> None:
             acquired_at=datetime(2026, 6, 18, 10, 42),
             operator_code="interp-li-jing",
         )
+
+
+@pytest.mark.parametrize(
+    ("field_name", "first_value", "second_value", "message"),
+    [
+        ("filename", "same.tif", "SAME.TIF", "重复文件名"),
+        ("asset_code", "BATCH-SAME", "BATCH-SAME", "重复资产编号"),
+    ],
+)
+def test_batch_request_rejects_duplicate_manifest_identity(
+    field_name: str,
+    first_value: str,
+    second_value: str,
+    message: str,
+) -> None:
+    """验证批次清单拒绝大小写重复文件名和重复资产编号。"""
+    first = {
+        "filename": "first.tif",
+        "asset_code": "BATCH-FIRST",
+        "asset_name": "第一景影像",
+    }
+    second = {
+        "filename": "second.tif",
+        "asset_code": "BATCH-SECOND",
+        "asset_name": "第二景影像",
+    }
+    first[field_name] = first_value
+    second[field_name] = second_value
+
+    with pytest.raises(ValidationError, match=message):
+        ImageryAssetBatchCreateRequest.model_validate({
+            "batch_code": "IMB-DUPLICATE-TEST",
+            "operator_code": "interp-li-jing",
+            "comment": "验证影像批次清单身份字段的唯一性约束",
+            "items": [first, second],
+        })
 
 
 def test_upload_geotiff_extracts_real_raster_metadata(tmp_path: Path) -> None:
@@ -238,6 +294,373 @@ def test_upload_geotiff_extracts_real_raster_metadata(tmp_path: Path) -> None:
     ]
     workbench_dao.add_review_record.assert_awaited_once()
     db.commit.assert_awaited_once()
+
+
+def test_batch_upload_atomically_persists_two_real_rasters(tmp_path: Path) -> None:
+    """验证两景影像在一个事务中发布、建流水线并保存批次清单证据。"""
+    service, dao, workbench_dao = build_service(tmp_path)
+    asset_id = 10
+
+    async def add_asset(_: object, asset: ImageryAsset) -> ImageryAsset:
+        nonlocal asset_id
+        asset.id = asset_id
+        asset_id += 1
+        asset.created_at = datetime.now(UTC)
+        return asset
+
+    dao.add_asset.side_effect = add_asset
+    first_content = build_geotiff_bytes(tags={
+        "SATELLITE": "BATCH-SAT-A",
+        "ACQUIRED": "2026-06-18",
+        "PROCESSING_LEVEL": "L1A",
+    })
+    second_content = build_geotiff_bytes(tags={
+        "SATELLITE": "BATCH-SAT-B",
+        "ACQUIRED": "2026-06-19",
+        "PROCESSING_LEVEL": "L1A",
+    })
+    request = ImageryAssetBatchCreateRequest.model_validate({
+        "batch_code": "IMB-TEST-001",
+        "operator_code": "interp-li-jing",
+        "comment": "验证两景真实栅格原子批量入库和审计",
+        "items": [
+            {
+                "filename": "batch_a.tif",
+                "asset_code": "BATCH-A",
+                "asset_name": "批量影像 A",
+                "data_status": "demo",
+            },
+            {
+                "filename": "batch_b.tif",
+                "asset_code": "BATCH-B",
+                "asset_name": "批量影像 B",
+                "data_status": "demo",
+            },
+        ],
+    })
+    db = AsyncMock()
+
+    response = asyncio.run(
+        service.upload_assets_batch(
+            db,
+            "RS-2026",
+            "RS-2026-045",
+            request,
+            [
+                ImageryBatchUploadFile("batch_a.tif", BytesIO(first_content)),
+                ImageryBatchUploadFile("batch_b.tif", BytesIO(second_content)),
+            ],
+        )
+    )
+
+    assert response.batch_code == "IMB-TEST-001"
+    assert response.item_count == 2
+    assert response.total_size_bytes == len(first_content) + len(second_content)
+    assert len(response.manifest_sha256) == 64
+    assert [item.asset_code for item in response.items] == ["BATCH-A", "BATCH-B"]
+    assert (tmp_path / "assets/BATCH-A/batch_a.tif").is_file()
+    assert (tmp_path / "assets/BATCH-B/batch_b.tif").is_file()
+    assert dao.add_asset.await_count == 2
+    assert dao.add_steps.await_count == 2
+    dao.add_import_batch.assert_awaited_once()
+    dao.add_import_batch_items.assert_awaited_once()
+    batch_items = dao.add_import_batch_items.await_args.args[1]
+    assert [item.sequence for item in batch_items] == [1, 2]
+    assert [item.asset_id for item in batch_items] == [10, 11]
+    workbench_dao.add_review_record.assert_awaited_once()
+    db.commit.assert_awaited_once()
+
+
+def test_batch_upload_removes_published_files_when_commit_fails(
+    tmp_path: Path,
+) -> None:
+    """验证数据库提交失败时已发布实体仍会全部删除。"""
+    service, dao, _ = build_service(tmp_path)
+    request = ImageryAssetBatchCreateRequest.model_validate({
+        "batch_code": "IMB-TEST-COMMIT-ROLLBACK",
+        "operator_code": "interp-li-jing",
+        "comment": "验证数据库提交失败时已发布影像实体必须清理",
+        "items": [
+            {
+                "filename": "commit_failure.tif",
+                "asset_code": "BATCH-COMMIT-FAILURE",
+                "asset_name": "提交失败回滚影像",
+                "data_status": "demo",
+            },
+        ],
+    })
+    db = AsyncMock()
+    db.commit.side_effect = RuntimeError("database commit failed")
+
+    with pytest.raises(RuntimeError, match="database commit failed"):
+        asyncio.run(
+            service.upload_assets_batch(
+                db,
+                "RS-2026",
+                "RS-2026-045",
+                request,
+                [
+                    ImageryBatchUploadFile(
+                        "commit_failure.tif",
+                        BytesIO(build_geotiff_bytes()),
+                    ),
+                ],
+            )
+        )
+
+    assert not any(path.is_file() for path in tmp_path.glob("assets/**/*"))
+    dao.add_asset.assert_awaited_once()
+    dao.add_import_batch.assert_awaited_once()
+    db.rollback.assert_awaited_once()
+
+
+def test_batch_upload_cleans_files_even_when_database_rollback_fails(
+    tmp_path: Path,
+) -> None:
+    """验证回滚连接异常也不会跳过已发布实体清理。"""
+    service, _, _ = build_service(tmp_path)
+    request = ImageryAssetBatchCreateRequest.model_validate({
+        "batch_code": "IMB-TEST-ROLLBACK-ERROR",
+        "operator_code": "interp-li-jing",
+        "comment": "验证数据库回滚异常时仍然删除批次已发布实体",
+        "items": [
+            {
+                "filename": "rollback_error.tif",
+                "asset_code": "BATCH-ROLLBACK-ERROR",
+                "asset_name": "回滚异常清理影像",
+                "data_status": "demo",
+            },
+        ],
+    })
+    db = AsyncMock()
+    db.commit.side_effect = RuntimeError("database commit failed")
+    db.rollback.side_effect = RuntimeError("database rollback failed")
+
+    with pytest.raises(RuntimeError, match="database rollback failed"):
+        asyncio.run(
+            service.upload_assets_batch(
+                db,
+                "RS-2026",
+                "RS-2026-045",
+                request,
+                [
+                    ImageryBatchUploadFile(
+                        "rollback_error.tif",
+                        BytesIO(build_geotiff_bytes()),
+                    ),
+                ],
+            )
+        )
+
+    assert not any(path.is_file() for path in tmp_path.glob("assets/**/*"))
+
+
+@pytest.mark.asyncio
+async def test_batch_upload_api_maps_multipart_files_to_one_service_call(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """验证批量端点一次接收全部文件和清单，而非拆成单文件请求。"""
+    captured: dict[str, object] = {}
+
+    async def upload_assets_batch(
+        db: object,
+        project_code: str,
+        task_code: str,
+        request: ImageryAssetBatchCreateRequest,
+        files: list[ImageryBatchUploadFile],
+    ) -> ImageryAssetBatchResponse:
+        captured.update({
+            "db": db,
+            "project_code": project_code,
+            "task_code": task_code,
+            "request": request,
+            "filenames": [item.filename for item in files],
+            "contents": [item.file_handle.read() for item in files],
+        })
+        return ImageryAssetBatchResponse(
+            batch_code=request.batch_code,
+            item_count=len(files),
+            total_size_bytes=sum(len(content) for content in captured["contents"]),
+            manifest_sha256="a" * 64,
+            imported_by="李静",
+            imported_by_code=request.operator_code,
+            imported_by_role="interpreter",
+            comment=request.comment,
+            created_at=datetime.now(UTC),
+            items=[],
+        )
+
+    service = SimpleNamespace(upload_assets_batch=upload_assets_batch)
+    monkeypatch.setattr(imagery_endpoint, "asset_service", service)
+    app = FastAPI()
+    app.include_router(imagery_endpoint.router)
+    db = AsyncMock()
+
+    async def override_get_db():
+        yield db
+
+    app.dependency_overrides[get_db] = override_get_db
+    manifest = {
+        "batch_code": "IMB-API-TEST",
+        "operator_code": "interp-li-jing",
+        "comment": "验证 multipart 批量端点只调用一次业务服务",
+        "items": [
+            {
+                "filename": "api_a.tif",
+                "asset_code": "API-A",
+                "asset_name": "接口影像 A",
+            },
+            {
+                "filename": "api_b.img",
+                "asset_code": "API-B",
+                "asset_name": "接口影像 B",
+            },
+        ],
+    }
+    async with AsyncClient(
+        transport=ASGITransport(app=app),
+        base_url="http://test",
+    ) as client:
+        response = await client.post(
+            "/api/v1/imagery-assets/batch",
+            params={"project_code": "RS-2026", "task_code": "RS-2026-045"},
+            files=[
+                ("files", ("api_a.tif", b"first-content", "image/tiff")),
+                (
+                    "files",
+                    ("api_b.img", b"second-content", "application/octet-stream"),
+                ),
+                ("manifest_json", (None, json.dumps(manifest))),
+            ],
+        )
+
+    assert response.status_code == 201
+    assert response.json()["batch_code"] == "IMB-API-TEST"
+    assert captured["project_code"] == "RS-2026"
+    assert captured["task_code"] == "RS-2026-045"
+    assert captured["filenames"] == ["api_a.tif", "api_b.img"]
+    assert captured["contents"] == [b"first-content", b"second-content"]
+    assert isinstance(captured["request"], ImageryAssetBatchCreateRequest)
+
+
+def test_batch_upload_rolls_back_all_files_when_one_raster_is_invalid(
+    tmp_path: Path,
+) -> None:
+    """验证批次中任一文件损坏时不发布前序文件且不写任何资产。"""
+    service, dao, _ = build_service(tmp_path)
+    request = ImageryAssetBatchCreateRequest.model_validate({
+        "batch_code": "IMB-TEST-ROLLBACK",
+        "operator_code": "interp-li-jing",
+        "comment": "验证第二个文件失败时整批实体和数据库回滚",
+        "items": [
+            {
+                "filename": "valid.tif",
+                "asset_code": "BATCH-VALID",
+                "asset_name": "有效影像",
+                "data_status": "demo",
+            },
+            {
+                "filename": "broken.tif",
+                "asset_code": "BATCH-BROKEN",
+                "asset_name": "损坏影像",
+                "sensor_type": "BROKEN",
+                "acquired_at": "2026-06-19T00:00:00Z",
+                "data_status": "demo",
+            },
+        ],
+    })
+    db = AsyncMock()
+
+    with pytest.raises(
+        ValidationException,
+        match="格式扩展名不一致|无法识别|文件已损坏",
+    ):
+        asyncio.run(
+            service.upload_assets_batch(
+                db,
+                "RS-2026",
+                "RS-2026-045",
+                request,
+                [
+                    ImageryBatchUploadFile(
+                        "valid.tif",
+                        BytesIO(build_geotiff_bytes()),
+                    ),
+                    ImageryBatchUploadFile("broken.tif", BytesIO(b"broken")),
+                ],
+            )
+        )
+
+    assert not list(tmp_path.glob("assets/**/*"))
+    dao.add_asset.assert_not_awaited()
+    dao.add_import_batch.assert_not_awaited()
+    db.rollback.assert_awaited_once()
+
+
+def test_batch_upload_rejects_duplicate_file_content(tmp_path: Path) -> None:
+    """验证不同文件名和资产编号也不能绕过批内 SHA256 去重。"""
+    service, dao, _ = build_service(tmp_path)
+    request = ImageryAssetBatchCreateRequest.model_validate({
+        "batch_code": "IMB-TEST-DUPLICATE-SHA",
+        "operator_code": "interp-li-jing",
+        "comment": "验证批次内相同实体内容必须整批拒绝并回滚",
+        "items": [
+            {
+                "filename": "duplicate_a.tif",
+                "asset_code": "BATCH-DUPLICATE-A",
+                "asset_name": "重复实体 A",
+                "data_status": "demo",
+            },
+            {
+                "filename": "duplicate_b.tif",
+                "asset_code": "BATCH-DUPLICATE-B",
+                "asset_name": "重复实体 B",
+                "data_status": "demo",
+            },
+        ],
+    })
+    content = build_geotiff_bytes()
+    db = AsyncMock()
+
+    with pytest.raises(ValidationException, match="同批其他文件内容重复"):
+        asyncio.run(
+            service.upload_assets_batch(
+                db,
+                "RS-2026",
+                "RS-2026-045",
+                request,
+                [
+                    ImageryBatchUploadFile("duplicate_a.tif", BytesIO(content)),
+                    ImageryBatchUploadFile("duplicate_b.tif", BytesIO(content)),
+                ],
+            )
+        )
+
+    assert not list(tmp_path.glob("assets/**/*"))
+    dao.add_asset.assert_not_awaited()
+    dao.add_import_batch.assert_not_awaited()
+    db.rollback.assert_awaited_once()
+
+
+def test_batch_publish_never_overwrites_existing_target(tmp_path: Path) -> None:
+    """验证并发目标冲突时原子发布不会覆盖另一批次的实体。"""
+    temporary_path = tmp_path / ".uploads" / "pending.tif.part"
+    final_path = tmp_path / "assets" / "BATCH-RACE" / "source.tif"
+    temporary_path.parent.mkdir(parents=True)
+    final_path.parent.mkdir(parents=True)
+    temporary_path.write_bytes(b"new-batch-content")
+    final_path.write_bytes(b"committed-batch-content")
+    item = SimpleNamespace(
+        temporary_path=temporary_path,
+        final_path=final_path,
+        request=SimpleNamespace(asset_code="BATCH-RACE"),
+    )
+
+    with pytest.raises(ValidationException, match="目标文件已存在"):
+        ImageryAssetService._publish_prepared_file(item)
+
+    assert final_path.read_bytes() == b"committed-batch-content"
+    assert temporary_path.read_bytes() == b"new-batch-content"
 
 
 def test_upload_accepts_rpc_only_imagery_and_derives_wgs84_footprint(

@@ -8,6 +8,7 @@ from app.models.growth_monitoring import (
     GrowthMonitoringZone,
 )
 from app.models.imagery_fusion import ImageryFusionEvent, ImageryFusionJob
+from app.models.imagery_import import ImageryImportBatch, ImageryImportBatchItem
 from app.models.imagery_mosaic import (
     ImageryMosaicEvent,
     ImageryMosaicInput,
@@ -102,6 +103,8 @@ __all__ = [
     "ImageryAsset",
     "ImageryFusionEvent",
     "ImageryFusionJob",
+    "ImageryImportBatch",
+    "ImageryImportBatchItem",
     "ImageryMosaicEvent",
     "ImageryMosaicInput",
     "ImageryMosaicJob",

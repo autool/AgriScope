@@ -4,9 +4,13 @@ from datetime import datetime
 from typing import Annotated, Literal
 
 from fastapi import APIRouter, File, Form, Query, Response, UploadFile, status
+from pydantic import ValidationError
 
 from app.api.deps import DatabaseSession
+from app.core.exceptions import ValidationException
 from app.schemas.imagery import (
+    ImageryAssetBatchCreateRequest,
+    ImageryAssetBatchResponse,
     ImageryAssetCreateRequest,
     ImageryAssetListResponse,
     ImageryAssetResponse,
@@ -16,7 +20,10 @@ from app.schemas.imagery import (
     ImageryStepExecuteRequest,
     ImageryStepRunRequest,
 )
-from app.services.imagery_asset_service import ImageryAssetService
+from app.services.imagery_asset_service import (
+    ImageryAssetService,
+    ImageryBatchUploadFile,
+)
 from app.services.imagery_quicklook_service import ImageryQuicklookService
 from app.services.imagery_service import ImageryService
 
@@ -105,6 +112,56 @@ async def upload_imagery_asset(
         )
     finally:
         await file.close()
+
+
+@router.post(
+    "/batch",
+    response_model=ImageryAssetBatchResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+async def upload_imagery_asset_batch(
+    db: DatabaseSession,
+    files: Annotated[
+        list[UploadFile],
+        File(description="1–20 个 GeoTIFF、IMG 或 HDF 文件"),
+    ],
+    manifest_json: Annotated[str, Form(min_length=1)],
+    project_code: Annotated[str, Query(min_length=1, max_length=50)] = "RS-2026",
+    task_code: Annotated[str, Query(min_length=1, max_length=50)] = "RS-2026-045",
+) -> ImageryAssetBatchResponse:
+    """按清单原子导入多个真实影像文件。
+
+    Args:
+        db: FastAPI 注入的异步数据库会话。
+        files: 批次中的影像实体文件。
+        manifest_json: 批次编号、逐文件元数据、操作人和入库依据 JSON。
+        project_code: 项目编号。
+        task_code: 审计所属任务编号。
+
+    Returns:
+        ImageryAssetBatchResponse: 已提交批次和全部资产。
+    """
+    try:
+        request = ImageryAssetBatchCreateRequest.model_validate_json(manifest_json)
+    except ValidationError as exc:
+        raise ValidationException("影像批量入库清单格式不合法") from exc
+    try:
+        return await asset_service.upload_assets_batch(
+            db,
+            project_code,
+            task_code,
+            request,
+            [
+                ImageryBatchUploadFile(
+                    filename=file.filename or "imagery.tif",
+                    file_handle=file.file,
+                )
+                for file in files
+            ],
+        )
+    finally:
+        for file in files:
+            await file.close()
 
 
 @router.get("/{asset_code}/processing", response_model=ImageryProcessingResponse)

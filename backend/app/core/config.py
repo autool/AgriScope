@@ -13,6 +13,7 @@ class Settings(BaseSettings):
     app_env: str = "development"
     log_level: str = "INFO"
     max_imagery_upload_bytes: int = 10 * 1024 * 1024 * 1024
+    max_imagery_batch_upload_bytes: int = 20 * 1024 * 1024 * 1024
     max_uav_upload_bytes: int = 2 * 1024 * 1024 * 1024
     max_consultation_evidence_bytes: int = 50 * 1024 * 1024
     max_field_photo_bytes: int = 20 * 1024 * 1024

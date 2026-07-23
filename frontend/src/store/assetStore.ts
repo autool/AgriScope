@@ -2,12 +2,17 @@ import { defineStore } from 'pinia'
 import { computed, ref } from 'vue'
 
 import { getImageryAssets, uploadImageryAsset } from '@/api/index'
+import { uploadImageryAssetBatch } from '@/api/imageryBatch'
 import { useUserStore } from '@/store/userStore'
 import { useWorkbenchStore } from '@/store/workbenchStore'
 import type {
   ImageryAssetCatalog,
   ImageryAssetItem,
 } from '@/types/workbench'
+import type {
+  ImageryBatchManifest,
+  ImageryBatchResponse,
+} from '@/types/imageryBatch'
 
 export interface ImageryUploadMetadata {
   assetCode: string
@@ -98,6 +103,37 @@ export const useAssetStore = defineStore('asset', () => {
     }
   }
 
+  /** 原子上传一个 1–20 个文件的影像批次并刷新项目状态。 */
+  const uploadBatch = async (
+    files: File[],
+    manifest: Omit<ImageryBatchManifest, 'operator_code'>,
+  ): Promise<ImageryBatchResponse> => {
+    const user = userStore.currentUserComputed
+    if (!user || !canManageComputed.value) {
+      throw new Error('当前项目身份无权批量导入影像资产')
+    }
+    const formData = new FormData()
+    files.forEach((file) => formData.append('files', file, file.name))
+    formData.append('manifest_json', JSON.stringify({
+      ...manifest,
+      operator_code: user.user_code,
+    }))
+    uploadingRef.value = true
+    uploadProgressRef.value = 0
+    try {
+      const batch = await uploadImageryAssetBatch(
+        formData,
+        workbenchStore.projectCodeComputed,
+        workbenchStore.taskCodeComputed,
+        (progress) => { uploadProgressRef.value = progress },
+      )
+      await Promise.all([load(), workbenchStore.refreshOverview()])
+      return batch
+    } finally {
+      uploadingRef.value = false
+    }
+  }
+
   return {
     catalogRef,
     loadingRef,
@@ -106,5 +142,6 @@ export const useAssetStore = defineStore('asset', () => {
     canManageComputed,
     load,
     upload,
+    uploadBatch,
   }
 })

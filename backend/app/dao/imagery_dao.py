@@ -6,6 +6,7 @@ from sqlalchemy import func, select
 from sqlalchemy.engine import RowMapping
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.models.imagery_import import ImageryImportBatch, ImageryImportBatchItem
 from app.models.workbench import (
     AdministrativeBoundary,
     ImageryAsset,
@@ -135,6 +136,63 @@ class ImageryDAO:
             None: 无返回值。
         """
         db.add_all(steps)
+        await db.flush()
+
+    async def get_import_batch_by_code(
+        self,
+        db: AsyncSession,
+        batch_code: str,
+    ) -> ImageryImportBatch | None:
+        """按批次编号查询影像入库批次。
+
+        Args:
+            db: 异步数据库会话。
+            batch_code: 批次编号。
+
+        Returns:
+            ImageryImportBatch | None: 已存在批次或空值。
+        """
+        result = await db.execute(
+            select(ImageryImportBatch).where(
+                ImageryImportBatch.batch_code == batch_code
+            )
+        )
+        return result.scalar_one_or_none()
+
+    async def add_import_batch(
+        self,
+        db: AsyncSession,
+        batch: ImageryImportBatch,
+    ) -> ImageryImportBatch:
+        """新增影像原子入库批次。
+
+        Args:
+            db: 异步数据库会话。
+            batch: 批次实体。
+
+        Returns:
+            ImageryImportBatch: 已刷新批次实体。
+        """
+        db.add(batch)
+        await db.flush()
+        await db.refresh(batch)
+        return batch
+
+    async def add_import_batch_items(
+        self,
+        db: AsyncSession,
+        items: list[ImageryImportBatchItem],
+    ) -> None:
+        """批量写入影像入库批次成员。
+
+        Args:
+            db: 异步数据库会话。
+            items: 批次成员实体。
+
+        Returns:
+            None: 无返回值。
+        """
+        db.add_all(items)
         await db.flush()
 
     async def get_steps(

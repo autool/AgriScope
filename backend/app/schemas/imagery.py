@@ -1,9 +1,9 @@
 """遥感影像预处理流水线请求响应模型。"""
 
 from datetime import datetime
-from typing import Literal
+from typing import Literal, Self
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 class ImageryAssetCreateRequest(BaseModel):
@@ -104,6 +104,129 @@ class ImageryAssetListResponse(BaseModel):
     total: int
     available: int
     metadata_only: int
+    items: list[ImageryAssetResponse]
+
+
+class ImageryAssetBatchItemRequest(BaseModel):
+    """批量入库清单中的一个文件及其可选元数据补录。"""
+
+    filename: str = Field(min_length=1, max_length=255)
+    asset_code: str = Field(
+        min_length=1,
+        max_length=80,
+        pattern=r"^[A-Za-z0-9_-]+$",
+    )
+    asset_name: str = Field(min_length=1, max_length=200)
+    sensor_type: str | None = Field(default=None, max_length=80)
+    acquired_at: datetime | None = None
+    cloud_cover: float | None = Field(default=None, ge=0, le=100)
+    processing_level: str | None = Field(default=None, max_length=30)
+    data_status: Literal["operational", "demo"] = "operational"
+
+    model_config = ConfigDict(extra="forbid")
+
+    @field_validator("filename", "asset_code", "asset_name")
+    @classmethod
+    def normalize_required_text(cls, value: str) -> str:
+        """清理批量清单必填文本。
+
+        Args:
+            value: 原始文本。
+
+        Returns:
+            str: 去除首尾空格后的文本。
+        """
+        return value.strip()
+
+    @field_validator("sensor_type", "processing_level")
+    @classmethod
+    def normalize_optional_text(cls, value: str | None) -> str | None:
+        """清理批量清单可选文本。
+
+        Args:
+            value: 原始文本或空值。
+
+        Returns:
+            str | None: 标准化文本或空值。
+        """
+        if value is None:
+            return None
+        normalized = value.strip()
+        return normalized or None
+
+    @field_validator("acquired_at")
+    @classmethod
+    def validate_acquired_at(cls, value: datetime | None) -> datetime | None:
+        """校验人工补录时间必须包含时区。
+
+        Args:
+            value: 采集时间。
+
+        Returns:
+            datetime | None: 带时区时间或空值。
+        """
+        if value is not None and (
+            value.tzinfo is None or value.utcoffset() is None
+        ):
+            raise ValueError("影像采集时间必须包含时区")
+        return value
+
+
+class ImageryAssetBatchCreateRequest(BaseModel):
+    """一次 1–20 个文件的原子影像入库清单。"""
+
+    batch_code: str = Field(
+        min_length=1,
+        max_length=90,
+        pattern=r"^[A-Za-z0-9_-]+$",
+    )
+    operator_code: str = Field(min_length=1, max_length=50)
+    comment: str = Field(min_length=10, max_length=500)
+    items: list[ImageryAssetBatchItemRequest] = Field(min_length=1, max_length=20)
+
+    model_config = ConfigDict(extra="forbid")
+
+    @field_validator("batch_code", "operator_code", "comment")
+    @classmethod
+    def normalize_required_text(cls, value: str) -> str:
+        """清理批次编号、用户编码和入库依据。
+
+        Args:
+            value: 原始文本。
+
+        Returns:
+            str: 去除首尾空格后的文本。
+        """
+        return value.strip()
+
+    @model_validator(mode="after")
+    def validate_unique_items(self) -> Self:
+        """确保清单中的文件名和资产编号均不重复。
+
+        Returns:
+            Self: 校验通过的批量请求。
+        """
+        filenames = [item.filename.casefold() for item in self.items]
+        if len(filenames) != len(set(filenames)):
+            raise ValueError("同一批次不得包含重复文件名")
+        asset_codes = [item.asset_code for item in self.items]
+        if len(asset_codes) != len(set(asset_codes)):
+            raise ValueError("同一批次不得包含重复资产编号")
+        return self
+
+
+class ImageryAssetBatchResponse(BaseModel):
+    """影像原子批量入库结果和批次证据。"""
+
+    batch_code: str
+    item_count: int
+    total_size_bytes: int
+    manifest_sha256: str
+    imported_by: str
+    imported_by_code: str
+    imported_by_role: str
+    comment: str
+    created_at: datetime
     items: list[ImageryAssetResponse]
 
 

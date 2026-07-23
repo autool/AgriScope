@@ -40,6 +40,10 @@
 
 ![AgriScope 公开 Sentinel-2 实体影像](docs/images/imagery-public-sentinel.png)
 
+### 影像原子批量入库
+
+![AgriScope 影像原子批量入库](docs/images/imagery-batch-import.png)
+
 ### 历史影像覆盖矩阵与问题追溯
 
 ![AgriScope 历史影像覆盖矩阵与问题追溯](docs/images/imagery-history-coverage.png)
@@ -103,6 +107,7 @@
 ## 核心能力
 
 - 卫星影像、解译图斑、灾害斑块、外业核查点和行政区划统一图层管理。
+- 影像资产页支持一次选择 1–20 个 GeoTIFF、IMG 或 HDF，逐文件维护资产编号、名称和可选业务元数据补录；前端一次提交完整 multipart 清单，服务端先校验全部实体、文件名/编号/SHA-256 去重和标签冲突，再以一个数据库事务发布资产、六步处理流水线、批次成员与稳定用户审计。任一文件失败时整批数据库和实体文件回滚，并保存规范化批次清单 SHA-256。
 - 内置黑龙江省 1 条省界、13 条地级边界和 122 条县区边界真实数据快照。
 - 提供真实 Polygon 绘制、节点编辑、PostGIS 图斑分割与合并、即时撤销/重做、软删除、属性赋值、面积重算、版本和审计闭环。
 - 支持项目负责人配置最多 50 个项目级自定义地块属性，覆盖文本、数值、日期、是/否和单选类型；字段编码不可变，名称、必填规则、选项、顺序和启停状态均版本化审计。字段定义变化会重开项目质量门禁，停用字段历史值继续保留但不能编辑。
@@ -908,6 +913,7 @@ psql "$POSTGRES_DSN" -f scripts/migrations/20260722_remove_seeded_task_audit.sql
 | POST | `/api/v1/imagery-assets/{asset_code}/processing/{step_code}/accept-source` | 复核 Sentinel-2 L2A 实体与血缘后，无重复算法地承认定标或大气校正要求 |
 | GET | `/api/v1/imagery-assets` | 查询项目真实影像资产目录 |
 | POST | `/api/v1/imagery-assets` | 上传影像文件并自动读取栅格与空间元数据 |
+| POST | `/api/v1/imagery-assets/batch` | 原子导入 1–20 个影像实体及逐文件清单，任一失败时整批回滚 |
 | GET | `/api/v1/imagery-history/overview` | 按真实县区面积计算历史影像覆盖矩阵，并返回实体处理与问题追溯时间线 |
 | GET | `/api/v1/imagery-mosaics/overview` | 查询可用多景实体来源、像元上限和历史镶嵌成果 |
 | POST | `/api/v1/imagery-mosaics/jobs` | 执行多景匀色、镶嵌和完整行政区覆盖率验收 |

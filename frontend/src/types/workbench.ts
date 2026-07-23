@@ -348,6 +348,8 @@ export interface ImageryRasterMetadata extends Record<string, unknown> {
   descriptions?: Array<string | null>
   has_rpc?: boolean
   rpc_summary?: Record<string, number | null> | null
+  import_batch_code?: string
+  import_manifest_sha256?: string
   business_metadata?: Partial<Record<
     'sensor_type' | 'acquired_at' | 'processing_level' | 'cloud_cover',
     ImageryBusinessMetadataField

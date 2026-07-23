@@ -8,6 +8,7 @@ import re
 from contextlib import ExitStack
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from hashlib import sha256
 from pathlib import Path
 from typing import BinaryIO
 from uuid import uuid4
@@ -24,8 +25,11 @@ from app.core.exceptions import NotFoundException, ValidationException
 from app.core.imagery_files import calculate_sha256, has_supported_raster_signature
 from app.dao.imagery_dao import ImageryDAO
 from app.dao.workbench_dao import WorkbenchDAO
+from app.models.imagery_import import ImageryImportBatch, ImageryImportBatchItem
 from app.models.workbench import ImageryAsset, ImageryProcessingStep, ReviewRecord
 from app.schemas.imagery import (
+    ImageryAssetBatchCreateRequest,
+    ImageryAssetBatchResponse,
     ImageryAssetCreateRequest,
     ImageryAssetListResponse,
     ImageryAssetResponse,
@@ -78,6 +82,29 @@ class ResolvedBusinessMetadata:
     processing_level: str | None
     cloud_cover: float | None
     audit: dict[str, dict[str, object | None]]
+
+
+@dataclass(frozen=True)
+class ImageryBatchUploadFile:
+    """一个批量上传文件名和二进制流。"""
+
+    filename: str
+    file_handle: BinaryIO
+
+
+@dataclass(frozen=True)
+class PreparedImageryUpload:
+    """已完成临时落盘、栅格检查和元数据核对的待发布影像。"""
+
+    request: ImageryAssetCreateRequest
+    safe_filename: str
+    temporary_path: Path
+    final_path: Path
+    relative_path: Path
+    file_size: int
+    checksum_sha256: str
+    inspection: RasterInspection
+    resolved_metadata: ResolvedBusinessMetadata
 
 
 class ImageryAssetService:
@@ -881,27 +908,216 @@ class ImageryAssetService:
             items=items,
         )
 
-    async def upload_asset(
+    async def _prepare_upload(
+        self,
+        db: AsyncSession,
+        request: ImageryAssetCreateRequest,
+        original_filename: str,
+        file_handle: BinaryIO,
+        batch_checksums: set[str],
+    ) -> PreparedImageryUpload:
+        """临时保存并完整校验一个批次成员，但不发布文件或写数据库。
+
+        Args:
+            db: 异步数据库会话。
+            request: 单个影像业务元数据。
+            original_filename: 上传原始文件名。
+            file_handle: 上传二进制流。
+            batch_checksums: 当前批次已经出现的 SHA-256 集合。
+
+        Returns:
+            PreparedImageryUpload: 已完成全部前置校验的影像成员。
+        """
+        if await self.dao.get_asset_by_code(db, request.asset_code):
+            raise ValidationException(f"影像资产编号 {request.asset_code} 已存在")
+        safe_filename = Path(original_filename).name
+        suffix = Path(safe_filename).suffix.lower()
+        if suffix not in {".tif", ".tiff", ".img", ".hdf"}:
+            raise ValidationException(
+                f"文件 {safe_filename} 仅支持 GeoTIFF、IMG 或 HDF"
+            )
+        temporary_path, file_size, checksum = await asyncio.to_thread(
+            self._store_temporary_upload,
+            file_handle,
+            suffix,
+        )
+        try:
+            if checksum in batch_checksums:
+                raise ValidationException(
+                    f"文件 {safe_filename} 与同批其他文件内容重复"
+                )
+            inspection = await asyncio.to_thread(
+                self._inspect_raster,
+                temporary_path,
+                suffix,
+            )
+            resolved_metadata = self._resolve_business_metadata(
+                inspection.business_metadata,
+                request,
+            )
+            duplicate = await self.dao.get_asset_by_checksum(db, checksum)
+            if duplicate is not None:
+                raise ValidationException(
+                    f"文件 {safe_filename} 已入库为 {duplicate.asset_code}"
+                )
+            relative_path = Path("assets") / request.asset_code / safe_filename
+            final_path = (self.storage_dir / relative_path).resolve()
+            if not final_path.is_relative_to(self.storage_dir.resolve()):
+                raise ValidationException("影像资产存储路径不合法")
+            if final_path.exists():
+                raise ValidationException(
+                    f"资产 {request.asset_code} 的目标文件已存在"
+                )
+            batch_checksums.add(checksum)
+            return PreparedImageryUpload(
+                request=request,
+                safe_filename=safe_filename,
+                temporary_path=temporary_path,
+                final_path=final_path,
+                relative_path=relative_path,
+                file_size=file_size,
+                checksum_sha256=checksum,
+                inspection=inspection,
+                resolved_metadata=resolved_metadata,
+            )
+        except BaseException:
+            temporary_path.unlink(missing_ok=True)
+            raise
+
+    @staticmethod
+    def _footprint_geojson(inspection: RasterInspection) -> dict:
+        """把影像 WGS84 范围转换为闭合 Polygon GeoJSON。
+
+        Args:
+            inspection: 栅格检查结果。
+
+        Returns:
+            dict: WGS84 Polygon。
+        """
+        left, bottom, right, top = inspection.bounds_wgs84
+        return {
+            "type": "Polygon",
+            "coordinates": [[
+                [left, bottom],
+                [right, bottom],
+                [right, top],
+                [left, top],
+                [left, bottom],
+            ]],
+        }
+
+    @staticmethod
+    def _manifest_sha256(
+        request: ImageryAssetBatchCreateRequest,
+        prepared: list[PreparedImageryUpload],
+    ) -> str:
+        """计算包含文件实体证据和业务元数据的规范化清单 SHA-256。
+
+        Args:
+            request: 原始批量请求。
+            prepared: 已校验批次成员。
+
+        Returns:
+            str: 64 位十六进制清单 SHA-256。
+        """
+        payload = {
+            "batch_code": request.batch_code,
+            "operator_code": request.operator_code,
+            "comment": request.comment,
+            "items": [
+                {
+                    "sequence": index,
+                    "filename": item.safe_filename,
+                    "asset_code": item.request.asset_code,
+                    "asset_name": item.request.asset_name,
+                    "data_status": item.request.data_status,
+                    "file_size_bytes": item.file_size,
+                    "checksum_sha256": item.checksum_sha256,
+                    "business_metadata": item.resolved_metadata.audit,
+                }
+                for index, item in enumerate(prepared, start=1)
+            ],
+        }
+        content = json.dumps(
+            payload,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        return sha256(content).hexdigest()
+
+    @staticmethod
+    def _publish_prepared_file(item: PreparedImageryUpload) -> None:
+        """以不覆盖既有实体的方式原子发布一个已校验文件。
+
+        临时目录和资产目录都位于同一影像存储根目录，因此使用硬链接可以在
+        目标已存在时原子失败，避免并发批次互相覆盖文件。发布成功后移除临时名。
+
+        Args:
+            item: 已完成临时落盘和栅格检查的批次成员。
+
+        Returns:
+            None: 发布成功后无返回值。
+        """
+        item.final_path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            os.link(item.temporary_path, item.final_path)
+        except FileExistsError as exc:
+            raise ValidationException(
+                f"资产 {item.request.asset_code} 的目标文件已存在"
+            ) from exc
+        except OSError as exc:
+            raise ValidationException(
+                f"资产 {item.request.asset_code} 的实体文件发布失败"
+            ) from exc
+        try:
+            item.temporary_path.unlink()
+        except OSError as exc:
+            item.final_path.unlink(missing_ok=True)
+            raise ValidationException(
+                f"资产 {item.request.asset_code} 的临时文件清理失败"
+            ) from exc
+
+    @staticmethod
+    def _remove_published_files(paths: list[Path]) -> None:
+        """尝试删除当前批次已发布的全部实体文件。
+
+        Args:
+            paths: 当前批次已经发布成功的目标路径。
+
+        Returns:
+            None: 全部文件删除后无返回值。
+        """
+        cleanup_errors: list[OSError] = []
+        for path in paths:
+            try:
+                path.unlink(missing_ok=True)
+            except OSError as exc:
+                cleanup_errors.append(exc)
+        if cleanup_errors:
+            raise ValidationException("影像批次回滚时实体文件清理失败") from (
+                cleanup_errors[0]
+            )
+
+    async def upload_assets_batch(
         self,
         db: AsyncSession,
         project_code: str,
         task_code: str,
-        request: ImageryAssetCreateRequest,
-        original_filename: str,
-        file_handle: BinaryIO,
-    ) -> ImageryAssetResponse:
-        """接收真实影像文件并提取空间和栅格元数据入库。
+        request: ImageryAssetBatchCreateRequest,
+        files: list[ImageryBatchUploadFile],
+    ) -> ImageryAssetBatchResponse:
+        """原子校验、发布并登记 1–20 个真实影像文件。
 
         Args:
             db: 异步数据库会话。
             project_code: 项目编号。
             task_code: 审计记录所属作业任务。
-            request: 影像业务元数据。
-            original_filename: 上传原始文件名。
-            file_handle: 上传二进制流。
+            request: 批次编号、成员清单、操作人和入库依据。
+            files: multipart 上传的文件名和二进制流。
 
         Returns:
-            ImageryAssetResponse: 已入库影像资产。
+            ImageryAssetBatchResponse: 已提交批次及全部影像资产。
         """
         project = await self.workbench_dao.get_project_by_code(db, project_code)
         task = await self.workbench_dao.get_task_by_code(db, task_code)
@@ -915,121 +1131,232 @@ class ImageryAssetService:
             request.operator_code,
             "manage_imagery",
         )
-        if await self.dao.get_asset_by_code(db, request.asset_code):
-            raise ValidationException(f"影像资产编号 {request.asset_code} 已存在")
-        safe_filename = Path(original_filename).name
-        suffix = Path(safe_filename).suffix.lower()
-        if suffix not in {".tif", ".tiff", ".img", ".hdf"}:
-            raise ValidationException("仅支持 GeoTIFF、IMG 或 HDF 影像文件")
+        if await self.dao.get_import_batch_by_code(db, request.batch_code):
+            raise ValidationException(f"影像入库批次 {request.batch_code} 已存在")
+        if len(files) != len(request.items):
+            raise ValidationException("上传文件数量与批次清单不一致")
+        file_by_name = {item.filename.casefold(): item for item in files}
+        if len(file_by_name) != len(files):
+            raise ValidationException("上传文件名不得重复")
+        manifest_names = {item.filename.casefold() for item in request.items}
+        if set(file_by_name) != manifest_names:
+            raise ValidationException("上传文件名与批次清单不完全一致")
 
-        temporary_path, file_size, checksum = await asyncio.to_thread(
-            self._store_temporary_upload,
-            file_handle,
-            suffix,
-        )
-        final_path: Path | None = None
-        persisted = False
+        prepared: list[PreparedImageryUpload] = []
+        published_paths: list[Path] = []
+        assets: list[ImageryAsset] = []
+        batch_checksums: set[str] = set()
         try:
-            inspection = await asyncio.to_thread(
-                self._inspect_raster,
-                temporary_path,
-                suffix,
-            )
-            resolved_metadata = self._resolve_business_metadata(
-                inspection.business_metadata,
-                request,
-            )
-            duplicate = await self.dao.get_asset_by_checksum(db, checksum)
-            if duplicate is not None:
-                raise ValidationException(
-                    f"相同影像文件已入库为 {duplicate.asset_code}"
+            for item in request.items:
+                source = file_by_name[item.filename.casefold()]
+                create_request = ImageryAssetCreateRequest(
+                    asset_code=item.asset_code,
+                    asset_name=item.asset_name,
+                    sensor_type=item.sensor_type,
+                    acquired_at=item.acquired_at,
+                    cloud_cover=item.cloud_cover,
+                    processing_level=item.processing_level,
+                    data_status=item.data_status,
+                    operator_code=request.operator_code,
                 )
-            relative_path = Path("assets") / request.asset_code / safe_filename
-            final_path = (self.storage_dir / relative_path).resolve()
-            if not final_path.is_relative_to(self.storage_dir.resolve()):
-                raise ValidationException("影像资产存储路径不合法")
-            if final_path.exists():
-                raise ValidationException("目标影像文件已存在")
-            final_path.parent.mkdir(parents=True, exist_ok=True)
-            os.replace(temporary_path, final_path)
-            left, bottom, right, top = inspection.bounds_wgs84
-            footprint_wkt = (
-                f"POLYGON(({left} {bottom},{right} {bottom},"
-                f"{right} {top},{left} {top},{left} {bottom}))"
-            )
-            asset = await self.dao.add_asset(
+                prepared_item = await self._prepare_upload(
+                    db,
+                    create_request,
+                    source.filename,
+                    source.file_handle,
+                    batch_checksums,
+                )
+                prepared.append(prepared_item)
+                if sum(entry.file_size for entry in prepared) > (
+                    settings.max_imagery_batch_upload_bytes
+                ):
+                    raise ValidationException("影像批次总大小超过平台允许上限")
+
+            manifest_checksum = self._manifest_sha256(request, prepared)
+            for item in prepared:
+                await asyncio.to_thread(self._publish_prepared_file, item)
+                published_paths.append(item.final_path)
+                left, bottom, right, top = item.inspection.bounds_wgs84
+                footprint_wkt = (
+                    f"POLYGON(({left} {bottom},{right} {bottom},"
+                    f"{right} {top},{left} {top},{left} {bottom}))"
+                )
+                asset = await self.dao.add_asset(
+                    db,
+                    ImageryAsset(
+                        project_id=project.id,
+                        asset_code=item.request.asset_code,
+                        asset_name=item.request.asset_name,
+                        sensor_type=item.resolved_metadata.sensor_type,
+                        acquired_at=item.resolved_metadata.acquired_at,
+                        cloud_cover=item.resolved_metadata.cloud_cover,
+                        resolution_m=item.inspection.resolution_m,
+                        processing_level=item.resolved_metadata.processing_level,
+                        data_status=item.request.data_status,
+                        calibration_status="pending",
+                        correction_status="pending",
+                        original_filename=item.safe_filename,
+                        file_uri=(
+                            "storage://imagery/"
+                            f"{item.relative_path.as_posix()}"
+                        ),
+                        file_format=item.inspection.driver,
+                        file_size_bytes=item.file_size,
+                        checksum_sha256=item.checksum_sha256,
+                        band_count=item.inspection.band_count,
+                        raster_width=item.inspection.width,
+                        raster_height=item.inspection.height,
+                        crs=item.inspection.crs,
+                        raster_metadata={
+                            **item.inspection.metadata,
+                            "business_metadata": item.resolved_metadata.audit,
+                            "import_batch_code": request.batch_code,
+                            "import_manifest_sha256": manifest_checksum,
+                        },
+                        imported_by=operator.display_name,
+                        spatial_extent=WKTElement(footprint_wkt, srid=4326),
+                    ),
+                )
+                assets.append(asset)
+                await self.dao.add_steps(db, self._default_steps(asset.id))
+
+            batch = await self.dao.add_import_batch(
                 db,
-                ImageryAsset(
+                ImageryImportBatch(
                     project_id=project.id,
-                    asset_code=request.asset_code,
-                    asset_name=request.asset_name,
-                    sensor_type=resolved_metadata.sensor_type,
-                    acquired_at=resolved_metadata.acquired_at,
-                    cloud_cover=resolved_metadata.cloud_cover,
-                    resolution_m=inspection.resolution_m,
-                    processing_level=resolved_metadata.processing_level,
-                    data_status=request.data_status,
-                    calibration_status="pending",
-                    correction_status="pending",
-                    original_filename=safe_filename,
-                    file_uri=f"storage://imagery/{relative_path.as_posix()}",
-                    file_format=inspection.driver,
-                    file_size_bytes=file_size,
-                    checksum_sha256=checksum,
-                    band_count=inspection.band_count,
-                    raster_width=inspection.width,
-                    raster_height=inspection.height,
-                    crs=inspection.crs,
-                    raster_metadata={
-                        **inspection.metadata,
-                        "business_metadata": resolved_metadata.audit,
-                    },
+                    task_id=task.id,
+                    batch_code=request.batch_code,
+                    item_count=len(prepared),
+                    total_size_bytes=sum(item.file_size for item in prepared),
+                    manifest_sha256=manifest_checksum,
                     imported_by=operator.display_name,
-                    spatial_extent=WKTElement(footprint_wkt, srid=4326),
+                    imported_by_code=operator.user_code,
+                    imported_by_role=operator.role_code,
+                    import_comment=request.comment,
                 ),
             )
-            await self.dao.add_steps(db, self._default_steps(asset.id))
+            await self.dao.add_import_batch_items(
+                db,
+                [
+                    ImageryImportBatchItem(
+                        batch_id=batch.id,
+                        asset_id=asset.id,
+                        sequence=index,
+                        original_filename=item.safe_filename,
+                        file_size_bytes=item.file_size,
+                        checksum_sha256=item.checksum_sha256,
+                    )
+                    for index, (item, asset) in enumerate(
+                        zip(prepared, assets, strict=True),
+                        start=1,
+                    )
+                ],
+            )
             await self.workbench_dao.add_review_record(
                 db,
                 ReviewRecord(
                     task_id=task.id,
                     review_level="imagery_processing",
-                    action="imagery_asset_imported",
+                    action="imagery_asset_batch_imported",
                     reviewer=operator.display_name,
                     reviewer_code=operator.user_code,
                     reviewer_role=operator.role_code,
                     comment=(
-                        f"导入影像资产 {request.asset_code}，文件 {safe_filename}，"
-                        f"{inspection.width}×{inspection.height}，"
-                        f"{inspection.band_count} 波段，SHA256 {checksum}；"
-                        "业务元数据来源："
-                        f"传感器={resolved_metadata.audit['sensor_type']['source']}，"
-                        f"采集时间={resolved_metadata.audit['acquired_at']['source']}，"
-                        f"处理级别={resolved_metadata.audit['processing_level']['source']}，"
-                        f"云量={resolved_metadata.audit['cloud_cover']['source']}"
+                        f"原子导入影像批次 {request.batch_code}，共 "
+                        f"{len(prepared)} 个文件、"
+                        f"{sum(item.file_size for item in prepared)} 字节，"
+                        f"清单 SHA256 {manifest_checksum}；{request.comment}"
                     ),
                 ),
             )
+            response = ImageryAssetBatchResponse(
+                batch_code=batch.batch_code,
+                item_count=batch.item_count,
+                total_size_bytes=batch.total_size_bytes,
+                manifest_sha256=batch.manifest_sha256,
+                imported_by=batch.imported_by,
+                imported_by_code=batch.imported_by_code,
+                imported_by_role=batch.imported_by_role,
+                comment=batch.import_comment,
+                created_at=batch.created_at,
+                items=[
+                    self._to_response(
+                        asset,
+                        json.dumps(self._footprint_geojson(item.inspection)),
+                    )
+                    for item, asset in zip(prepared, assets, strict=True)
+                ],
+            )
             await db.commit()
-            await db.refresh(asset)
-            persisted = True
-            return self._to_response(asset, json.dumps({
-                "type": "Polygon",
-                "coordinates": [[
-                    [left, bottom],
-                    [right, bottom],
-                    [right, top],
-                    [left, top],
-                    [left, bottom],
-                ]],
-            }))
+            return response
         except IntegrityError as exc:
-            await db.rollback()
-            if final_path is not None:
-                final_path.unlink(missing_ok=True)
-            raise ValidationException("影像资产编号或文件校验和已存在") from exc
+            try:
+                await db.rollback()
+            finally:
+                await asyncio.to_thread(
+                    self._remove_published_files,
+                    published_paths,
+                )
+            raise ValidationException(
+                "影像批次、资产编号或文件校验和已存在"
+            ) from exc
         except BaseException:
-            temporary_path.unlink(missing_ok=True)
-            if not persisted and final_path is not None and final_path.exists():
-                final_path.unlink(missing_ok=True)
+            try:
+                await db.rollback()
+            finally:
+                await asyncio.to_thread(
+                    self._remove_published_files,
+                    published_paths,
+                )
             raise
+        finally:
+            for item in prepared:
+                item.temporary_path.unlink(missing_ok=True)
+
+    async def upload_asset(
+        self,
+        db: AsyncSession,
+        project_code: str,
+        task_code: str,
+        request: ImageryAssetCreateRequest,
+        original_filename: str,
+        file_handle: BinaryIO,
+    ) -> ImageryAssetResponse:
+        """通过统一原子批次流程接收一个真实影像文件。
+
+        Args:
+            db: 异步数据库会话。
+            project_code: 项目编号。
+            task_code: 审计记录所属作业任务。
+            request: 影像业务元数据。
+            original_filename: 上传原始文件名。
+            file_handle: 上传二进制流。
+
+        Returns:
+            ImageryAssetResponse: 已入库影像资产。
+        """
+        batch_request = ImageryAssetBatchCreateRequest.model_validate({
+            "batch_code": f"IMB-SINGLE-{uuid4().hex.upper()}",
+            "operator_code": request.operator_code,
+            "comment": f"单文件影像入库：{request.asset_code}",
+            "items": [
+                {
+                    "filename": Path(original_filename).name,
+                    "asset_code": request.asset_code,
+                    "asset_name": request.asset_name,
+                    "sensor_type": request.sensor_type,
+                    "acquired_at": request.acquired_at,
+                    "cloud_cover": request.cloud_cover,
+                    "processing_level": request.processing_level,
+                    "data_status": request.data_status,
+                }
+            ],
+        })
+        response = await self.upload_assets_batch(
+            db,
+            project_code,
+            task_code,
+            batch_request,
+            [ImageryBatchUploadFile(Path(original_filename).name, file_handle)],
+        )
+        return response.items[0]
