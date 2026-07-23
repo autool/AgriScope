@@ -39,6 +39,16 @@ export interface DatasetAsset {
   security_classification: SecurityClassification
   data_status: ProductionDataStatus
   verification_status: string
+  physical_file_uri: string | null
+  physical_original_filename: string | null
+  physical_file_size_bytes: number | null
+  physical_checksum_sha256: string | null
+  physical_media_type: string | null
+  verified_at: string | null
+  verified_by: string | null
+  verified_by_code: string | null
+  verified_by_role: UserRoleCode | 'independent_supervisor' | null
+  verification_comment: string | null
   parent_asset_codes: string[]
   metadata: Record<string, unknown>
   registered_by: string
@@ -47,14 +57,13 @@ export interface DatasetAsset {
   created_at: string
 }
 
-export interface DatasetAssetCreatePayload {
+export interface DatasetAssetMetadataPayload {
   asset_code: string
   asset_name: string
   asset_type: DatasetAssetType
   source_name: string
   source_uri: string
   source_version: string
-  checksum_sha256: string
   crs: string | null
   extent_bbox: [number, number, number, number] | null
   time_start: string | null
@@ -66,6 +75,27 @@ export interface DatasetAssetCreatePayload {
   process_code: string | null
   metadata: Record<string, unknown>
   operator_code: string
+}
+
+export interface DatasetAssetCreatePayload extends DatasetAssetMetadataPayload {
+  checksum_sha256: string
+}
+
+export interface DatasetAssetUploadPayload extends DatasetAssetMetadataPayload {
+  verification_comment: string
+}
+
+export interface DatasetAssetVerificationResult {
+  verification_code: string
+  verification_status: 'verified' | 'rejected'
+  checksum_match: boolean
+  expected_checksum_sha256: string
+  computed_checksum_sha256: string
+  file_size_bytes: number
+  media_type: string
+  verification_error: string | null
+  created_at: string
+  asset: DatasetAsset
 }
 
 export interface WorkArea {

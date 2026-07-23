@@ -21,6 +21,7 @@ from app.dao.workbench_dao import QualityGateSummary
 from app.models.workbench import DeliveryPackage
 from app.schemas.delivery import DeliveryGenerateRequest
 from app.services.boundary_service import BoundaryService
+from app.services.dataset_asset_service import DatasetAssetService
 from app.services.delivery_service import DeliveryService
 from app.services.plot_attribute_workbook_parser import (
     PlotAttributeWorkbookParser,
@@ -752,20 +753,35 @@ def test_delivery_generation_archives_verified_physical_evidence(
         pdf_checksum_sha256=hashlib.sha256(statistics_pdf).hexdigest(),
         report_manifest=statistics_manifest,
     )
+    dataset_storage_root = tmp_path / "datasets"
+    dataset_path = dataset_storage_root / "DATASET-001" / "verified.csv"
+    dataset_path.parent.mkdir(parents=True)
+    dataset_path.write_bytes(b"source,version\nSentinel-2,2026-07-16\n")
+    dataset_checksum = hashlib.sha256(dataset_path.read_bytes()).hexdigest()
     dataset_asset = SimpleNamespace(
         asset_code="DATASET-001",
         asset_name="公开 Sentinel-2 来源目录",
-        asset_type="imagery",
+        asset_type="table",
         source_name="Element 84 Earth Search",
         source_uri="https://earth-search.aws.element84.com/v1",
         source_version="2026-07-16",
-        checksum_sha256="a" * 64,
+        checksum_sha256=dataset_checksum,
         crs="EPSG:32651",
         time_start=generated_at,
         time_end=generated_at,
         security_classification="public",
         data_status="operational",
         verification_status="verified",
+        physical_file_uri="storage://datasets/DATASET-001/verified.csv",
+        physical_original_filename="sentinel-source.csv",
+        physical_file_size_bytes=dataset_path.stat().st_size,
+        physical_checksum_sha256=dataset_checksum,
+        physical_media_type="text/csv",
+        verified_at=generated_at,
+        verified_by="赵志远",
+        verified_by_code="manager-zhao-zhiyuan",
+        verified_by_role="project_manager",
+        verification_comment="依据公开 STAC 来源清单核验目录实体",
         metadata_payload={"stac_item_id": "S2B_TEST_L2A"},
         registered_by="赵志远",
         registered_by_code="manager-zhao-zhiyuan",
@@ -1027,6 +1043,9 @@ def test_delivery_generation_archives_verified_physical_evidence(
         field_artifact_service=field_artifact_service,
         plot_attribute_workbook_service=plot_attribute_workbook_service,
         plot_attribute_field_service=plot_attribute_field_service,
+        dataset_asset_service=DatasetAssetService(
+            storage_root=dataset_storage_root,
+        ),
     )
     service.storage_dir = tmp_path / "deliveries"
     db = AsyncMock()
@@ -1065,6 +1084,7 @@ def test_delivery_generation_archives_verified_physical_evidence(
         )
         assert "archive/imagery_lineage.json" in names
         assert "archive/dataset_catalog.json" in names
+        assert "archive/verified_dataset_files.json" in names
         assert "archive/archive_index.json" in names
         assert "field/evidence_manifest.json" in names
         assert "field/evidence_events.json" in names
@@ -1084,6 +1104,22 @@ def test_delivery_generation_archives_verified_physical_evidence(
         assert attribute_manifest[0]["changed_count"] == 1
         archive_index = json.loads(archive.read("archive/archive_index.json"))
         assert archive_index["schema_version"] == "delivery-archive-v5"
+        assert archive_index["categories"]["verified_dataset_files"] == {
+            "status": "verified_reference",
+            "count": 1,
+        }
+        dataset_catalog = json.loads(archive.read("archive/dataset_catalog.json"))
+        assert dataset_catalog[0]["physical_file_uri"] == (
+            "storage://datasets/DATASET-001/verified.csv"
+        )
+        assert dataset_catalog[0]["physical_checksum_sha256"] == dataset_checksum
+        verified_dataset_files = json.loads(
+            archive.read("archive/verified_dataset_files.json")
+        )
+        assert verified_dataset_files[0]["asset_code"] == "DATASET-001"
+        assert verified_dataset_files[0]["evidence_status"] == (
+            "verified_reference"
+        )
         assert archive_index["categories"]["plot_attribute_imports"] == {
             "status": "included",
             "count": 1,

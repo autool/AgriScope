@@ -32,8 +32,8 @@ ReconciliationStatus = Literal["pending", "checking", "passed", "conflict"]
 PackageDeliveryStatus = Literal["pending", "submitted", "accepted", "returned"]
 
 
-class DatasetAssetCreateRequest(BaseModel):
-    """登记多源数据资产及其来源证据。"""
+class DatasetAssetMetadataRequest(BaseModel):
+    """多源数据资产通用来源、范围、密级和血缘字段。"""
 
     asset_code: str = Field(min_length=1, max_length=80, pattern=r"^[A-Za-z0-9_-]+$")
     asset_name: str = Field(min_length=1, max_length=200)
@@ -41,7 +41,6 @@ class DatasetAssetCreateRequest(BaseModel):
     source_name: str = Field(min_length=1, max_length=120)
     source_uri: str = Field(min_length=1, max_length=500)
     source_version: str = Field(min_length=1, max_length=80)
-    checksum_sha256: str = Field(pattern=r"^[a-fA-F0-9]{64}$")
     crs: str | None = Field(default=None, max_length=100)
     extent_bbox: tuple[float, float, float, float] | None = None
     time_start: datetime | None = None
@@ -125,6 +124,75 @@ class DatasetAssetCreateRequest(BaseModel):
         return self
 
 
+class DatasetAssetCreateRequest(DatasetAssetMetadataRequest):
+    """仅登记外部多源数据资产及调用方提供的校验值。"""
+
+    checksum_sha256: str = Field(pattern=r"^[a-fA-F0-9]{64}$")
+
+
+class DatasetAssetUploadRequest(DatasetAssetMetadataRequest):
+    """上传实体并由服务端计算校验值的数据资产登记清单。"""
+
+    verification_comment: str = Field(min_length=10, max_length=500)
+
+    @field_validator("verification_comment")
+    @classmethod
+    def normalize_verification_comment(cls, value: str) -> str:
+        """清理实体核验依据。
+
+        Args:
+            value: 原始核验依据。
+
+        Returns:
+            str: 去除首尾空格后的核验依据。
+        """
+        normalized = value.strip()
+        if len(normalized) < 10:
+            raise ValueError("实体核验依据至少填写 10 个字符")
+        return normalized
+
+
+class DatasetAssetVerifyRequest(BaseModel):
+    """为既有数据资产补传实体并执行核验。"""
+
+    operator_code: str = Field(min_length=1, max_length=50)
+    verification_comment: str = Field(min_length=10, max_length=500)
+
+    model_config = ConfigDict(extra="forbid")
+
+    @field_validator("operator_code")
+    @classmethod
+    def normalize_operator_code(cls, value: str) -> str:
+        """清理补传操作人编码。
+
+        Args:
+            value: 原始操作人编码。
+
+        Returns:
+            str: 去除首尾空格后的操作人编码。
+        """
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("操作人编码不得为空")
+        return normalized
+
+    @field_validator("verification_comment")
+    @classmethod
+    def normalize_verification_comment(cls, value: str) -> str:
+        """清理补传核验依据。
+
+        Args:
+            value: 原始核验依据。
+
+        Returns:
+            str: 去除首尾空格后的核验依据。
+        """
+        normalized = value.strip()
+        if len(normalized) < 10:
+            raise ValueError("实体核验依据至少填写 10 个字符")
+        return normalized
+
+
 class DatasetAssetResponse(BaseModel):
     """多源数据资产目录项。"""
 
@@ -142,12 +210,37 @@ class DatasetAssetResponse(BaseModel):
     security_classification: SecurityClassification
     data_status: DataStatus
     verification_status: str
+    physical_file_uri: str | None
+    physical_original_filename: str | None
+    physical_file_size_bytes: int | None
+    physical_checksum_sha256: str | None
+    physical_media_type: str | None
+    verified_at: datetime | None
+    verified_by: str | None
+    verified_by_code: str | None
+    verified_by_role: str | None
+    verification_comment: str | None
     parent_asset_codes: list[str]
     metadata: dict
     registered_by: str
     registered_by_code: str
     registered_by_role: str
     created_at: datetime
+
+
+class DatasetAssetVerificationResponse(BaseModel):
+    """多源数据资产实体核验结果。"""
+
+    verification_code: str
+    verification_status: Literal["verified", "rejected"]
+    checksum_match: bool
+    expected_checksum_sha256: str
+    computed_checksum_sha256: str
+    file_size_bytes: int
+    media_type: str
+    verification_error: str | None
+    created_at: datetime
+    asset: DatasetAssetResponse
 
 
 class ProductionBatchCreateRequest(BaseModel):

@@ -1,6 +1,7 @@
 """数据库模型。"""
 
 from app.models.acceptance_report import AcceptanceReport
+from app.models.dataset_asset_verification import DatasetAssetVerification
 from app.models.disaster_report import DisasterReport
 from app.models.growth_monitoring import (
     GrowthMonitoringEvent,
@@ -88,6 +89,7 @@ __all__ = [
     "AcceptanceReport",
     "Base",
     "DatasetAsset",
+    "DatasetAssetVerification",
     "DatasetLineage",
     "DeviceFault",
     "DeviceTelemetry",

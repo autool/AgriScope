@@ -16,7 +16,9 @@ import ProductionSchedulingPanel from '@/components/production/ProductionSchedul
 import { useProductionStore } from '@/store/productionStore'
 import { useUserStore } from '@/store/userStore'
 import type {
+  DatasetAsset,
   DatasetAssetCreatePayload,
+  DatasetAssetUploadPayload,
   ProductionBatchCreatePayload,
   ProductionBatchStatus,
   WorkPackageCreatePayload,
@@ -43,8 +45,63 @@ const operatorCodeComputed = computed<string | null>(() => (
 const registerAsset = async (payload: DatasetAssetCreatePayload): Promise<void> => {
   try {
     await productionStore.registerAsset(payload)
-    datasetPanelRef.value?.closeAfterSaved()
-    message.success('多源数据资产已登记并写入来源与血缘审计')
+    datasetPanelRef.value?.closeRegisterAfterSaved()
+    message.success('外部数据来源已登记为待实体核验')
+  } catch {
+    // 请求拦截器已显示安全错误。
+  }
+}
+
+const uploadAsset = async (
+  payload: DatasetAssetUploadPayload,
+  file: File,
+): Promise<void> => {
+  try {
+    await productionStore.uploadAsset(payload, file)
+    datasetPanelRef.value?.closeRegisterAfterSaved()
+    message.success('数据实体已通过服务端格式、大小和 SHA-256 核验并登记')
+  } catch {
+    // 请求拦截器已显示安全错误。
+  }
+}
+
+const verifyAsset = async (
+  assetCode: string,
+  file: File,
+  verificationComment: string,
+): Promise<void> => {
+  const operatorCode = operatorCodeComputed.value
+  if (!operatorCode) return
+  try {
+    const result = await productionStore.verifyAsset(
+      assetCode,
+      file,
+      operatorCode,
+      verificationComment,
+    )
+    if (!result.checksum_match) {
+      message.error('实体 SHA-256 与登记值不一致；拒绝尝试已留痕，文件未发布')
+      return
+    }
+    datasetPanelRef.value?.closeVerificationAfterSaved()
+    message.success('数据资产实体核验通过，现可用于生产批次和受控下载')
+  } catch {
+    // 请求拦截器已显示安全错误。
+  }
+}
+
+const downloadAsset = async (asset: DatasetAsset): Promise<void> => {
+  const operatorCode = operatorCodeComputed.value
+  if (!operatorCode) return
+  try {
+    const blob = await productionStore.downloadAsset(asset.asset_code, operatorCode)
+    const url = window.URL.createObjectURL(blob)
+    const anchor = document.createElement('a')
+    anchor.href = url
+    anchor.download = asset.physical_original_filename || `${asset.asset_code}.bin`
+    anchor.click()
+    window.URL.revokeObjectURL(url)
+    message.success('实体已重新复核并开始下载')
   } catch {
     // 请求拦截器已显示安全错误。
   }
@@ -160,7 +217,10 @@ onMounted(() => {
                 :saving="savingRef"
                 :can-manage="canManageDatasetsComputed"
                 :operator-code="operatorCodeComputed"
-                @register="registerAsset"
+                @register-reference="registerAsset"
+                @upload-entity="uploadAsset"
+                @verify-entity="verifyAsset"
+                @download-entity="downloadAsset"
               />
             </a-tab-pane>
             <a-tab-pane key="rules">

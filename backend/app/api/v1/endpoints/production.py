@@ -1,13 +1,20 @@
 """多源数据目录、生产批次与县区作业包端点。"""
 
 from typing import Annotated
+from urllib.parse import quote
 
-from fastapi import APIRouter, Query, status
+from fastapi import APIRouter, File, Form, Query, UploadFile, status
+from fastapi.responses import FileResponse
+from pydantic import ValidationError
 
 from app.api.deps import DatabaseSession
+from app.core.exceptions import ValidationException
 from app.schemas.production import (
     DatasetAssetCreateRequest,
     DatasetAssetResponse,
+    DatasetAssetUploadRequest,
+    DatasetAssetVerificationResponse,
+    DatasetAssetVerifyRequest,
     ProductionBatchCreateRequest,
     ProductionBatchResponse,
     ProductionBatchStatusUpdateRequest,
@@ -17,10 +24,12 @@ from app.schemas.production import (
     WorkPackageResponse,
     WorkPackageUpdateRequest,
 )
+from app.services.dataset_asset_service import DatasetAssetService
 from app.services.production_service import ProductionService
 
 router = APIRouter(prefix="/api/v1/production", tags=["遥感生产调度"])
 service = ProductionService()
+dataset_asset_service = DatasetAssetService()
 
 
 @router.get("/overview", response_model=ProductionOverviewResponse)
@@ -65,6 +74,137 @@ async def register_dataset_asset(
         DatasetAssetResponse: 已登记、待实体核验的数据资产。
     """
     return await service.register_asset(db, project_code, task_code, request)
+
+
+@router.post(
+    "/dataset-assets/upload",
+    response_model=DatasetAssetResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+async def upload_dataset_asset(
+    file: Annotated[UploadFile, File(description="多源数据资产实体文件")],
+    metadata_json: Annotated[str, Form(min_length=1)],
+    db: DatabaseSession,
+    project_code: Annotated[str, Query(min_length=1, max_length=50)] = "RS-2026",
+    task_code: Annotated[str, Query(min_length=1, max_length=50)] = "RS-2026-045",
+) -> DatasetAssetResponse:
+    """上传实体并由服务端计算 SHA-256 后登记为已核验资产。
+
+    Args:
+        file: 与资产类型匹配的物理实体文件。
+        metadata_json: 来源、范围、密级、血缘和核验依据 JSON。
+        db: FastAPI 注入的异步数据库会话。
+        project_code: 项目编号。
+        task_code: 作业任务编号。
+
+    Returns:
+        DatasetAssetResponse: 已完成实体核验的数据资产。
+    """
+    try:
+        request = DatasetAssetUploadRequest.model_validate_json(metadata_json)
+    except ValidationError as exc:
+        raise ValidationException("数据资产上传清单格式不合法") from exc
+    try:
+        return await dataset_asset_service.register_uploaded_asset(
+            db,
+            project_code,
+            task_code,
+            request,
+            file.filename or "dataset.bin",
+            file.content_type,
+            file.file,
+        )
+    finally:
+        await file.close()
+
+
+@router.post(
+    "/dataset-assets/{asset_code}/verify",
+    response_model=DatasetAssetVerificationResponse,
+)
+async def verify_dataset_asset(
+    asset_code: str,
+    file: Annotated[UploadFile, File(description="待补传核验的数据资产实体")],
+    operator_code: Annotated[str, Form(min_length=1, max_length=50)],
+    verification_comment: Annotated[str, Form(min_length=10, max_length=500)],
+    db: DatabaseSession,
+    project_code: Annotated[str, Query(min_length=1, max_length=50)] = "RS-2026",
+    task_code: Annotated[str, Query(min_length=1, max_length=50)] = "RS-2026-045",
+) -> DatasetAssetVerificationResponse:
+    """为待核验或核验不通过的目录资产补传物理实体。
+
+    Args:
+        asset_code: 数据资产编号。
+        file: 待检查物理实体。
+        operator_code: 当前项目用户稳定编码。
+        verification_comment: 人工核验依据。
+        db: FastAPI 注入的异步数据库会话。
+        project_code: 项目编号。
+        task_code: 作业任务编号。
+
+    Returns:
+        DatasetAssetVerificationResponse: 通过或拒绝的不可变核验结果。
+    """
+    request = DatasetAssetVerifyRequest(
+        operator_code=operator_code,
+        verification_comment=verification_comment,
+    )
+    try:
+        return await dataset_asset_service.verify_existing_asset(
+            db,
+            project_code,
+            task_code,
+            asset_code,
+            request,
+            file.filename or "dataset.bin",
+            file.content_type,
+            file.file,
+        )
+    finally:
+        await file.close()
+
+
+@router.get(
+    "/dataset-assets/{asset_code}/download",
+    response_class=FileResponse,
+    responses={200: {"content": {"application/octet-stream": {}}}},
+)
+async def download_dataset_asset(
+    asset_code: str,
+    db: DatabaseSession,
+    operator_code: Annotated[str, Query(min_length=1, max_length=50)],
+    project_code: Annotated[str, Query(min_length=1, max_length=50)] = "RS-2026",
+    task_code: Annotated[str, Query(min_length=1, max_length=50)] = "RS-2026-045",
+) -> FileResponse:
+    """重新校验受控实体后下载多源数据资产。
+
+    Args:
+        asset_code: 数据资产编号。
+        db: FastAPI 注入的异步数据库会话。
+        operator_code: 当前项目用户稳定编码。
+        project_code: 项目编号。
+        task_code: 作业任务编号。
+
+    Returns:
+        FileResponse: 带内容校验 ETag 的实体下载响应。
+    """
+    download = await dataset_asset_service.get_download(
+        db,
+        project_code,
+        task_code,
+        asset_code,
+        operator_code,
+    )
+    return FileResponse(
+        download.path,
+        media_type=download.media_type,
+        headers={
+            "ETag": f'"{download.checksum_sha256}"',
+            "Content-Disposition": (
+                "attachment; filename*=UTF-8''" + quote(download.filename)
+            ),
+        },
+    )
 
 
 @router.post(

@@ -922,6 +922,31 @@ class DatasetAsset(Base):
         nullable=False,
         default="pending",
     )
+    physical_file_uri: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    physical_original_filename: Mapped[str | None] = mapped_column(
+        String(255),
+        nullable=True,
+    )
+    physical_file_size_bytes: Mapped[int | None] = mapped_column(
+        BigInteger,
+        nullable=True,
+    )
+    physical_checksum_sha256: Mapped[str | None] = mapped_column(
+        String(64),
+        nullable=True,
+    )
+    physical_media_type: Mapped[str | None] = mapped_column(
+        String(120),
+        nullable=True,
+    )
+    verified_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+    verified_by: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    verified_by_code: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    verified_by_role: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    verification_comment: Mapped[str | None] = mapped_column(Text, nullable=True)
     metadata_payload: Mapped[dict] = mapped_column(
         "metadata",
         JSON,

@@ -69,6 +69,8 @@ declare module 'vue' {
     ChangeCandidateReviewDrawer: typeof import('./src/components/changeDetection/ChangeCandidateReviewDrawer.vue')['default']
     ChangeImageryComparison: typeof import('./src/components/changeDetection/ChangeImageryComparison.vue')['default']
     ChangeRunCreateModal: typeof import('./src/components/changeDetection/ChangeRunCreateModal.vue')['default']
+    DatasetAssetRegisterModal: typeof import('./src/components/production/DatasetAssetRegisterModal.vue')['default']
+    DatasetAssetVerificationModal: typeof import('./src/components/production/DatasetAssetVerificationModal.vue')['default']
     DatasetCatalogPanel: typeof import('./src/components/production/DatasetCatalogPanel.vue')['default']
     DisasterGrowthPanel: typeof import('./src/components/panels/DisasterGrowthPanel.vue')['default']
     DisasterImportModal: typeof import('./src/components/disaster/DisasterImportModal.vue')['default']

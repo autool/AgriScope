@@ -1,5 +1,6 @@
 """多源数据目录、生产批次与县区作业包业务服务。"""
 
+import asyncio
 from collections import defaultdict
 from datetime import UTC, date, datetime
 from decimal import Decimal
@@ -33,6 +34,7 @@ from app.schemas.production import (
     WorkPackageResponse,
     WorkPackageUpdateRequest,
 )
+from app.services.dataset_asset_service import DatasetAssetService
 from app.services.project_user_service import ProjectUserService
 from app.services.rule_config_service import RuleConfigService
 
@@ -73,6 +75,7 @@ class ProductionService:
         workbench_dao: WorkbenchDAO | None = None,
         user_service: ProjectUserService | None = None,
         rule_service: RuleConfigService | None = None,
+        dataset_asset_service: DatasetAssetService | None = None,
     ) -> None:
         """初始化生产调度服务。
 
@@ -81,6 +84,7 @@ class ProductionService:
             workbench_dao: 项目任务公共查询 DAO。
             user_service: 项目成员与能力服务。
             rule_service: 项目规则配置服务。
+            dataset_asset_service: 数据资产实体复核服务。
 
         Returns:
             None: 无返回值。
@@ -89,6 +93,7 @@ class ProductionService:
         self.workbench_dao = workbench_dao or WorkbenchDAO()
         self.user_service = user_service or ProjectUserService()
         self.rule_service = rule_service or RuleConfigService()
+        self.dataset_asset_service = dataset_asset_service or DatasetAssetService()
 
     async def _resolve_context(
         self,
@@ -164,40 +169,7 @@ class ProductionService:
         Returns:
             DatasetAssetResponse: 多源资产目录项。
         """
-        asset = row[DatasetAsset]
-        bbox_values = (
-            row["min_lon"],
-            row["min_lat"],
-            row["max_lon"],
-            row["max_lat"],
-        )
-        bbox = (
-            tuple(float(value) for value in bbox_values)
-            if all(value is not None for value in bbox_values)
-            else None
-        )
-        return DatasetAssetResponse(
-            asset_code=asset.asset_code,
-            asset_name=asset.asset_name,
-            asset_type=asset.asset_type,
-            source_name=asset.source_name,
-            source_uri=asset.source_uri,
-            source_version=asset.source_version,
-            checksum_sha256=asset.checksum_sha256,
-            crs=asset.crs,
-            extent_bbox=bbox,
-            time_start=asset.time_start,
-            time_end=asset.time_end,
-            security_classification=asset.security_classification,
-            data_status=asset.data_status,
-            verification_status=asset.verification_status,
-            parent_asset_codes=parent_codes,
-            metadata=asset.metadata_payload or {},
-            registered_by=asset.registered_by,
-            registered_by_code=asset.registered_by_code,
-            registered_by_role=asset.registered_by_role,
-            created_at=asset.created_at,
-        )
+        return DatasetAssetService.to_response(row, parent_codes)
 
     @staticmethod
     def _package_response(row: object) -> WorkPackageResponse:
@@ -517,6 +489,14 @@ class ProductionService:
                 raise ValidationException(f"未找到批次关联资产 {asset_code}")
             if asset.asset_type != "imagery":
                 raise ValidationException(f"批次时相资产 {asset_code} 不是影像类型")
+            if asset.verification_status != "verified":
+                raise ValidationException(
+                    f"批次时相资产 {asset_code} 尚未通过实体核验"
+                )
+            await asyncio.to_thread(
+                self.dataset_asset_service.resolve_verified_file,
+                asset,
+            )
             return asset
 
         source_asset = await resolve_asset(request.source_asset_code)

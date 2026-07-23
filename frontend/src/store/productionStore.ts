@@ -4,14 +4,19 @@ import { ref } from 'vue'
 import {
   createProductionBatch,
   createProductionWorkPackages,
+  downloadDatasetAsset,
   getProductionOverview,
   registerDatasetAsset,
+  uploadDatasetAsset,
   updateProductionBatchStatus,
   updateProductionWorkPackage,
+  verifyDatasetAsset,
 } from '@/api/production'
 import { useWorkbenchStore } from '@/store/workbenchStore'
 import type {
   DatasetAssetCreatePayload,
+  DatasetAssetUploadPayload,
+  DatasetAssetVerificationResult,
   ProductionBatchCreatePayload,
   ProductionBatchStatus,
   ProductionOverview,
@@ -53,6 +58,60 @@ export const useProductionStore = defineStore('production', () => {
       savingRef.value = false
     }
   }
+
+  /** 上传实体登记后刷新目录聚合状态。 */
+  const uploadAsset = async (
+    payload: DatasetAssetUploadPayload,
+    file: File,
+  ): Promise<void> => {
+    savingRef.value = true
+    try {
+      await uploadDatasetAsset(
+        payload,
+        file,
+        workbenchStore.projectCodeComputed,
+        workbenchStore.taskCodeComputed,
+      )
+      await load()
+    } finally {
+      savingRef.value = false
+    }
+  }
+
+  /** 补传资产实体并返回服务端核验结论。 */
+  const verifyAsset = async (
+    assetCode: string,
+    file: File,
+    operatorCode: string,
+    verificationComment: string,
+  ): Promise<DatasetAssetVerificationResult> => {
+    savingRef.value = true
+    try {
+      const result = await verifyDatasetAsset(
+        assetCode,
+        file,
+        operatorCode,
+        verificationComment,
+        workbenchStore.projectCodeComputed,
+        workbenchStore.taskCodeComputed,
+      )
+      await load()
+      return result
+    } finally {
+      savingRef.value = false
+    }
+  }
+
+  /** 下载已在服务端重新复核的数据资产实体。 */
+  const downloadAsset = async (
+    assetCode: string,
+    operatorCode: string,
+  ): Promise<Blob> => downloadDatasetAsset(
+    assetCode,
+    operatorCode,
+    workbenchStore.projectCodeComputed,
+    workbenchStore.taskCodeComputed,
+  )
 
   /** 创建生产批次后刷新调度状态。 */
   const createBatch = async (payload: ProductionBatchCreatePayload): Promise<void> => {
@@ -135,6 +194,9 @@ export const useProductionStore = defineStore('production', () => {
     savingRef,
     load,
     registerAsset,
+    uploadAsset,
+    verifyAsset,
+    downloadAsset,
     createBatch,
     createPackages,
     updateBatchStatus,

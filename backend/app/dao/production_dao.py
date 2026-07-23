@@ -7,6 +7,7 @@ from sqlalchemy.engine import RowMapping
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased
 
+from app.models.dataset_asset_verification import DatasetAssetVerification
 from app.models.plot import FarmlandPlot
 from app.models.workbench import (
     AdministrativeBoundary,
@@ -47,6 +48,87 @@ class ProductionDAO:
             )
         )
         return result.scalar_one_or_none()
+
+    async def get_asset_by_code_for_update(
+        self,
+        db: AsyncSession,
+        project_id: int,
+        asset_code: str,
+    ) -> DatasetAsset | None:
+        """锁定并查询项目数据资产。
+
+        Args:
+            db: 异步数据库会话。
+            project_id: 项目主键。
+            asset_code: 资产编号。
+
+        Returns:
+            DatasetAsset | None: 资产不存在时返回 None。
+        """
+        result = await db.execute(
+            select(DatasetAsset)
+            .where(
+                DatasetAsset.project_id == project_id,
+                DatasetAsset.asset_code == asset_code,
+            )
+            .with_for_update()
+        )
+        return result.scalar_one_or_none()
+
+    async def get_asset_row_by_code(
+        self,
+        db: AsyncSession,
+        project_id: int,
+        asset_code: str,
+    ) -> RowMapping | None:
+        """查询单个资产及其 WGS84 包围盒。
+
+        Args:
+            db: 异步数据库会话。
+            project_id: 项目主键。
+            asset_code: 资产编号。
+
+        Returns:
+            RowMapping | None: 包含资产和范围坐标的映射行。
+        """
+        box = func.Box2D(DatasetAsset.extent)
+        result = await db.execute(
+            select(
+                DatasetAsset,
+                func.ST_XMin(box).label("min_lon"),
+                func.ST_YMin(box).label("min_lat"),
+                func.ST_XMax(box).label("max_lon"),
+                func.ST_YMax(box).label("max_lat"),
+            ).where(
+                DatasetAsset.project_id == project_id,
+                DatasetAsset.asset_code == asset_code,
+            )
+        )
+        return result.mappings().one_or_none()
+
+    async def list_parent_asset_codes(
+        self,
+        db: AsyncSession,
+        asset_id: int,
+    ) -> list[str]:
+        """查询资产显式父级血缘编号。
+
+        Args:
+            db: 异步数据库会话。
+            asset_id: 派生资产主键。
+
+        Returns:
+            list[str]: 按编号排序的父资产编号。
+        """
+        parent = aliased(DatasetAsset)
+        result = await db.execute(
+            select(parent.asset_code)
+            .select_from(DatasetLineage)
+            .join(parent, parent.id == DatasetLineage.parent_asset_id)
+            .where(DatasetLineage.derived_asset_id == asset_id)
+            .order_by(parent.asset_code)
+        )
+        return list(result.scalars().all())
 
     async def get_assets_by_codes(
         self,
@@ -189,6 +271,24 @@ class ProductionDAO:
         if lineages:
             db.add_all(lineages)
             await db.flush()
+
+    async def add_dataset_asset_verification(
+        self,
+        db: AsyncSession,
+        verification: DatasetAssetVerification,
+    ) -> DatasetAssetVerification:
+        """写入不可变数据资产实体核验尝试。
+
+        Args:
+            db: 异步数据库会话。
+            verification: 待保存核验证据。
+
+        Returns:
+            DatasetAssetVerification: 已写入当前会话的核验记录。
+        """
+        db.add(verification)
+        await db.flush()
+        return verification
 
     async def add_audit_event(
         self,

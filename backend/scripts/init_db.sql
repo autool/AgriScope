@@ -1858,6 +1858,16 @@ CREATE TABLE IF NOT EXISTS dataset_assets (
     security_classification VARCHAR(30) NOT NULL,
     data_status VARCHAR(20) NOT NULL DEFAULT 'operational',
     verification_status VARCHAR(20) NOT NULL DEFAULT 'pending',
+    physical_file_uri VARCHAR(500),
+    physical_original_filename VARCHAR(255),
+    physical_file_size_bytes BIGINT,
+    physical_checksum_sha256 VARCHAR(64),
+    physical_media_type VARCHAR(120),
+    verified_at TIMESTAMPTZ,
+    verified_by VARCHAR(100),
+    verified_by_code VARCHAR(50),
+    verified_by_role VARCHAR(40),
+    verification_comment TEXT,
     metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
     registered_by VARCHAR(100) NOT NULL,
     registered_by_code VARCHAR(50) NOT NULL,
@@ -1881,6 +1891,22 @@ CREATE TABLE IF NOT EXISTS dataset_assets (
     CONSTRAINT ck_dataset_verification CHECK (
         verification_status IN ('pending', 'verified', 'rejected', 'unavailable')
     ),
+    CONSTRAINT ck_dataset_verified_entity CHECK (
+        verification_status != 'verified'
+        OR (
+            physical_file_uri IS NOT NULL
+            AND physical_original_filename IS NOT NULL
+            AND physical_file_size_bytes > 0
+            AND physical_checksum_sha256 = checksum_sha256
+            AND char_length(physical_checksum_sha256) = 64
+            AND physical_media_type IS NOT NULL
+            AND verified_at IS NOT NULL
+            AND verified_by IS NOT NULL
+            AND verified_by_code IS NOT NULL
+            AND verified_by_role IS NOT NULL
+            AND verification_comment IS NOT NULL
+        )
+    ),
     CONSTRAINT ck_dataset_time_range CHECK (
         time_end IS NULL OR time_start IS NULL OR time_end >= time_start
     )
@@ -1892,6 +1918,43 @@ CREATE INDEX IF NOT EXISTS idx_dataset_assets_project_type
     ON dataset_assets (project_id, asset_type, verification_status);
 CREATE INDEX IF NOT EXISTS idx_dataset_assets_extent
     ON dataset_assets USING GIST (extent);
+
+-- 多源数据资产每次补传都保留不可变核验结果；拒绝尝试不发布实体文件。
+CREATE TABLE IF NOT EXISTS dataset_asset_verifications (
+    id SERIAL PRIMARY KEY,
+    asset_id INTEGER NOT NULL
+        REFERENCES dataset_assets(id) ON DELETE CASCADE,
+    verification_code VARCHAR(80) NOT NULL UNIQUE,
+    verification_status VARCHAR(20) NOT NULL,
+    original_filename VARCHAR(255) NOT NULL,
+    file_uri VARCHAR(500),
+    file_size_bytes BIGINT NOT NULL,
+    expected_checksum_sha256 VARCHAR(64) NOT NULL,
+    computed_checksum_sha256 VARCHAR(64) NOT NULL,
+    media_type VARCHAR(120) NOT NULL,
+    inspection_metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
+    verification_error TEXT,
+    operator VARCHAR(100) NOT NULL,
+    operator_code VARCHAR(50) NOT NULL,
+    operator_role VARCHAR(40) NOT NULL,
+    verification_comment TEXT NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    CONSTRAINT ck_dataset_asset_verification_status CHECK (
+        verification_status IN ('verified', 'rejected')
+    ),
+    CONSTRAINT ck_dataset_asset_verification_file CHECK (
+        file_size_bytes > 0
+        AND char_length(expected_checksum_sha256) = 64
+        AND char_length(computed_checksum_sha256) = 64
+    ),
+    CONSTRAINT ck_dataset_asset_verification_publication CHECK (
+        (verification_status = 'verified' AND file_uri IS NOT NULL)
+        OR (verification_status = 'rejected' AND file_uri IS NULL)
+    )
+);
+
+CREATE INDEX IF NOT EXISTS idx_dataset_asset_verifications_asset_created
+    ON dataset_asset_verifications (asset_id, created_at DESC);
 
 CREATE TABLE IF NOT EXISTS dataset_lineages (
     id SERIAL PRIMARY KEY,

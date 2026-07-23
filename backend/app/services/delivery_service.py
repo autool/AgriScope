@@ -33,6 +33,7 @@ from app.schemas.delivery import (
     DeliveryManifestItem,
     DeliveryPackageResponse,
 )
+from app.services.dataset_asset_service import DatasetAssetService
 from app.services.disaster_report_service import DisasterReportService
 from app.services.disaster_service import DisasterService
 from app.services.field_verification_artifact_service import (
@@ -87,6 +88,7 @@ class DeliveryService:
         vector_export_service: VectorExportService | None = None,
         plot_attribute_workbook_service: PlotAttributeWorkbookService | None = None,
         plot_attribute_field_service: PlotAttributeFieldService | None = None,
+        dataset_asset_service: DatasetAssetService | None = None,
     ) -> None:
         """初始化成果交付服务。
 
@@ -106,6 +108,7 @@ class DeliveryService:
             vector_export_service: 多格式矢量成果实体校验服务。
             plot_attribute_workbook_service: 地块属性导入源文件复核服务。
             plot_attribute_field_service: 项目地块自定义字段定义服务。
+            dataset_asset_service: 多源数据资产实体复核服务。
 
         Returns:
             None: 无返回值。
@@ -137,6 +140,7 @@ class DeliveryService:
         self.plot_attribute_field_service = (
             plot_attribute_field_service or PlotAttributeFieldService()
         )
+        self.dataset_asset_service = dataset_asset_service or DatasetAssetService()
         self.storage_dir = (
             Path(__file__).resolve().parents[2] / "storage" / "deliveries"
         )
@@ -665,6 +669,9 @@ class DeliveryService:
             task.project_id,
             task.id,
         )
+        verified_dataset_files = (
+            await self.dataset_asset_service.load_verified_files(dataset_assets)
+        )
         imagery_steps = (
             await self.dao.get_imagery_steps(db, imagery.id)
             if imagery is not None
@@ -732,6 +739,7 @@ class DeliveryService:
             "growth_monitoring_artifacts": growth_monitoring_artifacts,
             "growth_monitoring_runs": growth_monitoring_runs,
             "dataset_assets": dataset_assets,
+            "verified_dataset_files": verified_dataset_files,
             "archive_state": archive_state,
         }
 
@@ -1137,6 +1145,16 @@ class DeliveryService:
                 "security_classification": item.security_classification,
                 "data_status": item.data_status,
                 "verification_status": item.verification_status,
+                "physical_file_uri": item.physical_file_uri,
+                "physical_original_filename": item.physical_original_filename,
+                "physical_file_size_bytes": item.physical_file_size_bytes,
+                "physical_checksum_sha256": item.physical_checksum_sha256,
+                "physical_media_type": item.physical_media_type,
+                "verified_at": item.verified_at,
+                "verified_by": item.verified_by,
+                "verified_by_code": item.verified_by_code,
+                "verified_by_role": item.verified_by_role,
+                "verification_comment": item.verification_comment,
                 "metadata": item.metadata_payload,
                 "registered_by": item.registered_by,
                 "registered_by_code": item.registered_by_code,
@@ -1145,6 +1163,23 @@ class DeliveryService:
                 "updated_at": item.updated_at,
             }
             for item in source_data["dataset_assets"]
+        ]
+        verified_dataset_file_catalog = [
+            {
+                "asset_code": item.asset_code,
+                "file_uri": item.file_uri,
+                "original_filename": item.original_filename,
+                "file_size_bytes": item.file_size_bytes,
+                "checksum_sha256": item.checksum_sha256,
+                "media_type": item.media_type,
+                "verified_at": item.verified_at,
+                "verified_by": item.verified_by,
+                "verified_by_code": item.verified_by_code,
+                "verified_by_role": item.verified_by_role,
+                "verification_comment": item.verification_comment,
+                "evidence_status": "verified_reference",
+            }
+            for item in source_data["verified_dataset_files"]
         ]
         field_evidence_manifest = [
             {
@@ -1208,6 +1243,14 @@ class DeliveryService:
                 "dataset_catalog": {
                     "status": "included",
                     "count": quality_summary["dataset_asset_count"],
+                },
+                "verified_dataset_files": {
+                    "status": (
+                        "verified_reference"
+                        if verified_dataset_file_catalog
+                        else "not_provided"
+                    ),
+                    "count": len(verified_dataset_file_catalog),
                 },
                 "thematic_maps": {
                     "status": (
@@ -1425,6 +1468,15 @@ class DeliveryService:
                 len(dataset_catalog),
                 "项目级及任务级数据资产来源、版本、密级和校验目录",
                 cls._json_text(dataset_catalog),
+            ),
+            cls._text_entry(
+                "archive/verified_dataset_files.json",
+                "数据资产实体引用",
+                "JSON",
+                len(verified_dataset_file_catalog),
+                "已通过路径、格式、大小和 SHA-256 复核的数据资产受控引用",
+                cls._json_text(verified_dataset_file_catalog),
+                evidence_status="verified_reference",
             ),
             cls._text_entry(
                 "archive/archive_index.json",

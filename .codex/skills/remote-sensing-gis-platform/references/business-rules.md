@@ -53,6 +53,14 @@
 - Keep task plot identity/source/class/bbox catalog data separate from full map geometry. Full Polygon viewport queries must join `task_plots`, use WGS84 bounds, and return all matches only when the complete result is within the configured limit. Over-limit views return the exact match count and no partial features, requiring the user to zoom closer.
 - Apply the same task scope to every plot read path: point/click lookup, code-based boundary lookup, workbench attributes, version history, and rollback target access. Verify `task_plots` before loading or exposing the plot/version and use a task-scoped not-found response for unassigned data.
 
+## Multi-source dataset catalog
+
+- Cover imagery, vector, table, DEM, control, weather, management, UAV, and IoT assets with source/version/checksum/CRS/extent/time/classification/task and lineage metadata.
+- Keep external-source registration in `pending`; a caller-provided checksum is only the expected value for later verification. Direct entity registration must stream to temporary controlled storage, enforce configured size, validate asset-type extension, signature and MIME, inspect ZIP/Office path traversal, encryption, member count and expanded size, then compute SHA-256 server-side.
+- Publish a new entity without overwriting concurrent targets and commit the asset, lineage, immutable verification attempt, and stable production audit in one business transaction. Any validation, publication, database, commit, or rollback failure removes the new final file and all temporary files.
+- Mark an asset `verified` only with controlled URI, original filename, positive size, server checksum equal to the catalog checksum, media type, verification time, stable verifier identity/role and a justification of at least 10 characters. A checksum mismatch persists a `rejected` attempt with expected/computed values and no published URI.
+- Revalidate controlled path containment, file presence, extension/signature/MIME, size, and SHA-256 before download. Production batches accept only physically revalidated imagery assets; delivery generation revalidates every verified catalog entity and records controlled URI, filename, size, media type, checksum and verifier evidence as verified references while retaining pending external registrations as unverified catalog metadata.
+
 ## Quality
 
 - Check geometry validity/closure, positive area, required attributes, land/crop logic, topology, and positional accuracy.
