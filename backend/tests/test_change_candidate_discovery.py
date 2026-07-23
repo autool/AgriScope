@@ -1,6 +1,7 @@
 """内置 RGB 差分候选发现与实体成果持久化测试。"""
 
 import asyncio
+import json
 import warnings
 from datetime import UTC, datetime
 from pathlib import Path
@@ -52,6 +53,7 @@ def test_discovery_engine_vectorizes_single_change_component() -> None:
         make_rgba_png(baseline),
         make_rgba_png(target),
         (126.0, 45.0, 127.0, 46.0),
+        algorithm_code="rgb_absolute_difference",
         difference_threshold=0.2,
         min_component_pixels=9,
         max_candidates=20,
@@ -73,6 +75,7 @@ def test_discovery_engine_returns_empty_for_unchanged_pair() -> None:
         make_rgba_png(image),
         make_rgba_png(image.copy()),
         (126.0, 45.0, 127.0, 46.0),
+        algorithm_code="rgb_absolute_difference",
         difference_threshold=0.1,
         min_component_pixels=4,
         max_candidates=20,
@@ -93,6 +96,7 @@ def test_discovery_engine_splits_corner_touching_components() -> None:
         make_rgba_png(baseline),
         make_rgba_png(target),
         (126.0, 45.0, 127.0, 46.0),
+        algorithm_code="rgb_absolute_difference",
         difference_threshold=0.5,
         min_component_pixels=1,
         max_candidates=10,
@@ -119,10 +123,56 @@ def test_discovery_engine_rejects_silent_candidate_truncation() -> None:
             make_rgba_png(baseline),
             make_rgba_png(target),
             (126.0, 45.0, 127.0, 46.0),
+            algorithm_code="rgb_absolute_difference",
             difference_threshold=0.5,
             min_component_pixels=1,
             max_candidates=2,
         )
+
+
+def test_change_vector_detects_single_channel_change_more_sensitively() -> None:
+    """验证变化向量与平均绝对差分具有可观察的不同响应。"""
+    baseline = np.zeros((3, 12, 12), dtype="uint8")
+    target = baseline.copy()
+    target[0, 3:9, 3:9] = 255
+    engine = ChangeCandidateDiscoveryEngine()
+
+    absolute_result = engine.discover(
+        make_rgba_png(baseline),
+        make_rgba_png(target),
+        (126.0, 45.0, 127.0, 46.0),
+        algorithm_code="rgb_absolute_difference",
+        difference_threshold=0.45,
+        min_component_pixels=4,
+        max_candidates=20,
+    )
+    vector_result = engine.discover(
+        make_rgba_png(baseline),
+        make_rgba_png(target),
+        (126.0, 45.0, 127.0, 46.0),
+        algorithm_code="rgb_change_vector",
+        difference_threshold=0.45,
+        min_component_pixels=4,
+        max_candidates=20,
+    )
+
+    assert absolute_result.candidates == ()
+    assert len(vector_result.candidates) == 1
+    assert vector_result.algorithm_code == "rgb_change_vector"
+    assert vector_result.algorithm_version == "1.0.0"
+    assert vector_result.changed_pixel_count == 36
+
+
+def test_algorithm_registry_exposes_independent_default_thresholds() -> None:
+    """验证两个真实算法由同一服务端注册表提供不同默认阈值。"""
+    engine = ChangeCandidateDiscoveryEngine()
+
+    absolute = engine.algorithm_descriptor("rgb_absolute_difference")
+    vector = engine.algorithm_descriptor("rgb_change_vector")
+
+    assert absolute.default_threshold == 0.18
+    assert vector.default_threshold == 0.22
+    assert absolute.score_formula != vector.score_formula
 
 
 def test_discovery_service_writes_artifact_and_unclassified_candidates(
@@ -171,9 +221,11 @@ def test_discovery_service_writes_artifact_and_unclassified_candidates(
         (b"baseline", "a" * 64),
         (b"target", "b" * 64),
     ]
-    engine.algorithm_code = "rgb_absolute_difference"
-    engine.algorithm_version = "1.0.0"
     engine.discover.return_value = ChangeCandidateDiscoveryResult(
+        algorithm_code="rgb_change_vector",
+        algorithm_name="RGB 变化向量幅值",
+        algorithm_version="1.0.0",
+        score_formula="sqrt(mean((target_rgb - baseline_rgb)^2))",
         candidates=(
             DiscoveredChangeGeometry(
                 geometry={
@@ -228,6 +280,7 @@ def test_discovery_service_writes_artifact_and_unclassified_candidates(
             "RS-2026-045",
             "CD-2026-001",
             ChangeCandidateDiscoveryRequest(
+                algorithm_code="rgb_change_vector",
                 difference_threshold=0.2,
                 min_component_pixels=9,
                 max_candidates=100,
@@ -240,9 +293,19 @@ def test_discovery_service_writes_artifact_and_unclassified_candidates(
     assert result.detected_count == 2
     assert result.imported_count == 1
     assert result.filtered_below_area_count == 1
+    assert engine.discover.call_args.args[3] == "rgb_change_vector"
     artifact_path = next(service.storage_root.rglob("candidates.geojson"))
     assert calculate_sha256(artifact_path) == result.artifact_sha256
     inserted = dao.insert_candidate.await_args.args[1]
     assert inserted["change_class"] == "unclassified"
+    assert inserted["source_name"] == "AgriScope RGB 变化向量幅值"
     assert inserted["source_checksum_sha256"] == result.artifact_sha256
+    assert result.algorithm_code == "rgb_change_vector"
+    artifact_payload = json.loads(artifact_path.read_text())
+    assert artifact_payload["metadata"]["algorithm_name"] == (
+        "RGB 变化向量幅值"
+    )
+    assert artifact_payload["metadata"]["score_formula"] == (
+        "sqrt(mean((target_rgb - baseline_rgb)^2))"
+    )
     assert run.status == "reviewing"

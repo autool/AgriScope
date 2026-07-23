@@ -125,7 +125,7 @@ const discoverCandidates = async (
     discoveryModalOpenRef.value = false
     workspaceModeRef.value = 'candidates'
     message.success(
-      `自动发现 ${result.detected_count} 个连通域，入库 ${result.imported_count} 个未分类候选，过滤 ${result.filtered_below_area_count} 个小面积结果`,
+      `${result.algorithm_name}发现 ${result.detected_count} 个连通域，入库 ${result.imported_count} 个未分类候选，过滤 ${result.filtered_below_area_count} 个小面积结果`,
     )
   } catch {
     // 请求拦截器已显示安全错误。
@@ -357,6 +357,7 @@ watch(selectedRunCodeRef, (runCode) => {
     <ChangeCandidateDiscoveryModal
       :open="discoveryModalOpenRef"
       :run-code="selectedRunComputed?.run_code || ''"
+      :algorithms="overviewRef?.discovery_algorithms || []"
       :operator-code="currentUserCodeComputed"
       :saving="savingRef"
       @close="discoveryModalOpenRef = false"

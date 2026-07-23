@@ -26,6 +26,10 @@ CandidateChangeClass = Literal[
 ]
 ChangeCandidateStatus = Literal["pending", "confirmed", "excluded"]
 ChangeRunStatus = Literal["active", "reviewing", "completed", "cancelled"]
+ChangeDiscoveryAlgorithmCode = Literal[
+    "rgb_absolute_difference",
+    "rgb_change_vector",
+]
 
 
 class ChangePolygonGeometry(BaseModel):
@@ -349,12 +353,26 @@ class ChangeDetectionRunResponse(BaseModel):
     feature_collection: dict
 
 
+class ChangeDiscoveryAlgorithmResponse(BaseModel):
+    """服务端已注册自动候选算法及阈值能力。"""
+
+    code: ChangeDiscoveryAlgorithmCode
+    name: str
+    version: str
+    description: str
+    score_formula: str
+    default_threshold: float
+    threshold_min: float
+    threshold_max: float
+
+
 class ChangeDetectionOverviewResponse(BaseModel):
     """变化检测页面真实影像资格、阻断项和任务列表。"""
 
     project_code: str
     task_code: str
     blockers: list[str]
+    discovery_algorithms: list[ChangeDiscoveryAlgorithmResponse]
     imagery: list[ChangeImageryResponse]
     registrations: list[ImageryRegistrationJobResponse]
     runs: list[ChangeDetectionRunResponse]
@@ -375,9 +393,10 @@ class ChangeCandidateImportResponse(BaseModel):
 
 
 class ChangeCandidateDiscoveryRequest(BaseModel):
-    """内置 RGB 差分自动候选发现参数。"""
+    """内置多算法自动候选发现参数。"""
 
-    difference_threshold: float = Field(default=0.18, ge=0.01, le=1)
+    algorithm_code: ChangeDiscoveryAlgorithmCode = "rgb_absolute_difference"
+    difference_threshold: float | None = Field(default=None, ge=0.01, le=1)
     min_component_pixels: int = Field(default=9, ge=1, le=100000)
     max_candidates: int = Field(default=200, ge=1, le=500)
     operator_code: str = Field(min_length=1, max_length=50)
@@ -403,12 +422,14 @@ class ChangeCandidateDiscoveryRequest(BaseModel):
 
 
 class ChangeCandidateDiscoveryResponse(BaseModel):
-    """内置差分算法实体成果、过滤统计和审计结果。"""
+    """内置注册算法实体成果、过滤统计和审计结果。"""
 
     run_code: str
     batch_code: str
     algorithm_code: str
+    algorithm_name: str
     algorithm_version: str
+    score_formula: str
     parameters: dict
     detected_count: int
     imported_count: int

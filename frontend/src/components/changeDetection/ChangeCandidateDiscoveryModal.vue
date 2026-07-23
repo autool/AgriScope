@@ -1,11 +1,16 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
 
-import type { ChangeCandidateDiscoveryPayload } from '@/types/changeDetection'
+import type {
+  ChangeCandidateDiscoveryPayload,
+  ChangeDiscoveryAlgorithm,
+  ChangeDiscoveryAlgorithmCode,
+} from '@/types/changeDetection'
 
 const props = defineProps<{
   open: boolean
   runCode: string
+  algorithms: ChangeDiscoveryAlgorithm[]
   operatorCode: string | null
   saving: boolean
 }>()
@@ -15,16 +20,26 @@ const emit = defineEmits<{
   discover: [payload: ChangeCandidateDiscoveryPayload]
 }>()
 
+const algorithmCodeRef = ref<ChangeDiscoveryAlgorithmCode>('rgb_absolute_difference')
 const differenceThresholdRef = ref<number>(0.18)
 const minComponentPixelsRef = ref<number>(9)
 const maxCandidatesRef = ref<number>(200)
 const commentRef = ref<string>('')
 
+const selectedAlgorithmComputed = computed<ChangeDiscoveryAlgorithm | null>(() => (
+  props.algorithms.find((item) => item.code === algorithmCodeRef.value) || null
+))
+
 const canSubmitComputed = computed<boolean>(() => Boolean(
   props.operatorCode
+  && selectedAlgorithmComputed.value
   && commentRef.value.trim()
-  && differenceThresholdRef.value >= 0.01
-  && differenceThresholdRef.value <= 1
+  && differenceThresholdRef.value >= (
+    selectedAlgorithmComputed.value?.threshold_min ?? 0.01
+  )
+  && differenceThresholdRef.value <= (
+    selectedAlgorithmComputed.value?.threshold_max ?? 1
+  )
   && minComponentPixelsRef.value >= 1
   && maxCandidatesRef.value >= 1,
 ))
@@ -32,6 +47,7 @@ const canSubmitComputed = computed<boolean>(() => Boolean(
 const submit = (): void => {
   if (!canSubmitComputed.value || !props.operatorCode) return
   emit('discover', {
+    algorithm_code: algorithmCodeRef.value,
     difference_threshold: differenceThresholdRef.value,
     min_component_pixels: minComponentPixelsRef.value,
     max_candidates: maxCandidatesRef.value,
@@ -40,11 +56,19 @@ const submit = (): void => {
   })
 }
 
+const selectAlgorithm = (algorithm: ChangeDiscoveryAlgorithm): void => {
+  algorithmCodeRef.value = algorithm.code
+  differenceThresholdRef.value = algorithm.default_threshold
+}
+
 watch(
   () => props.open,
   (open) => {
     if (!open) return
-    differenceThresholdRef.value = 0.18
+    const defaultAlgorithm = props.algorithms.find(
+      (item) => item.code === 'rgb_absolute_difference',
+    ) || props.algorithms[0]
+    if (defaultAlgorithm) selectAlgorithm(defaultAlgorithm)
     minComponentPixelsRef.value = 9
     maxCandidatesRef.value = 200
     commentRef.value = ''
@@ -60,6 +84,7 @@ watch(
     :ok-button-props="{ disabled: !canSubmitComputed }"
     width="620px"
     ok-text="运行并生成实体成果"
+    cancel-text="取消"
     @cancel="emit('close')"
     @ok="submit"
   >
@@ -67,19 +92,35 @@ watch(
       type="warning"
       show-icon
       message="算法只发现显著变化，不推测业务地类"
-      description="平台对共同网格影像执行确定性 RGB 绝对差分和连通域矢量化。结果统一标记为“未分类变化”，必须人工归入六类之一后才能确认。每个检测任务只能生成或导入一个冻结候选批次。"
+      description="平台只读取两期实体栅格生成的同一公共网格预览。所选算法、版本、公式、阈值、双期预览 SHA-256 和成果 GeoJSON SHA-256 会一并留痕；结果仍统一标记为“未分类变化”，必须人工归入六类之一后才能确认。"
     />
     <a-form layout="vertical" class="discovery-form">
+      <a-form-item label="候选发现算法" required>
+        <div v-if="algorithms.length" class="algorithm-grid">
+          <button
+            v-for="algorithm in algorithms"
+            :key="algorithm.code"
+            type="button"
+            :class="{ active: algorithm.code === algorithmCodeRef }"
+            @click="selectAlgorithm(algorithm)"
+          >
+            <span><strong>{{ algorithm.name }}</strong><a-tag>v{{ algorithm.version }}</a-tag></span>
+            <p>{{ algorithm.description }}</p>
+            <code>{{ algorithm.score_formula }}</code>
+          </button>
+        </div>
+        <a-empty v-else :image="false" description="服务端未注册可执行候选发现算法" />
+      </a-form-item>
       <div class="parameter-grid">
-        <a-form-item label="RGB 平均差分阈值" required>
+        <a-form-item label="变化分数阈值" required>
           <a-input-number
             v-model:value="differenceThresholdRef"
-            :min="0.01"
-            :max="1"
+            :min="selectedAlgorithmComputed?.threshold_min || 0.01"
+            :max="selectedAlgorithmComputed?.threshold_max || 1"
             :step="0.01"
             :precision="2"
           />
-          <small>当前 {{ (differenceThresholdRef * 100).toFixed(0) }}%，越高越保守</small>
+          <small>当前 {{ (differenceThresholdRef * 100).toFixed(0) }}%，按所选算法变化分数判定</small>
         </a-form-item>
         <a-form-item label="最小连通域像元" required>
           <a-input-number
@@ -113,6 +154,13 @@ watch(
 
 <style scoped>
 .discovery-form { margin-top: 14px; }
+.algorithm-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.algorithm-grid button { padding: 10px; text-align: left; background: #fafbfa; border: 1px solid #dfe6e2; border-radius: 6px; cursor: pointer; }
+.algorithm-grid button.active { background: #f1f8f4; border-color: #4c956d; box-shadow: inset 3px 0 #4c956d; }
+.algorithm-grid button > span { display: flex; align-items: center; justify-content: space-between; }
+.algorithm-grid strong { font-size: 10px; color: #2f4037; }
+.algorithm-grid p { min-height: 30px; margin: 6px 0; font-size: 8px; color: #68776f; line-height: 1.5; }
+.algorithm-grid code { display: block; overflow: hidden; font-size: 7px; color: #4c6f5c; text-overflow: ellipsis; white-space: nowrap; }
 .parameter-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; }
 .parameter-grid :deep(.ant-input-number) { width: 100%; }
 .parameter-grid small { display: block; margin-top: 4px; font-size: 9px; color: #7a8981; line-height: 1.5; }

@@ -11,6 +11,7 @@ from pydantic import ValidationError
 
 from app.core.exceptions import ValidationException
 from app.schemas.change_detection import (
+    ChangeCandidateDiscoveryRequest,
     ChangeCandidateGeoJsonImportRequest,
     ChangeCandidateReviewRequest,
     ChangeRunCreateRequest,
@@ -76,6 +77,73 @@ def test_change_run_rejects_legacy_alignment_claims() -> None:
         "alignment_offset_pixels",
         "alignment_evidence_uri",
     }
+
+
+def test_change_candidate_discovery_rejects_unregistered_algorithm() -> None:
+    """验证客户端不能提交服务端未注册的候选发现算法。"""
+    with pytest.raises(ValidationError):
+        ChangeCandidateDiscoveryRequest.model_validate({
+            "algorithm_code": "unverified_ndvi_claim",
+            "difference_threshold": 0.2,
+            "min_component_pixels": 9,
+            "max_candidates": 200,
+            "operator_code": "manager-zhao-zhiyuan",
+            "comment": "验证未注册算法必须由服务端拒绝",
+        })
+
+
+def test_change_candidate_discovery_allows_server_algorithm_default() -> None:
+    """验证未显式提交阈值时由服务端算法注册表决定默认值。"""
+    request = ChangeCandidateDiscoveryRequest.model_validate({
+        "algorithm_code": "rgb_change_vector",
+        "operator_code": "manager-zhao-zhiyuan",
+        "comment": "使用服务端注册的变化向量默认阈值运行候选发现",
+    })
+
+    assert request.difference_threshold is None
+
+
+def test_change_overview_exposes_registered_discovery_algorithms() -> None:
+    """验证前端算法清单由服务端注册表驱动而非写死。"""
+    dao = AsyncMock()
+    workbench_dao = AsyncMock()
+    rule_service = AsyncMock()
+    registration_service = AsyncMock()
+    workbench_dao.get_project_by_code.return_value = SimpleNamespace(id=1)
+    workbench_dao.get_task_by_code.return_value = SimpleNamespace(
+        id=2,
+        project_id=1,
+        status="interpreting",
+    )
+    rule_service.ensure_for_project.return_value = SimpleNamespace(
+        max_cloud_cover_percent=Decimal("10"),
+    )
+    dao.list_imagery_assets.return_value = []
+    dao.list_runs.return_value = []
+    dao.list_candidate_rows.return_value = []
+    dao.list_events.return_value = []
+    registration_service.list_project_job_responses.return_value = []
+    service = ChangeDetectionService(
+        dao=dao,
+        workbench_dao=workbench_dao,
+        user_service=AsyncMock(),
+        rule_service=rule_service,
+        imagery_service=MagicMock(),
+        registration_service=registration_service,
+    )
+
+    result = asyncio.run(
+        service.get_overview(AsyncMock(), "RS-2026", "RS-2026-045")
+    )
+
+    assert [item.code for item in result.discovery_algorithms] == [
+        "rgb_absolute_difference",
+        "rgb_change_vector",
+    ]
+    assert result.discovery_algorithms[0].default_threshold == 0.18
+    assert result.discovery_algorithms[1].score_formula == (
+        "sqrt(mean((target_rgb - baseline_rgb)^2))"
+    )
 
 
 def test_excluded_candidate_requires_reason() -> None:

@@ -100,6 +100,13 @@ the platform has persisted evidence and executable workflows.
   New change-detection runs must bind this persisted registration job and use its verified
   output for the target-side common-grid preview; typed offsets or arbitrary evidence URIs
   are not accepted.
+- The implemented candidate-discovery contract exposes its algorithms from a server-side
+  registry. RGB mean absolute difference and RGB change-vector magnitude use distinct score
+  formulas and default thresholds; every run persists the selected code, name, version,
+  formula, parameters, source-preview checksums, and physical GeoJSON checksum. These RGB
+  scores discover candidates only: they do not claim NDVI, land classification, or any of
+  the six procurement change classes. All automatic candidates remain unclassified until
+  a capable reviewer records a class and evidence.
 - The implemented multi-scene mosaic contract selects 2–20 distinct imagery assets and
   one checksum-verified processing artifact per asset. Inputs must have consistent band
   counts and descriptions. The Rasterio worker computes statistics, applies optional

@@ -11,6 +11,20 @@ export type ChangeClass =
 export type ChangeCandidateStatus = 'pending' | 'confirmed' | 'excluded'
 export type ChangeRunStatus = 'active' | 'reviewing' | 'completed' | 'cancelled'
 export type CandidateChangeClass = ChangeClass | 'unclassified'
+export type ChangeDiscoveryAlgorithmCode =
+  | 'rgb_absolute_difference'
+  | 'rgb_change_vector'
+
+export interface ChangeDiscoveryAlgorithm {
+  code: ChangeDiscoveryAlgorithmCode
+  name: string
+  version: string
+  description: string
+  score_formula: string
+  default_threshold: number
+  threshold_min: number
+  threshold_max: number
+}
 
 export interface ChangeImagery {
   asset_code: string
@@ -114,6 +128,7 @@ export interface ChangeDetectionOverview {
   project_code: string
   task_code: string
   blockers: string[]
+  discovery_algorithms: ChangeDiscoveryAlgorithm[]
   imagery: ChangeImagery[]
   registrations: ImageryRegistrationJob[]
   runs: ChangeDetectionRun[]
@@ -151,6 +166,7 @@ export interface ChangeCandidateImportResult {
 }
 
 export interface ChangeCandidateDiscoveryPayload {
+  algorithm_code: ChangeDiscoveryAlgorithmCode
   difference_threshold: number
   min_component_pixels: number
   max_candidates: number
@@ -162,7 +178,9 @@ export interface ChangeCandidateDiscoveryResult {
   run_code: string
   batch_code: string
   algorithm_code: string
+  algorithm_name: string
   algorithm_version: string
+  score_formula: string
   parameters: Record<string, unknown>
   detected_count: number
   imported_count: number

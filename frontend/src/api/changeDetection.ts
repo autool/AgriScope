@@ -47,7 +47,7 @@ export const importChangeCandidates = (
   { params: contextParams(projectCode, taskCode), timeout: 60_000 },
 )
 
-/** 运行内置 RGB 差分算法并生成待人工分类候选。 */
+/** 运行服务端注册的变化评分算法并生成待人工分类候选。 */
 export const discoverChangeCandidates = (
   runCode: string,
   payload: ChangeCandidateDiscoveryPayload,

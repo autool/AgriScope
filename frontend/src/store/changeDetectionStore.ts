@@ -124,7 +124,7 @@ export const useChangeDetectionStore = defineStore('change-detection', () => {
     }
   }
 
-  /** 运行内置差分算法后刷新未分类候选队列。 */
+  /** 运行服务端注册算法后刷新未分类候选队列。 */
   const discoverCandidates = async (
     runCode: string,
     payload: ChangeCandidateDiscoveryPayload,

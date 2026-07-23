@@ -27,8 +27,12 @@ from app.schemas.change_detection import (
     ChangeDetectionEventResponse,
     ChangeDetectionOverviewResponse,
     ChangeDetectionRunResponse,
+    ChangeDiscoveryAlgorithmResponse,
     ChangeImageryResponse,
     ChangeRunCreateRequest,
+)
+from app.services.change_candidate_discovery_engine import (
+    ChangeCandidateDiscoveryEngine,
 )
 from app.services.imagery_asset_service import ImageryAssetService
 from app.services.imagery_registration_service import ImageryRegistrationService
@@ -52,6 +56,7 @@ class ChangeDetectionService:
         rule_service: RuleConfigService | None = None,
         imagery_service: ImageryAssetService | None = None,
         registration_service: ImageryRegistrationService | None = None,
+        discovery_engine: ChangeCandidateDiscoveryEngine | None = None,
     ) -> None:
         """初始化变化检测服务。
 
@@ -62,6 +67,7 @@ class ChangeDetectionService:
             rule_service: 项目规则服务。
             imagery_service: 真实影像文件校验服务。
             registration_service: 物理配准成果校验服务。
+            discovery_engine: 自动候选算法注册表。
 
         Returns:
             None: 无返回值。
@@ -74,6 +80,7 @@ class ChangeDetectionService:
         self.registration_service = (
             registration_service or ImageryRegistrationService()
         )
+        self.discovery_engine = discovery_engine or ChangeCandidateDiscoveryEngine()
 
     async def _resolve_context(
         self,
@@ -406,6 +413,19 @@ class ChangeDetectionService:
             project_code=project_code,
             task_code=task_code,
             blockers=blockers,
+            discovery_algorithms=[
+                ChangeDiscoveryAlgorithmResponse(
+                    code=algorithm.code,
+                    name=algorithm.name,
+                    version=algorithm.version,
+                    description=algorithm.description,
+                    score_formula=algorithm.score_formula,
+                    default_threshold=algorithm.default_threshold,
+                    threshold_min=algorithm.threshold_min,
+                    threshold_max=algorithm.threshold_max,
+                )
+                for algorithm in self.discovery_engine.algorithm_descriptors()
+            ],
             imagery=imagery,
             registrations=registrations,
             runs=run_responses,

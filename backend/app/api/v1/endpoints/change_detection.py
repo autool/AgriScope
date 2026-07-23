@@ -120,11 +120,11 @@ async def discover_change_candidates(
     project_code: Annotated[str, Query(min_length=1, max_length=50)] = "RS-2026",
     task_code: Annotated[str, Query(min_length=1, max_length=50)] = "RS-2026-045",
 ) -> ChangeCandidateDiscoveryResponse:
-    """运行内置 RGB 差分算法并生成待人工分类候选。
+    """运行已注册变化评分算法并生成待人工分类候选。
 
     Args:
         run_code: 变化检测任务编号。
-        request: 差分阈值、连通域、候选上限和操作说明。
+        request: 算法、阈值、连通域、候选上限和操作说明。
         db: FastAPI 注入的异步数据库会话。
         project_code: 项目编号。
         task_code: 作业任务编号。

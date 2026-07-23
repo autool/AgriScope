@@ -1,4 +1,4 @@
-"""内置双时相 RGB 差分候选发现、实体 GeoJSON 与审计持久化服务。"""
+"""内置双时相多算法候选发现、实体 GeoJSON 与审计持久化服务。"""
 
 import asyncio
 import json
@@ -44,7 +44,7 @@ class ChangeCandidateDiscoveryService:
             workbench_dao: 项目任务公共 DAO。
             user_service: 项目用户能力服务。
             comparison_service: 双时相公共网格预览服务。
-            engine: RGB 差分与矢量化引擎。
+            engine: 多算法变化评分与矢量化引擎。
 
         Returns:
             None: 无返回值。
@@ -88,14 +88,14 @@ class ChangeCandidateDiscoveryService:
         run_code: str,
         request: ChangeCandidateDiscoveryRequest,
     ) -> ChangeCandidateDiscoveryResponse:
-        """运行内置差分算法并原子持久化未分类变化候选。
+        """运行指定内置算法并原子持久化未分类变化候选。
 
         Args:
             db: 异步数据库会话。
             project_code: 项目编号。
             task_code: 作业任务编号。
             run_code: 检测任务编号。
-            request: 差分阈值、连通域和操作审计参数。
+            request: 算法、阈值、连通域和操作审计参数。
 
         Returns:
             ChangeCandidateDiscoveryResponse: 实体成果、过滤统计和用户审计。
@@ -151,11 +151,18 @@ class ChangeCandidateDiscoveryService:
             "target",
         )
         try:
+            algorithm = self.engine.algorithm_descriptor(request.algorithm_code)
+            difference_threshold = (
+                request.difference_threshold
+                if request.difference_threshold is not None
+                else algorithm.default_threshold
+            )
             discovered = self.engine.discover(
                 baseline_png,
                 target_png,
                 comparison.bounds_wgs84,
-                request.difference_threshold,
+                request.algorithm_code,
+                difference_threshold,
                 request.min_component_pixels,
                 request.max_candidates,
             )
@@ -206,17 +213,19 @@ class ChangeCandidateDiscoveryService:
             )
 
         parameters = {
-            "difference_threshold": request.difference_threshold,
+            "algorithm_code": discovered.algorithm_code,
+            "difference_threshold": difference_threshold,
             "min_component_pixels": request.min_component_pixels,
             "max_candidates": request.max_candidates,
             "minimum_area_sqm": min_area_sqm,
+            "score_formula": discovered.score_formula,
         }
         detection_fingerprint = sha256(
             json.dumps(
                 {
                     "run_code": run.run_code,
-                    "algorithm_code": self.engine.algorithm_code,
-                    "algorithm_version": self.engine.algorithm_version,
+                    "algorithm_code": discovered.algorithm_code,
+                    "algorithm_version": discovered.algorithm_version,
                     "parameters": parameters,
                     "baseline_preview_sha256": (
                         comparison.baseline_preview_sha256
@@ -247,7 +256,7 @@ class ChangeCandidateDiscoveryService:
             for index in range(1, len(retained) + 1)
         ]
         source_feature_ids = [
-            f"difference-component-{index:04d}"
+            f"{discovered.algorithm_code}-component-{index:04d}"
             for index in range(1, len(retained) + 1)
         ]
         artifact_relative_path = (
@@ -261,8 +270,10 @@ class ChangeCandidateDiscoveryService:
             "type": "FeatureCollection",
             "metadata": {
                 "run_code": run.run_code,
-                "algorithm_code": self.engine.algorithm_code,
-                "algorithm_version": self.engine.algorithm_version,
+                "algorithm_code": discovered.algorithm_code,
+                "algorithm_name": discovered.algorithm_name,
+                "algorithm_version": discovered.algorithm_version,
+                "score_formula": discovered.score_formula,
                 "parameters": parameters,
                 "baseline_preview_sha256": comparison.baseline_preview_sha256,
                 "target_preview_sha256": comparison.target_preview_sha256,
@@ -314,9 +325,9 @@ class ChangeCandidateDiscoveryService:
                     {
                         "run_id": run.id,
                         "candidate_code": candidate_code,
-                        "source_name": "AgriScope RGB 绝对差分",
+                        "source_name": f"AgriScope {discovered.algorithm_name}",
                         "source_uri": artifact_uri,
-                        "source_version": self.engine.algorithm_version,
+                        "source_version": discovered.algorithm_version,
                         "source_feature_id": source_feature_id,
                         "source_checksum_sha256": artifact_sha256,
                         "import_batch_code": batch_code,
@@ -365,8 +376,10 @@ class ChangeCandidateDiscoveryService:
                     new_values={
                         "status": "reviewing",
                         "batch_code": batch_code,
-                        "algorithm_code": self.engine.algorithm_code,
-                        "algorithm_version": self.engine.algorithm_version,
+                        "algorithm_code": discovered.algorithm_code,
+                        "algorithm_name": discovered.algorithm_name,
+                        "algorithm_version": discovered.algorithm_version,
+                        "score_formula": discovered.score_formula,
                         "parameters": parameters,
                         "detected_count": len(discovered.candidates),
                         "imported_count": len(retained),
@@ -392,8 +405,10 @@ class ChangeCandidateDiscoveryService:
         return ChangeCandidateDiscoveryResponse(
             run_code=run_code,
             batch_code=batch_code,
-            algorithm_code=self.engine.algorithm_code,
-            algorithm_version=self.engine.algorithm_version,
+            algorithm_code=discovered.algorithm_code,
+            algorithm_name=discovered.algorithm_name,
+            algorithm_version=discovered.algorithm_version,
+            score_formula=discovered.score_formula,
             parameters=parameters,
             detected_count=len(discovered.candidates),
             imported_count=len(retained),
