@@ -1,12 +1,12 @@
 <script setup lang="ts">
-import DisasterPanel from '@/components/panels/DisasterPanel.vue'
+import DisasterGrowthPanel from '@/components/panels/DisasterGrowthPanel.vue'
 import SpatialWorkbench from '@/components/workbench/SpatialWorkbench.vue'
 </script>
 
 <template>
   <SpatialWorkbench>
-    <template #spatial-toolbar><div class="legend"><strong>灾害专题图</strong><span><i class="light" />轻度</span><span><i class="medium" />中度</span><span><i class="heavy" />重度</span></div></template>
-    <template #panel><DisasterPanel /></template>
+    <template #spatial-toolbar><div class="legend"><strong>灾害与长势专题</strong><span><i class="light" />轻度</span><span><i class="medium" />中度</span><span><i class="heavy" />重度/转差</span><span><i class="good" />长势转好</span></div></template>
+    <template #panel><DisasterGrowthPanel /></template>
   </SpatialWorkbench>
 </template>
 
@@ -17,4 +17,5 @@ import SpatialWorkbench from '@/components/workbench/SpatialWorkbench.vue'
 .legend i { width: 8px; height: 8px; background: #f0b24b; border-radius: 2px; }
 .legend i.medium { background: #ef7f36; }
 .legend i.heavy { background: #dc4c3f; }
+.legend i.good { background: #3e975b; }
 </style>

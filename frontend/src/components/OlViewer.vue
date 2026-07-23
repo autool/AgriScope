@@ -47,6 +47,7 @@ let map: Map | null = null
 let baseLayer: TileLayer<XYZ> | null = null
 let farmlandLayer: OlVectorLayer | null = null
 let disasterLayer: OlVectorLayer | null = null
+let growthLayer: OlVectorLayer | null = null
 let boundaryLayer: OlVectorLayer | null = null
 let fieldLayer: OlVectorLayer | null = null
 let drawLayer: OlVectorLayer | null = null
@@ -143,6 +144,15 @@ const disasterStyle = (feature: FeatureLike): Style => {
   return new Style({
     fill: new Fill({ color: `${color}55` }),
     stroke: new Stroke({ color, width: 2.5, lineDash: [7, 4] }),
+  })
+}
+
+const growthStyle = (feature: FeatureLike): Style => {
+  const delta = Number(feature.get('ndvi_delta_mean') || 0)
+  const alpha = Math.min(0.72, 0.34 + Math.abs(delta) * 1.8)
+  return new Style({
+    fill: new Fill({ color: `rgba(190, 47, 61, ${alpha})` }),
+    stroke: new Stroke({ color: '#9f2032', width: 2.5 }),
   })
 }
 
@@ -265,6 +275,18 @@ const refreshDisasterFeatures = (): void => {
   source?.addFeatures(features)
 }
 
+const refreshGrowthFeatures = (): void => {
+  if (!growthLayer) return
+  const source = growthLayer.getSource()
+  source?.clear()
+  if (!layerStore.growthFeaturesRef?.features?.length) return
+  const features = new GeoJSON().readFeatures(layerStore.growthFeaturesRef, {
+    dataProjection: 'EPSG:4326',
+    featureProjection: 'EPSG:3857',
+  })
+  source?.addFeatures(features)
+}
+
 const refreshBoundaryFeatures = (): void => {
   if (!boundaryLayer) return
   const source = boundaryLayer.getSource()
@@ -290,10 +312,11 @@ const refreshBoundaryFeatures = (): void => {
 }
 
 const updateLayerState = (): void => {
-  if (!baseLayer || !farmlandLayer || !disasterLayer || !boundaryLayer || !fieldLayer) return
+  if (!baseLayer || !farmlandLayer || !disasterLayer || !growthLayer || !boundaryLayer || !fieldLayer) return
   const base = layerStore.layersRef.find((layer) => layer.key === 'base')
   const farmland = layerStore.layersRef.find((layer) => layer.key === 'farmland')
   const disaster = layerStore.layersRef.find((layer) => layer.key === 'disaster')
+  const growth = layerStore.layersRef.find((layer) => layer.key === 'growth')
   const boundary = layerStore.layersRef.find((layer) => layer.key === 'boundary')
   const field = layerStore.layersRef.find((layer) => layer.key === 'field')
   baseLayer.setVisible(base?.visible ?? true)
@@ -302,6 +325,8 @@ const updateLayerState = (): void => {
   farmlandLayer.setOpacity((farmland?.opacity ?? 100) / 100)
   disasterLayer.setVisible(disaster?.visible ?? false)
   disasterLayer.setOpacity((disaster?.opacity ?? 100) / 100)
+  growthLayer.setVisible(growth?.visible ?? false)
+  growthLayer.setOpacity((growth?.opacity ?? 100) / 100)
   boundaryLayer.setVisible(boundary?.visible ?? true)
   boundaryLayer.setOpacity((boundary?.opacity ?? 100) / 100)
   fieldLayer.setVisible(field?.visible ?? true)
@@ -331,6 +356,11 @@ const initializeMap = (): void => {
     style: disasterStyle,
     zIndex: 15,
   })
+  growthLayer = new VectorLayer({
+    source: new VectorSource(),
+    style: growthStyle,
+    zIndex: 16,
+  })
   boundaryLayer = new VectorLayer({
     source: new VectorSource(),
     style: boundaryStyle,
@@ -357,6 +387,7 @@ const initializeMap = (): void => {
       farmlandLayer,
       boundaryLayer,
       disasterLayer,
+      growthLayer,
       fieldLayer,
       drawLayer,
     ],
@@ -392,6 +423,7 @@ const initializeMap = (): void => {
 
   refreshFeatures()
   refreshDisasterFeatures()
+  refreshGrowthFeatures()
   refreshBoundaryFeatures()
   refreshFieldFeatures()
   updateLayerState()
@@ -537,6 +569,12 @@ watch(
 watch(
   () => layerStore.disasterFeaturesRef,
   refreshDisasterFeatures,
+  { deep: true },
+)
+
+watch(
+  () => layerStore.growthFeaturesRef,
+  refreshGrowthFeatures,
   { deep: true },
 )
 

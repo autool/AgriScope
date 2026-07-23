@@ -28,6 +28,10 @@
 
 ![AgriScope 移动外业核查采集](docs/images/mobile-field-capture.png)
 
+### 多时相 NDVI 作物长势监测
+
+![AgriScope 多时相 NDVI 作物长势监测](docs/images/growth-monitoring.png)
+
 ### 生产调度
 
 ![AgriScope 生产调度](docs/images/production-scheduling.png)
@@ -518,6 +522,33 @@ WAV/MP3/M4A/OGG 语音或 PDF/XLSX 调查表；服务端按类型限制大小，
 数据库保存报告实体大小和 SHA-256，下载前重新校验；后续导入、替换或复核斑块会使
 旧报告转为历史版本，最终成果 ZIP 只嵌入当前通过校验的报告实体。
 
+### 多时相 NDVI 作物长势监测
+
+“作物长势”页签只列出 `operational` 且 `band_products` 实体通过文件大小与
+SHA-256 复核的影像来源。生成任务必须选择两个不同采集时相，基准期早于监测期；
+服务端读取唯一明确描述为 `NDVI` 的实体波段，把监测期重投影到基准期网格，并使用
+当前 `task_plots` 中有效耕地图斑的 PostGIS 合并几何构建完整任务范围。服务端先以两期
+真实 `spatial_extent` 与完整任务耕地求交，按 geography 面积计算“任务耕地空间覆盖率”；
+随后只在该共同足迹范围内计算“两期 NDVI 有效像元率”。两个指标使用独立显式门槛，
+输出像元超限、任一门槛不足、时相倒置或来源实体失效时整次拒绝，不发布部分成果。
+
+长势分级由显式阈值生成“差/正常/好”三类单波段 GeoTIFF，编码固定为
+`1/2/3`，`0` 为 NoData。转差像元使用 4 邻域矢量化，避免把仅角点接触的像元合并；
+候选异常区再由 PostGIS 裁切到任务耕地范围、重算 geography 公顷面积，并按最小面积
+门槛过滤。每次任务保存两期资产、采集时间、步骤 URI/大小/SHA-256、NDVI 波段、
+任务图斑数量与更新时间、完整任务面积、共同足迹覆盖面积、空间覆盖率、有效像元率、
+两类门槛、分类像元统计、算法版本、生成人稳定编码和角色。
+
+服务端原子发布长势分级 GeoTIFF 与异常区 GeoJSON，下载前重新打开并校验结构、大小、
+SHA-256 和异常区数量，最终交付前还会重新核对两期来源步骤的 URI、大小、SHA-256 和
+NDVI 波段。当前开发库已使用公开 Sentinel-2B 2026-06-26 与 2026-07-16 L2A 地表
+反射率实体完成真实运行：完整任务耕地为 63,818.60 公顷，两期公开影像共同足迹覆盖
+7.41 公顷，空间覆盖率为 0.0116%；共同范围内两期 NDVI 有效像元率为 14.08%。精细
+验证参数识别 38 个转差像元，经 PostGIS 裁切后形成 4 个异常区、0.3745 公顷。该结果
+明确作为局部公开数据技术验证，不冒充哈尔滨全域或全省完整长势结论。最终成果 ZIP 会
+嵌入所有通过复核的长势 GeoTIFF/GeoJSON；新增长势任务或任一来源步骤更新后旧成果包
+按归档快照失效。
+
 应用侧栏的影像、灾害和外业徽标由工作台概览接口实时返回：影像只统计具备实体
 URI、文件大小和 SHA256 的业务资产，灾害和外业只统计当前任务仍待处置的记录；
 没有真实数据时不显示固定占位数量。
@@ -865,6 +896,10 @@ psql "$POSTGRES_DSN" -f scripts/migrations/20260722_remove_seeded_task_audit.sql
 | GET | `/api/v1/disasters/summary` | 获取灾害斑块和受灾范围汇总 |
 | POST | `/api/v1/disasters/import-geojson` | 批量导入灾害模型 GeoJSON，重算面积并保存来源审计 |
 | PATCH | `/api/v1/disasters/{patch_code}` | 人工修正灾害等级和确认状态 |
+| GET | `/api/v1/growth-monitoring/overview` | 查询已校验 NDVI 来源、历史长势任务和选中异常区 |
+| POST | `/api/v1/growth-monitoring/runs` | 在任务耕地掩膜内执行两期 NDVI 分级并生成物理成果 |
+| GET | `/api/v1/growth-monitoring/runs/{run_code}/zones` | 查询指定任务经 PostGIS 裁切的转差异常区 GeoJSON |
+| GET | `/api/v1/growth-monitoring/runs/{run_code}/download` | 重新校验后下载分级 GeoTIFF 或异常区 GeoJSON |
 | GET | `/api/v1/imagery-assets/{asset_code}/processing` | 查询影像预处理流水线 |
 | GET | `/api/v1/imagery-assets/{asset_code}/quicklooks` | 从实体源影像和已校验波段产物生成真实快视图及来源清单 |
 | GET | `/api/v1/imagery-assets/{asset_code}/quicklooks/{product_code}.png` | 读取带 PNG SHA-256 ETag 的源影像、真彩色、假彩色或 NDVI 快视图 |

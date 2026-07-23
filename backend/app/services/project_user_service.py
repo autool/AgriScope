@@ -30,6 +30,9 @@ ROLE_CAPABILITIES: dict[str, tuple[str, ...]] = {
         "view_uav",
         "download_uav_artifacts",
         "view_field_evidence",
+        "view_growth_monitoring",
+        "generate_growth_monitoring",
+        "download_growth_monitoring",
     ),
     "field_inspector": (
         "upload_field_data",
@@ -42,6 +45,7 @@ ROLE_CAPABILITIES: dict[str, tuple[str, ...]] = {
         "operate_uav_missions",
         "download_uav_artifacts",
         "view_field_evidence",
+        "view_growth_monitoring",
     ),
     "quality_inspector": (
         "export_plot_attributes",
@@ -71,6 +75,8 @@ ROLE_CAPABILITIES: dict[str, tuple[str, ...]] = {
         "review_uav_findings",
         "download_uav_artifacts",
         "view_field_evidence",
+        "view_growth_monitoring",
+        "download_growth_monitoring",
     ),
     "project_manager": (
         "manage_project",
@@ -132,6 +138,9 @@ ROLE_CAPABILITIES: dict[str, tuple[str, ...]] = {
         "download_thematic_maps",
         "view_thematic_maps",
         "view_field_evidence",
+        "view_growth_monitoring",
+        "generate_growth_monitoring",
+        "download_growth_monitoring",
     ),
     "client_reviewer": (
         "review_client",
@@ -154,6 +163,8 @@ ROLE_CAPABILITIES: dict[str, tuple[str, ...]] = {
         "view_uav",
         "download_uav_artifacts",
         "view_field_evidence",
+        "view_growth_monitoring",
+        "download_growth_monitoring",
     ),
     "independent_supervisor": (
         "supervise_project",
@@ -168,6 +179,8 @@ ROLE_CAPABILITIES: dict[str, tuple[str, ...]] = {
         "view_uav",
         "download_uav_artifacts",
         "view_field_evidence",
+        "view_growth_monitoring",
+        "download_growth_monitoring",
     ),
 }
 

@@ -78,6 +78,7 @@ export const useLayerStore = defineStore('layer', () => {
     { key: 'base', title: '卫星影像 · 默认底图', visible: true, opacity: 100, type: 'raster' },
     { key: 'farmland', title: '地块解译成果', visible: true, opacity: 76, type: 'vector' },
     { key: 'disaster', title: '灾害识别斑块', visible: false, opacity: 65, type: 'vector' },
+    { key: 'growth', title: '长势转差异常区', visible: false, opacity: 72, type: 'vector' },
     { key: 'field', title: '外业核查点', visible: true, opacity: 100, type: 'point' },
     { key: 'boundary', title: '行政区划界线 · 省市县', visible: true, opacity: 72, type: 'line' },
   ])
@@ -87,6 +88,7 @@ export const useLayerStore = defineStore('layer', () => {
   const plotCatalogRef = ref<PlotCatalog | null>(null)
   const fieldFeaturesRef = ref<GeoJsonFeatureCollection>(emptyFeatureCollection())
   const disasterFeaturesRef = ref<GeoJsonFeatureCollection>(emptyFeatureCollection())
+  const growthFeaturesRef = ref<GeoJsonFeatureCollection>(emptyFeatureCollection())
   const boundaryFeaturesRef = ref<GeoJsonFeatureCollection<BoundaryProperties>>(
     emptyFeatureCollection<BoundaryProperties>(),
   )
@@ -253,6 +255,7 @@ export const useLayerStore = defineStore('layer', () => {
     plotCatalogRef.value = null
     fieldFeaturesRef.value = emptyFeatureCollection()
     disasterFeaturesRef.value = emptyFeatureCollection()
+    growthFeaturesRef.value = emptyFeatureCollection()
     boundaryFeaturesRef.value = emptyFeatureCollection<BoundaryProperties>()
   }
 
@@ -262,6 +265,10 @@ export const useLayerStore = defineStore('layer', () => {
 
   const setDisasterFeatures = (geojson: GeoJsonFeatureCollection): void => {
     disasterFeaturesRef.value = geojson || emptyFeatureCollection()
+  }
+
+  const setGrowthFeatures = (geojson: GeoJsonFeatureCollection): void => {
+    growthFeaturesRef.value = geojson || emptyFeatureCollection()
   }
 
   const setBoundaryFeatures = (
@@ -279,6 +286,7 @@ export const useLayerStore = defineStore('layer', () => {
     plotCatalogRef,
     fieldFeaturesRef,
     disasterFeaturesRef,
+    growthFeaturesRef,
     boundaryFeaturesRef,
     setVisibility,
     setOpacity,
@@ -286,6 +294,7 @@ export const useLayerStore = defineStore('layer', () => {
     setPlotCatalog,
     setFieldFeatures,
     setDisasterFeatures,
+    setGrowthFeatures,
     setBoundaryFeatures,
     clearFeatures,
   }

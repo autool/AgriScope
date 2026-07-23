@@ -36,6 +36,8 @@ let viewer: Viewer | null = null
 let eventHandler: ScreenSpaceEventHandler | null = null
 let farmlandDataSource: GeoJsonDataSource | null = null
 let boundaryDataSource: GeoJsonDataSource | null = null
+let disasterDataSource: GeoJsonDataSource | null = null
+let growthDataSource: GeoJsonDataSource | null = null
 let tileset: Cesium3DTileset | null = null
 
 const loadVisiblePlots = (): void => {
@@ -155,11 +157,80 @@ const refreshBoundaryFeatures = async (): Promise<void> => {
   viewer.dataSources.add(boundaryDataSource)
 }
 
+/** 加载灾害斑块和长势异常区，但不触发相机移动。 */
+const refreshMonitoringFeatures = async (): Promise<void> => {
+  if (!viewer || viewer.isDestroyed()) return
+  if (disasterDataSource) {
+    viewer.dataSources.remove(disasterDataSource, true)
+    disasterDataSource = null
+  }
+  if (growthDataSource) {
+    viewer.dataSources.remove(growthDataSource, true)
+    growthDataSource = null
+  }
+  if (layerStore.disasterFeaturesRef.features.length) {
+    disasterDataSource = await GeoJsonDataSource.load(
+      layerStore.disasterFeaturesRef,
+      {
+        clampToGround: false,
+        fill: Color.fromCssColorString('#dc4c3f').withAlpha(0.38),
+        stroke: Color.fromCssColorString('#ffb197'),
+        strokeWidth: 2,
+      },
+    )
+    disasterDataSource.entities.values.forEach((entity) => {
+      if (!entity.polygon) return
+      const severity = String(entity.properties?.severity?.getValue() || '')
+      const color = severity === '绝收'
+        ? Color.fromCssColorString('#851f2b')
+        : severity === '重度'
+          ? Color.fromCssColorString('#dc4c3f')
+          : severity === '中度'
+            ? Color.fromCssColorString('#ef7f36')
+            : Color.fromCssColorString('#f0b24b')
+      entity.polygon.height = new ConstantProperty(30)
+      entity.polygon.extrudedHeight = new ConstantProperty(120)
+      entity.polygon.material = new ColorMaterialProperty(color.withAlpha(0.4))
+      entity.polygon.outline = new ConstantProperty(true)
+      entity.polygon.outlineColor = new ConstantProperty(color)
+    })
+    viewer.dataSources.add(disasterDataSource)
+  }
+  if (layerStore.growthFeaturesRef.features.length) {
+    growthDataSource = await GeoJsonDataSource.load(
+      layerStore.growthFeaturesRef,
+      {
+        clampToGround: false,
+        fill: Color.fromCssColorString('#b92139').withAlpha(0.46),
+        stroke: Color.fromCssColorString('#ff9cad'),
+        strokeWidth: 2,
+      },
+    )
+    growthDataSource.entities.values.forEach((entity) => {
+      if (!entity.polygon) return
+      entity.polygon.height = new ConstantProperty(35)
+      entity.polygon.extrudedHeight = new ConstantProperty(180)
+      entity.polygon.material = new ColorMaterialProperty(
+        Color.fromCssColorString('#b92139').withAlpha(0.46),
+      )
+      entity.polygon.outline = new ConstantProperty(true)
+      entity.polygon.outlineColor = new ConstantProperty(
+        Color.fromCssColorString('#ff9cad'),
+      )
+    })
+    viewer.dataSources.add(growthDataSource)
+  }
+  updateLayerState()
+  viewer.scene.requestRender()
+}
+
 const updateLayerState = (): void => {
   if (!viewer) return
   const base = layerStore.layersRef.find((layer) => layer.key === 'base')
   const farmland = layerStore.layersRef.find((layer) => layer.key === 'farmland')
   const boundary = layerStore.layersRef.find((layer) => layer.key === 'boundary')
+  const disaster = layerStore.layersRef.find((layer) => layer.key === 'disaster')
+  const growth = layerStore.layersRef.find((layer) => layer.key === 'growth')
   const imageryLayer = viewer.imageryLayers.get(0)
   if (imageryLayer) {
     imageryLayer.show = base?.visible ?? true
@@ -182,6 +253,12 @@ const updateLayerState = (): void => {
   }
   if (boundaryDataSource) {
     boundaryDataSource.show = boundary?.visible ?? true
+  }
+  if (disasterDataSource) {
+    disasterDataSource.show = disaster?.visible ?? false
+  }
+  if (growthDataSource) {
+    growthDataSource.show = growth?.visible ?? false
   }
 }
 
@@ -280,6 +357,7 @@ const initializeViewer = async (): Promise<void> => {
   await Promise.all([
     refreshFeatures(),
     refreshBoundaryFeatures(),
+    refreshMonitoringFeatures(),
     loadTiles(import.meta.env.VITE_CESIUM_3D_TILES_URL),
   ])
   updateLayerState()
@@ -338,6 +416,17 @@ watch(
   () => layerStore.boundaryFeaturesRef,
   () => {
     void refreshBoundaryFeatures()
+  },
+  { deep: true },
+)
+
+watch(
+  () => [
+    layerStore.disasterFeaturesRef,
+    layerStore.growthFeaturesRef,
+  ],
+  () => {
+    void refreshMonitoringFeatures()
   },
   { deep: true },
 )

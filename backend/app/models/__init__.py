@@ -2,6 +2,11 @@
 
 from app.models.acceptance_report import AcceptanceReport
 from app.models.disaster_report import DisasterReport
+from app.models.growth_monitoring import (
+    GrowthMonitoringEvent,
+    GrowthMonitoringRun,
+    GrowthMonitoringZone,
+)
 from app.models.imagery_fusion import ImageryFusionEvent, ImageryFusionJob
 from app.models.imagery_mosaic import (
     ImageryMosaicEvent,
@@ -91,6 +96,9 @@ __all__ = [
     "FieldVerification",
     "FieldVerificationArtifact",
     "FieldVerificationArtifactEvent",
+    "GrowthMonitoringEvent",
+    "GrowthMonitoringRun",
+    "GrowthMonitoringZone",
     "ImageryAsset",
     "ImageryFusionEvent",
     "ImageryFusionJob",

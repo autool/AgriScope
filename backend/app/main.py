@@ -19,6 +19,7 @@ from app.api.v1.endpoints import (
     delivery,
     disaster,
     field_verification,
+    growth_monitoring,
     health,
     imagery,
     imagery_fusion,
@@ -195,6 +196,7 @@ app.include_router(plot_attribute_workbook.router)
 app.include_router(project_user.router)
 app.include_router(workbench.router)
 app.include_router(field_verification.router)
+app.include_router(growth_monitoring.router)
 app.include_router(review.router)
 app.include_router(statistics.router)
 app.include_router(vector_export.router)

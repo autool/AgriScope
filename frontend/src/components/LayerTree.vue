@@ -70,7 +70,7 @@ const handleHierarchySelect = async (node: FarmlandHierarchyNode): Promise<void>
             />
           </div>
           <div
-            v-if="layer.visible && ['base', 'farmland', 'disaster', 'boundary'].includes(layer.key)"
+            v-if="layer.visible && ['base', 'farmland', 'disaster', 'growth', 'boundary'].includes(layer.key)"
             class="opacity-row"
           >
             <span>透明度</span>

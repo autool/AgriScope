@@ -17,6 +17,7 @@ from app.core.exceptions import NotFoundException, ValidationException
 from app.dao.delivery_dao import DeliveryArchiveState, DeliveryDAO
 from app.dao.workbench_dao import QualityGateSummary, WorkbenchDAO
 from app.models.disaster_report import DisasterReport
+from app.models.growth_monitoring import GrowthMonitoringRun
 from app.models.statistics_report import StatisticsReport
 from app.models.supervision import SupervisionReport
 from app.models.thematic_map import ThematicMapProduct
@@ -37,6 +38,7 @@ from app.services.disaster_service import DisasterService
 from app.services.field_verification_artifact_service import (
     FieldVerificationArtifactService,
 )
+from app.services.growth_monitoring_service import GrowthMonitoringService
 from app.services.imagery_service import ImageryService
 from app.services.plot_attribute_field_service import PlotAttributeFieldService
 from app.services.plot_attribute_workbook_service import (
@@ -76,6 +78,7 @@ class DeliveryService:
         disaster_service: DisasterService | None = None,
         project_user_service: ProjectUserService | None = None,
         imagery_service: ImageryService | None = None,
+        growth_monitoring_service: GrowthMonitoringService | None = None,
         thematic_map_service: ThematicMapService | None = None,
         supervision_service: SupervisionService | None = None,
         field_artifact_service: FieldVerificationArtifactService | None = None,
@@ -94,6 +97,7 @@ class DeliveryService:
             disaster_service: 灾害评估服务。
             project_user_service: 项目用户与角色校验服务。
             imagery_service: 影像实体与处理产物校验服务。
+            growth_monitoring_service: 多时相 NDVI 长势成果校验服务。
             thematic_map_service: 专题图实体校验服务。
             supervision_service: 独立监理报告实体校验服务。
             field_artifact_service: 外业核查实体证据服务。
@@ -112,6 +116,9 @@ class DeliveryService:
         self.disaster_service = disaster_service or DisasterService()
         self.project_user_service = project_user_service or ProjectUserService()
         self.imagery_service = imagery_service or ImageryService()
+        self.growth_monitoring_service = (
+            growth_monitoring_service or GrowthMonitoringService()
+        )
         self.thematic_map_service = thematic_map_service or ThematicMapService()
         self.supervision_service = supervision_service or SupervisionService()
         self.field_artifact_service = (
@@ -186,6 +193,11 @@ class DeliveryService:
                 archive_state.vector_export_count,
                 archive_state.vector_export_latest_at,
                 "多格式矢量成果",
+            ),
+            "growth_monitoring": (
+                archive_state.growth_monitoring_count,
+                archive_state.growth_monitoring_latest_at,
+                "长势监测成果",
             ),
             "dataset_asset": (
                 archive_state.dataset_asset_count,
@@ -644,6 +656,10 @@ class DeliveryService:
         disaster_reports = await self.dao.get_disaster_reports(db, task.id)
         statistics_reports = await self.dao.get_statistics_reports(db, task.id)
         vector_exports = await self.dao.get_vector_exports(db, task.id)
+        growth_monitoring_runs = await self.dao.get_growth_monitoring_runs(
+            db,
+            task.id,
+        )
         dataset_assets = await self.dao.get_dataset_assets(
             db,
             task.project_id,
@@ -682,6 +698,11 @@ class DeliveryService:
             vector_exports,
             task,
         )
+        growth_monitoring_artifacts = await self._load_growth_monitoring_artifacts(
+            db,
+            growth_monitoring_runs,
+            task,
+        )
         imagery_lineage = await self._build_imagery_lineage(
             imagery,
             imagery_steps,
@@ -708,6 +729,8 @@ class DeliveryService:
             "disaster_report_artifacts": disaster_report_artifacts,
             "statistics_report_artifacts": statistics_report_artifacts,
             "vector_export_artifacts": vector_export_artifacts,
+            "growth_monitoring_artifacts": growth_monitoring_artifacts,
+            "growth_monitoring_runs": growth_monitoring_runs,
             "dataset_assets": dataset_assets,
             "archive_state": archive_state,
         }
@@ -811,6 +834,78 @@ class DeliveryService:
                     "source_entity_code": report.report_code,
                     "source_uri": report.file_uri,
                 }
+            )
+        return artifacts
+
+    async def _load_growth_monitoring_artifacts(
+        self,
+        db: AsyncSession,
+        runs: Sequence[GrowthMonitoringRun],
+        task: object,
+    ) -> list[dict]:
+        """校验并读取长势分级 GeoTIFF 和异常区 GeoJSON。
+
+        Args:
+            db: 异步数据库会话。
+            runs: 当前任务全部长势监测任务。
+            task: 当前作业任务，用于标明快照是否仍为当前版本。
+
+        Returns:
+            list[dict]: 可直接写入成果 ZIP 的长势监测实体。
+        """
+        artifacts: list[dict] = []
+        for run in runs:
+            classification_path, anomaly_path = (
+                await self.growth_monitoring_service.verify_run_for_delivery(
+                    db,
+                    run,
+                )
+            )
+            snapshot_label = (
+                "当前任务快照"
+                if run.task_updated_at == task.updated_at
+                else "历史任务快照"
+            )
+            classification_content = await asyncio.to_thread(
+                classification_path.read_bytes
+            )
+            anomaly_content = await asyncio.to_thread(anomaly_path.read_bytes)
+            artifacts.extend(
+                [
+                    {
+                        "path": (
+                            f"growth_monitoring/{run.run_code}/"
+                            f"{run.classification_filename}"
+                        ),
+                        "category": "作物长势分级成果",
+                        "format": "GeoTIFF",
+                        "record_count": run.valid_pixel_count,
+                        "description": (
+                            f"{run.baseline_asset_code} → "
+                            f"{run.current_asset_code} · {snapshot_label}"
+                        ),
+                        "content": classification_content,
+                        "source_entity_code": run.run_code,
+                        "source_uri": run.classification_uri,
+                    },
+                    {
+                        "path": (
+                            f"growth_monitoring/{run.run_code}/"
+                            f"{run.anomaly_filename}"
+                        ),
+                        "category": "长势异常区",
+                        "format": "GeoJSON",
+                        "record_count": run.anomaly_zone_count,
+                        "description": (
+                            f"转差异常区 {run.anomaly_zone_count} 个 · "
+                            f"{float(run.anomaly_area_ha):.4f} 公顷 · "
+                            f"{snapshot_label}"
+                        ),
+                        "content": anomaly_content,
+                        "source_entity_code": run.run_code,
+                        "source_uri": run.anomaly_uri,
+                    },
+                ]
             )
         return artifacts
 
@@ -1098,7 +1193,7 @@ class DeliveryService:
             for field in source_data["plot_attribute_fields"]
         ]
         archive_index = {
-            "schema_version": "delivery-archive-v4",
+            "schema_version": "delivery-archive-v5",
             "task_code": task.task_code,
             "task_name": task.task_name,
             "categories": {
@@ -1153,6 +1248,17 @@ class DeliveryService:
                         else "not_provided"
                     ),
                     "count": quality_summary["vector_export_count"],
+                },
+                "growth_monitoring": {
+                    "status": (
+                        "included"
+                        if quality_summary["growth_monitoring_count"] > 0
+                        else "not_provided"
+                    ),
+                    "count": quality_summary["growth_monitoring_count"],
+                    "artifact_count": len(
+                        source_data["growth_monitoring_artifacts"]
+                    ),
                 },
                 "field_evidence": {
                     "status": quality_summary["field_evidence_status"],
@@ -1335,6 +1441,7 @@ class DeliveryService:
             + source_data["disaster_report_artifacts"]
             + source_data["statistics_report_artifacts"]
             + source_data["vector_export_artifacts"]
+            + source_data["growth_monitoring_artifacts"]
         ):
             entries.append(DeliveryArchiveEntry(**artifact))
         for item in source_data["field_artifacts"]:
@@ -1611,6 +1718,12 @@ class DeliveryService:
                 if archive_state.vector_export_latest_at
                 else None
             ),
+            "growth_monitoring_count": archive_state.growth_monitoring_count,
+            "growth_monitoring_latest_at": (
+                archive_state.growth_monitoring_latest_at.isoformat()
+                if archive_state.growth_monitoring_latest_at
+                else None
+            ),
             "dataset_asset_count": archive_state.dataset_asset_count,
             "dataset_asset_latest_at": (
                 archive_state.dataset_asset_latest_at.isoformat()
@@ -1824,6 +1937,7 @@ class DeliveryService:
 - 实体专题图：{summary['thematic_map_count']} 张
 - 独立监理报告：{summary['supervision_report_count']} 份
 - 灾害专题报告：{summary['disaster_report_count']} 份
+- 作物长势监测：{summary['growth_monitoring_count']} 期
 - 多源数据资产目录：{summary['dataset_asset_count']} 项
 - 已校验影像处理产物：{summary['imagery_step_count']} 项
 
@@ -1874,6 +1988,11 @@ class DeliveryService:
             if summary["plot_attribute_import_workbook_count"] > 0
             else "未提供属性工作簿导入记录"
         )
+        growth_monitoring_text = (
+            "已纳入分级 GeoTIFF 与异常区 GeoJSON"
+            if summary["growth_monitoring_count"] > 0
+            else "未提供"
+        )
         return f"""# 遥感监测项目验收报告
 
 ## 基本信息
@@ -1899,6 +2018,7 @@ class DeliveryService:
 - 专题图成果：{summary['thematic_map_count']} 张
 - 独立监理报告：{summary['supervision_report_count']} 份
 - 灾害专题报告：{summary['disaster_report_count']} 份
+- 作物长势监测：{summary['growth_monitoring_count']} 期
 - 多源数据资产：{summary['dataset_asset_count']} 项
 - 影像处理产物：{summary['imagery_step_count']} 项
 
@@ -1908,6 +2028,7 @@ class DeliveryService:
 - 地块属性导入：{attribute_import_text}
 - 灾害监测：{disaster_text}
 - 灾害专题报告：{disaster_report_text}
+- 作物长势监测：{growth_monitoring_text}
 - 业务影像：{summary['imagery_asset_code'] or '未关联'}
 - 专题图：{'已纳入实体成果' if summary['thematic_map_count'] > 0 else '未提供'}
 - 独立监理：{'已纳入实体报告' if summary['supervision_report_count'] > 0 else '未提供'}

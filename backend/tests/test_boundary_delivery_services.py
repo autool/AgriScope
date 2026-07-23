@@ -882,6 +882,7 @@ def test_delivery_generation_archives_verified_physical_evidence(
     dao.get_disaster_reports.return_value = [disaster_report]
     dao.get_statistics_reports.return_value = [statistics_report]
     dao.get_vector_exports.return_value = [vector_export_package]
+    dao.get_growth_monitoring_runs.return_value = []
     dao.get_dataset_assets.return_value = [dataset_asset]
     dao.get_imagery_steps.return_value = [imagery_step]
     dao.get_archive_state.return_value = archive_state
@@ -1082,7 +1083,7 @@ def test_delivery_generation_archives_verified_physical_evidence(
         assert attribute_manifest[0]["batch_code"] == "PATTR-TEST-001"
         assert attribute_manifest[0]["changed_count"] == 1
         archive_index = json.loads(archive.read("archive/archive_index.json"))
-        assert archive_index["schema_version"] == "delivery-archive-v4"
+        assert archive_index["schema_version"] == "delivery-archive-v5"
         assert archive_index["categories"]["plot_attribute_imports"] == {
             "status": "included",
             "count": 1,

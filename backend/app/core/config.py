@@ -35,6 +35,11 @@ class Settings(BaseSettings):
         ge=10_000,
         le=100_000_000,
     )
+    max_growth_monitoring_pixels: int = Field(
+        default=10_000_000,
+        ge=10_000,
+        le=100_000_000,
+    )
     imagery_registration_preview_max_dimension: int = Field(
         default=2048,
         ge=256,

@@ -6,8 +6,10 @@ from datetime import datetime
 
 from sqlalchemy import func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import aliased
 
 from app.models.disaster_report import DisasterReport
+from app.models.growth_monitoring import GrowthMonitoringRun
 from app.models.plot import FarmlandPlot
 from app.models.statistics_report import StatisticsReport
 from app.models.supervision import SupervisionPlan, SupervisionReport
@@ -41,6 +43,8 @@ class DeliveryArchiveState:
     statistics_report_latest_at: datetime | None = None
     vector_export_count: int = 0
     vector_export_latest_at: datetime | None = None
+    growth_monitoring_count: int = 0
+    growth_monitoring_latest_at: datetime | None = None
 
 
 class DeliveryDAO:
@@ -269,6 +273,27 @@ class DeliveryDAO:
         )
         return result.scalars().all()
 
+    async def get_growth_monitoring_runs(
+        self,
+        db: AsyncSession,
+        task_id: int,
+    ) -> Sequence[GrowthMonitoringRun]:
+        """查询任务全部长势监测物理成果。
+
+        Args:
+            db: 异步数据库会话。
+            task_id: 作业任务主键。
+
+        Returns:
+            Sequence[GrowthMonitoringRun]: 按生成时间排序的长势任务。
+        """
+        result = await db.execute(
+            select(GrowthMonitoringRun)
+            .where(GrowthMonitoringRun.task_id == task_id)
+            .order_by(GrowthMonitoringRun.created_at, GrowthMonitoringRun.run_code)
+        )
+        return result.scalars().all()
+
     async def get_dataset_assets(
         self,
         db: AsyncSession,
@@ -394,6 +419,31 @@ class DeliveryDAO:
                 )
             )
         ).one()
+        baseline_growth_step = aliased(ImageryProcessingStep)
+        current_growth_step = aliased(ImageryProcessingStep)
+        growth_monitoring_row = (
+            await db.execute(
+                select(
+                    func.count(GrowthMonitoringRun.id),
+                    func.max(
+                        func.greatest(
+                            GrowthMonitoringRun.created_at,
+                            baseline_growth_step.updated_at,
+                            current_growth_step.updated_at,
+                        )
+                    ),
+                )
+                .join(
+                    baseline_growth_step,
+                    baseline_growth_step.id == GrowthMonitoringRun.baseline_step_id,
+                )
+                .join(
+                    current_growth_step,
+                    current_growth_step.id == GrowthMonitoringRun.current_step_id,
+                )
+                .where(GrowthMonitoringRun.task_id == task_id)
+            )
+        ).one()
         dataset_row = (
             await db.execute(
                 select(
@@ -434,6 +484,8 @@ class DeliveryDAO:
             statistics_report_latest_at=statistics_report_row[1],
             vector_export_count=int(vector_export_row[0] or 0),
             vector_export_latest_at=vector_export_row[1],
+            growth_monitoring_count=int(growth_monitoring_row[0] or 0),
+            growth_monitoring_latest_at=growth_monitoring_row[1],
             dataset_asset_count=int(dataset_row[0] or 0),
             dataset_asset_latest_at=dataset_row[1],
             imagery_step_count=int(imagery_row[0] or 0),
