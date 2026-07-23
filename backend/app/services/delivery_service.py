@@ -25,7 +25,7 @@ from app.models.disaster_report import DisasterReport
 from app.models.growth_monitoring import GrowthMonitoringRun
 from app.models.statistics_report import StatisticsReport
 from app.models.supervision import SupervisionReport
-from app.models.thematic_map import ThematicMapProduct
+from app.models.thematic_map import ThematicMapAtlas, ThematicMapProduct
 from app.models.vector_export import VectorExportPackage
 from app.models.workbench import (
     DatasetAsset,
@@ -55,6 +55,7 @@ from app.services.project_user_service import ProjectUserService
 from app.services.statistics_report_service import StatisticsReportService
 from app.services.statistics_service import StatisticsService
 from app.services.supervision_service import SupervisionService
+from app.services.thematic_map_atlas_service import ThematicMapAtlasService
 from app.services.thematic_map_service import ThematicMapService
 from app.services.vector_export_service import VectorExportService
 
@@ -87,6 +88,7 @@ class DeliveryService:
         imagery_service: ImageryService | None = None,
         growth_monitoring_service: GrowthMonitoringService | None = None,
         thematic_map_service: ThematicMapService | None = None,
+        thematic_map_atlas_service: ThematicMapAtlasService | None = None,
         supervision_service: SupervisionService | None = None,
         field_artifact_service: FieldVerificationArtifactService | None = None,
         disaster_report_service: DisasterReportService | None = None,
@@ -107,6 +109,7 @@ class DeliveryService:
             imagery_service: 影像实体与处理产物校验服务。
             growth_monitoring_service: 多时相 NDVI 长势成果校验服务。
             thematic_map_service: 专题图实体校验服务。
+            thematic_map_atlas_service: 专题图集当前性和实体校验服务。
             supervision_service: 独立监理报告实体校验服务。
             field_artifact_service: 外业核查实体证据服务。
             disaster_report_service: 灾害专题报告实体校验服务。
@@ -129,6 +132,9 @@ class DeliveryService:
             growth_monitoring_service or GrowthMonitoringService()
         )
         self.thematic_map_service = thematic_map_service or ThematicMapService()
+        self.thematic_map_atlas_service = (
+            thematic_map_atlas_service or ThematicMapAtlasService()
+        )
         self.supervision_service = supervision_service or SupervisionService()
         self.field_artifact_service = (
             field_artifact_service or FieldVerificationArtifactService()
@@ -183,6 +189,11 @@ class DeliveryService:
                 archive_state.thematic_map_count,
                 archive_state.thematic_map_latest_at,
                 "专题图成果",
+            ),
+            "thematic_atlas": (
+                archive_state.thematic_atlas_count,
+                archive_state.thematic_atlas_latest_at,
+                "专题图集",
             ),
             "supervision_report": (
                 archive_state.supervision_report_count,
@@ -662,6 +673,7 @@ class DeliveryService:
             task.project_id,
         )
         thematic_products = await self.dao.get_thematic_map_products(db, task.id)
+        thematic_atlases = await self.dao.get_thematic_map_atlases(db, task.id)
         supervision_reports = await self.dao.get_supervision_reports(db, task.id)
         disaster_reports = await self.dao.get_disaster_reports(db, task.id)
         statistics_reports = await self.dao.get_statistics_reports(db, task.id)
@@ -702,6 +714,10 @@ class DeliveryService:
         )
         thematic_artifacts = await self._load_thematic_artifacts(
             thematic_products
+        )
+        thematic_atlas_artifacts = await self._load_thematic_atlas_artifacts(
+            db,
+            thematic_atlases,
         )
         supervision_artifacts = await self._load_supervision_artifacts(
             supervision_reports
@@ -749,6 +765,7 @@ class DeliveryService:
             "imagery_steps": imagery_steps,
             "imagery_lineage": imagery_lineage,
             "thematic_artifacts": thematic_artifacts,
+            "thematic_atlas_artifacts": thematic_atlas_artifacts,
             "supervision_artifacts": supervision_artifacts,
             "disaster_report_artifacts": disaster_report_artifacts,
             "statistics_report_artifacts": statistics_report_artifacts,
@@ -796,6 +813,42 @@ class DeliveryService:
                     "source_uri": product.file_uri,
                 }
             )
+        return artifacts
+
+    async def _load_thematic_atlas_artifacts(
+        self,
+        db: AsyncSession,
+        atlases: Sequence[ThematicMapAtlas],
+    ) -> list[dict]:
+        """校验并读取当前专题图集实体包。
+
+        Args:
+            db: 异步数据库会话。
+            atlases: 当前已完成图集序列。
+
+        Returns:
+            list[dict]: 可写入最终成果包的图集 ZIP。
+        """
+        artifacts: list[dict] = []
+        for atlas in atlases:
+            path = await self.thematic_map_atlas_service.require_current_file(
+                db,
+                atlas,
+            )
+            content = await asyncio.to_thread(path.read_bytes)
+            artifacts.append({
+                "path": f"thematic_atlases/{atlas.atlas_code}.zip",
+                "category": "专题图集",
+                "format": "ZIP/PDF",
+                "record_count": atlas.member_count,
+                "description": (
+                    f"{atlas.atlas_number} · {atlas.atlas_name} · "
+                    f"{atlas.pdf_page_count} 页"
+                ),
+                "content": content,
+                "source_entity_code": atlas.atlas_code,
+                "source_uri": atlas.package_uri,
+            })
         return artifacts
 
     async def _load_supervision_artifacts(
@@ -1425,6 +1478,14 @@ class DeliveryService:
                     ),
                     "count": quality_summary["thematic_map_count"],
                 },
+                "thematic_atlases": {
+                    "status": (
+                        "included"
+                        if quality_summary["thematic_atlas_count"] > 0
+                        else "not_provided"
+                    ),
+                    "count": quality_summary["thematic_atlas_count"],
+                },
                 "supervision_reports": {
                     "status": (
                         "included"
@@ -1662,6 +1723,7 @@ class DeliveryService:
         ]
         for artifact in (
             source_data["thematic_artifacts"]
+            + source_data["thematic_atlas_artifacts"]
             + source_data["supervision_artifacts"]
             + source_data["disaster_report_artifacts"]
             + source_data["statistics_report_artifacts"]
@@ -1919,6 +1981,12 @@ class DeliveryService:
                 if archive_state.thematic_map_latest_at
                 else None
             ),
+            "thematic_atlas_count": archive_state.thematic_atlas_count,
+            "thematic_atlas_latest_at": (
+                archive_state.thematic_atlas_latest_at.isoformat()
+                if archive_state.thematic_atlas_latest_at
+                else None
+            ),
             "supervision_report_count": archive_state.supervision_report_count,
             "supervision_report_latest_at": (
                 archive_state.supervision_report_latest_at.isoformat()
@@ -2163,6 +2231,7 @@ class DeliveryService:
 - 缺少实体照片：{summary['field_missing_photo_count']}
 - 待处置外业记录：{summary['pending_field_count']}
 - 实体专题图：{summary['thematic_map_count']} 张
+- 专题图集：{summary['thematic_atlas_count']} 册
 - 独立监理报告：{summary['supervision_report_count']} 份
 - 灾害专题报告：{summary['disaster_report_count']} 份
 - 作物长势监测：{summary['growth_monitoring_count']} 期
@@ -2244,6 +2313,7 @@ class DeliveryService:
 - 地块属性实际更新：{summary['plot_attribute_import_changed_count']} 个图斑
 - 审核及操作记录：{summary['review_record_count']} 条
 - 专题图成果：{summary['thematic_map_count']} 张
+- 专题图集：{summary['thematic_atlas_count']} 册
 - 独立监理报告：{summary['supervision_report_count']} 份
 - 灾害专题报告：{summary['disaster_report_count']} 份
 - 作物长势监测：{summary['growth_monitoring_count']} 期
@@ -2259,6 +2329,7 @@ class DeliveryService:
 - 作物长势监测：{growth_monitoring_text}
 - 业务影像：{summary['imagery_asset_code'] or '未关联'}
 - 专题图：{'已纳入实体成果' if summary['thematic_map_count'] > 0 else '未提供'}
+- 专题图集：{'已纳入实体图集' if summary['thematic_atlas_count'] > 0 else '未提供'}
 - 独立监理：{'已纳入实体报告' if summary['supervision_report_count'] > 0 else '未提供'}
 
 ## 验收结论

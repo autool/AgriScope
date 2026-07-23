@@ -61,6 +61,8 @@ from app.models.supervision import (
     SupervisionSample,
 )
 from app.models.thematic_map import (
+    ThematicMapAtlas,
+    ThematicMapAtlasItem,
     ThematicMapEvent,
     ThematicMapProduct,
     ThematicMapTemplate,
@@ -154,6 +156,8 @@ __all__ = [
     "SupervisionReport",
     "SupervisionSample",
     "TaskPlot",
+    "ThematicMapAtlas",
+    "ThematicMapAtlasItem",
     "ThematicMapEvent",
     "ThematicMapProduct",
     "ThematicMapTemplate",

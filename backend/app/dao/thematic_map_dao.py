@@ -1,10 +1,14 @@
-"""专题图模板、实体产品和审计事件数据访问层。"""
+"""专题图模板、实体产品、图集和审计事件数据访问层。"""
 
-from sqlalchemy import and_, select
+from datetime import UTC, datetime
+
+from sqlalchemy import and_, func, select, update
 from sqlalchemy.engine import RowMapping
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.thematic_map import (
+    ThematicMapAtlas,
+    ThematicMapAtlasItem,
     ThematicMapEvent,
     ThematicMapProduct,
     ThematicMapTemplate,
@@ -217,6 +221,202 @@ class ThematicMapDAO:
             .where(ThematicMapProduct.product_code == product_code)
         )
         return result.mappings().one_or_none()
+
+    async def list_atlas_eligible_products(
+        self,
+        db: AsyncSession,
+        task_id: int,
+    ) -> list[ThematicMapProduct]:
+        """查询任务当前全部有效 PNG 专题图集页来源。
+
+        Args:
+            db: 异步数据库会话。
+            task_id: 作业任务主键。
+
+        Returns:
+            list[ThematicMapProduct]: 按制图日期和图号排序的 PNG 成果。
+        """
+        result = await db.execute(
+            select(ThematicMapProduct)
+            .where(
+                ThematicMapProduct.task_id == task_id,
+                ThematicMapProduct.status == "completed",
+                ThematicMapProduct.output_format == "png",
+            )
+            .order_by(
+                ThematicMapProduct.map_date,
+                ThematicMapProduct.map_number,
+                ThematicMapProduct.product_code,
+            )
+        )
+        return list(result.scalars().all())
+
+    async def get_next_atlas_version(
+        self,
+        db: AsyncSession,
+        task_id: int,
+    ) -> int:
+        """计算任务下一专题图集版本号。
+
+        Args:
+            db: 异步数据库会话。
+            task_id: 作业任务主键。
+
+        Returns:
+            int: 从 1 开始递增的版本号。
+        """
+        result = await db.execute(
+            select(func.coalesce(func.max(ThematicMapAtlas.version), 0)).where(
+                ThematicMapAtlas.task_id == task_id
+            )
+        )
+        return int(result.scalar_one()) + 1
+
+    async def supersede_current_atlases(
+        self,
+        db: AsyncSession,
+        task_id: int,
+    ) -> int:
+        """把任务旧的已完成图集转为历史版本。
+
+        Args:
+            db: 异步数据库会话。
+            task_id: 作业任务主键。
+
+        Returns:
+            int: 被替代的图集数量。
+        """
+        result = await db.execute(
+            update(ThematicMapAtlas)
+            .where(
+                ThematicMapAtlas.task_id == task_id,
+                ThematicMapAtlas.status == "completed",
+            )
+            .values(status="superseded", superseded_at=datetime.now(UTC))
+        )
+        return int(result.rowcount or 0)
+
+    async def add_atlas(
+        self,
+        db: AsyncSession,
+        atlas: ThematicMapAtlas,
+    ) -> ThematicMapAtlas:
+        """新增专题图集主记录。
+
+        Args:
+            db: 异步数据库会话。
+            atlas: 图集模型。
+
+        Returns:
+            ThematicMapAtlas: 已分配主键的图集。
+        """
+        db.add(atlas)
+        await db.flush()
+        return atlas
+
+    async def add_atlas_items(
+        self,
+        db: AsyncSession,
+        items: list[ThematicMapAtlasItem],
+    ) -> None:
+        """批量保存图集成员快照。
+
+        Args:
+            db: 异步数据库会话。
+            items: 按页序排列的成员。
+
+        Returns:
+            None: 写入会话后返回。
+        """
+        db.add_all(items)
+        await db.flush()
+
+    async def list_atlases(
+        self,
+        db: AsyncSession,
+        task_id: int,
+        limit: int = 20,
+    ) -> list[ThematicMapAtlas]:
+        """查询任务当前及历史图集。
+
+        Args:
+            db: 异步数据库会话。
+            task_id: 作业任务主键。
+            limit: 最大返回版本数。
+
+        Returns:
+            list[ThematicMapAtlas]: 按版本倒序排列的图集。
+        """
+        result = await db.execute(
+            select(ThematicMapAtlas)
+            .where(ThematicMapAtlas.task_id == task_id)
+            .order_by(ThematicMapAtlas.version.desc())
+            .limit(limit)
+        )
+        return list(result.scalars().all())
+
+    async def get_atlas_by_code(
+        self,
+        db: AsyncSession,
+        atlas_code: str,
+    ) -> ThematicMapAtlas | None:
+        """按业务编号查询专题图集。
+
+        Args:
+            db: 异步数据库会话。
+            atlas_code: 图集编号。
+
+        Returns:
+            ThematicMapAtlas | None: 图集或空值。
+        """
+        result = await db.execute(
+            select(ThematicMapAtlas).where(
+                ThematicMapAtlas.atlas_code == atlas_code
+            )
+        )
+        return result.scalar_one_or_none()
+
+    async def list_atlas_items(
+        self,
+        db: AsyncSession,
+        atlas_ids: list[int],
+    ) -> list[ThematicMapAtlasItem]:
+        """批量查询多个图集的成员快照。
+
+        Args:
+            db: 异步数据库会话。
+            atlas_ids: 图集主键清单。
+
+        Returns:
+            list[ThematicMapAtlasItem]: 按图集和页序排列的成员。
+        """
+        if not atlas_ids:
+            return []
+        result = await db.execute(
+            select(ThematicMapAtlasItem)
+            .where(ThematicMapAtlasItem.atlas_id.in_(atlas_ids))
+            .order_by(
+                ThematicMapAtlasItem.atlas_id,
+                ThematicMapAtlasItem.sequence,
+            )
+        )
+        return list(result.scalars().all())
+
+    async def get_atlas_items(
+        self,
+        db: AsyncSession,
+        atlas_id: int,
+    ) -> list[ThematicMapAtlasItem]:
+        """查询一个图集的完整成员快照。
+
+        Args:
+            db: 异步数据库会话。
+            atlas_id: 图集主键。
+
+        Returns:
+            list[ThematicMapAtlasItem]: 按页序排列的成员。
+        """
+        return await self.list_atlas_items(db, [atlas_id])
 
     async def add_event(
         self,

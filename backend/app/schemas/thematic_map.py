@@ -1,7 +1,7 @@
 """专题制图模板、批量生成、成果清单和下载响应模型。"""
 
 from datetime import date, datetime
-from typing import Literal
+from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -194,6 +194,104 @@ class ThematicMapProductResponse(BaseModel):
     preview_url: str | None
 
 
+class ThematicMapAtlasGenerateRequest(BaseModel):
+    """将当前任务全部有效 PNG 专题图按指定顺序编排为图集。"""
+
+    atlas_name: str = Field(min_length=2, max_length=200)
+    atlas_number: str = Field(
+        min_length=2,
+        max_length=100,
+        pattern=r"^[A-Za-z0-9_-]+$",
+    )
+    product_codes: list[
+        Annotated[
+            str,
+            Field(min_length=1, max_length=100, pattern=r"^[A-Za-z0-9_-]+$"),
+        ]
+    ] = Field(min_length=2, max_length=50)
+    operator_code: str = Field(min_length=1, max_length=50)
+    comment: str = Field(min_length=10, max_length=500)
+
+    model_config = ConfigDict(extra="forbid")
+
+    @field_validator("atlas_name", "atlas_number", "operator_code", "comment")
+    @classmethod
+    def normalize_atlas_text(cls, value: str) -> str:
+        """清理图集生成必填文本。
+
+        Args:
+            value: 原始文本。
+
+        Returns:
+            str: 去除首尾空白后的文本。
+        """
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("图集名称、编号、操作人和编排说明不得为空")
+        return normalized
+
+    @field_validator("product_codes")
+    @classmethod
+    def validate_unique_product_codes(cls, value: list[str]) -> list[str]:
+        """校验图集成员编号非空且不重复。
+
+        Args:
+            value: 按页序排列的专题图编号。
+
+        Returns:
+            list[str]: 保持用户顺序的唯一编号。
+        """
+        normalized = [item.strip() for item in value]
+        if any(not item for item in normalized):
+            raise ValueError("图集专题图编号不得为空")
+        if len(normalized) != len(set(normalized)):
+            raise ValueError("图集专题图编号不得重复")
+        return normalized
+
+
+class ThematicMapAtlasItemResponse(BaseModel):
+    """图集内一页专题图的不可变来源快照。"""
+
+    sequence: int
+    product_code: str
+    map_name: str
+    map_number: str
+    map_date: date
+    product_size_bytes: int
+    product_checksum_sha256: str
+    member_path: str
+
+
+class ThematicMapAtlasResponse(BaseModel):
+    """专题图集实体包、PDF 与当前性响应。"""
+
+    atlas_code: str
+    atlas_name: str
+    atlas_number: str
+    version: int
+    status: str
+    package_size_bytes: int
+    package_checksum_sha256: str
+    pdf_filename: str
+    pdf_size_bytes: int
+    pdf_checksum_sha256: str
+    pdf_page_count: int
+    member_count: int
+    product_count_snapshot: int
+    product_latest_at_snapshot: datetime
+    source_snapshot_sha256: str
+    atlas_manifest: dict
+    generated_by: str
+    generated_by_code: str
+    generated_by_role: str
+    generated_at: datetime
+    superseded_at: datetime | None
+    members: list[ThematicMapAtlasItemResponse]
+    is_current: bool
+    stale_reason: str | None
+    download_url: str | None
+
+
 class ThematicMapOverviewResponse(BaseModel):
     """专题制图模板、可用来源和实体成果总览。"""
 
@@ -202,9 +300,12 @@ class ThematicMapOverviewResponse(BaseModel):
     template_count: int
     eligible_source_count: int
     product_count: int
+    atlas_eligible_product_count: int
+    atlas_count: int
     templates: list[ThematicMapTemplateResponse]
     sources: list[ThematicMapSourceResponse]
     products: list[ThematicMapProductResponse]
+    atlases: list[ThematicMapAtlasResponse]
 
 
 class ThematicMapBatchGenerateResponse(BaseModel):
@@ -212,3 +313,9 @@ class ThematicMapBatchGenerateResponse(BaseModel):
 
     generated_count: int
     products: list[ThematicMapProductResponse]
+
+
+class ThematicMapAtlasGenerateResponse(BaseModel):
+    """图集生成结果。"""
+
+    atlas: ThematicMapAtlasResponse

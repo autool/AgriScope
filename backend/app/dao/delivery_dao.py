@@ -19,7 +19,7 @@ from app.models.growth_monitoring import GrowthMonitoringRun
 from app.models.plot import FarmlandPlot
 from app.models.statistics_report import StatisticsReport
 from app.models.supervision import SupervisionPlan, SupervisionReport
-from app.models.thematic_map import ThematicMapProduct
+from app.models.thematic_map import ThematicMapAtlas, ThematicMapProduct
 from app.models.vector_export import VectorExportPackage
 from app.models.workbench import (
     DatasetAsset,
@@ -51,6 +51,8 @@ class DeliveryArchiveState:
     vector_export_latest_at: datetime | None = None
     growth_monitoring_count: int = 0
     growth_monitoring_latest_at: datetime | None = None
+    thematic_atlas_count: int = 0
+    thematic_atlas_latest_at: datetime | None = None
 
 
 class DeliveryDAO:
@@ -179,6 +181,30 @@ class DeliveryDAO:
                 ThematicMapProduct.map_number,
                 ThematicMapProduct.product_code,
             )
+        )
+        return result.scalars().all()
+
+    async def get_thematic_map_atlases(
+        self,
+        db: AsyncSession,
+        task_id: int,
+    ) -> Sequence[ThematicMapAtlas]:
+        """查询任务当前已完成专题图集。
+
+        Args:
+            db: 异步数据库会话。
+            task_id: 任务主键。
+
+        Returns:
+            Sequence[ThematicMapAtlas]: 正常情况下至多一个当前图集。
+        """
+        result = await db.execute(
+            select(ThematicMapAtlas)
+            .where(
+                ThematicMapAtlas.task_id == task_id,
+                ThematicMapAtlas.status == "completed",
+            )
+            .order_by(ThematicMapAtlas.version.desc())
         )
         return result.scalars().all()
 
@@ -450,6 +476,17 @@ class DeliveryDAO:
                 )
             )
         ).one()
+        thematic_atlas_row = (
+            await db.execute(
+                select(
+                    func.count(ThematicMapAtlas.id),
+                    func.max(ThematicMapAtlas.generated_at),
+                ).where(
+                    ThematicMapAtlas.task_id == task_id,
+                    ThematicMapAtlas.status == "completed",
+                )
+            )
+        ).one()
         supervision_row = (
             await db.execute(
                 select(
@@ -567,6 +604,8 @@ class DeliveryDAO:
             dataset_asset_latest_at=dataset_row[1],
             imagery_step_count=int(imagery_row[0] or 0),
             imagery_step_latest_at=imagery_row[1],
+            thematic_atlas_count=int(thematic_atlas_row[0] or 0),
+            thematic_atlas_latest_at=thematic_atlas_row[1],
         )
 
     async def get_plot_rows(

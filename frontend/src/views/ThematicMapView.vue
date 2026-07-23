@@ -4,10 +4,12 @@ import { storeToRefs } from 'pinia'
 import { onMounted } from 'vue'
 
 import ThematicMapGenerationPanel from '@/components/thematic-map/ThematicMapGenerationPanel.vue'
+import ThematicMapAtlasPanel from '@/components/thematic-map/ThematicMapAtlasPanel.vue'
 import ThematicMapProductGrid from '@/components/thematic-map/ThematicMapProductGrid.vue'
 import ThematicMapTemplatePanel from '@/components/thematic-map/ThematicMapTemplatePanel.vue'
 import { useThematicMapStore } from '@/store/thematicMapStore'
 import type {
+  ThematicMapAtlasGeneratePayload,
   ThematicMapBatchGeneratePayload,
   ThematicMapTemplateCreatePayload,
 } from '@/types/thematicMap'
@@ -17,6 +19,7 @@ const {
   canGenerateComputed,
   canManageComputed,
   generatingRef,
+  generatingAtlasRef,
   loadingRef,
   overviewRef,
   savingTemplateRef,
@@ -44,6 +47,19 @@ const handleGenerate = async (
   }
 }
 
+const handleGenerateAtlas = async (
+  payload: Omit<ThematicMapAtlasGeneratePayload, 'operator_code'>,
+): Promise<void> => {
+  try {
+    const atlas = await thematicMapStore.generateAtlas(payload)
+    message.success(
+      `专题图集 V${atlas.version} 已生成：${atlas.member_count} 张专题图，${atlas.pdf_page_count} 页 PDF`,
+    )
+  } catch {
+    // 请求层已提供安全错误提示。
+  }
+}
+
 onMounted(() => {
   void thematicMapStore.load()
 })
@@ -55,6 +71,7 @@ onMounted(() => {
       <span><small>LAYOUT TEMPLATES</small><strong>{{ overviewRef?.template_count || 0 }}</strong><em>持久化版式</em></span>
       <span><small>VERIFIED SOURCES</small><strong>{{ overviewRef?.eligible_source_count || 0 }}</strong><em>可用实体影像</em></span>
       <span><small>MAP PRODUCTS</small><strong>{{ overviewRef?.product_count || 0 }}</strong><em>校验专题图</em></span>
+      <span><small>ATLAS VERSIONS</small><strong>{{ overviewRef?.atlas_count || 0 }}</strong><em>实体图集版本</em></span>
       <a-alert
         v-if="!canGenerateComputed"
         type="info"
@@ -78,6 +95,13 @@ onMounted(() => {
           @generate="handleGenerate"
         />
       </section>
+      <ThematicMapAtlasPanel
+        :products="overviewRef?.products || []"
+        :atlases="overviewRef?.atlases || []"
+        :disabled="!canGenerateComputed"
+        :loading="generatingAtlasRef"
+        @generate="handleGenerateAtlas"
+      />
       <ThematicMapProductGrid :products="overviewRef?.products || []" />
     </a-spin>
   </div>
@@ -85,16 +109,16 @@ onMounted(() => {
 
 <style scoped>
 .thematic-map-view { display: grid; grid-template-rows: auto minmax(0, 1fr); gap: 10px; height: 100%; padding: 10px; background: #eef2f0; }
-.summary-strip { display: grid; grid-template-columns: repeat(3, minmax(140px, 190px)) minmax(260px, 1fr); gap: 8px; }
+.summary-strip { display: grid; grid-template-columns: repeat(4, minmax(130px, 180px)) minmax(260px, 1fr); gap: 8px; }
 .summary-strip > span { display: flex; flex-direction: column; padding: 10px 12px; background: #fff; border: 1px solid #dfe5e2; border-radius: 7px; }
 .summary-strip small { font-size: 7px; color: #8b9791; }
 .summary-strip strong { font-size: 20px; color: #347958; }
 .summary-strip em { font-size: 8px; font-style: normal; color: #77867e; }
 .workspace-spin { min-height: 0; }
-.workspace-spin :deep(.ant-spin-container) { display: grid; grid-template-rows: minmax(390px, 0.8fr) minmax(250px, 1fr); gap: 10px; height: 100%; min-height: 0; }
+.workspace-spin :deep(.ant-spin-container) { display: grid; grid-template-rows: minmax(390px, 0.8fr) auto minmax(250px, 1fr); gap: 10px; height: 100%; min-height: 0; overflow: auto; }
 .composer-grid { display: grid; grid-template-columns: minmax(420px, 1fr) minmax(420px, 1fr); gap: 10px; min-height: 0; }
 @media (max-width: 1180px) {
-  .summary-strip { grid-template-columns: repeat(3, 1fr); }
+  .summary-strip { grid-template-columns: repeat(4, 1fr); }
   .summary-strip :deep(.ant-alert) { grid-column: 1 / -1; }
   .composer-grid { grid-template-columns: 1fr; overflow: auto; }
 }

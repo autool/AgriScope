@@ -31,6 +31,7 @@ from app.schemas.thematic_map import (
 )
 from app.services.imagery_service import ImageryService
 from app.services.project_user_service import ProjectUserService
+from app.services.thematic_map_atlas_service import ThematicMapAtlasService
 from app.services.thematic_map_renderer import ThematicMapRenderer
 
 
@@ -54,6 +55,7 @@ class ThematicMapService:
         project_user_service: ProjectUserService | None = None,
         imagery_service: ImageryService | None = None,
         renderer: ThematicMapRenderer | None = None,
+        atlas_service: ThematicMapAtlasService | None = None,
     ) -> None:
         """初始化专题制图业务服务。
 
@@ -64,6 +66,7 @@ class ThematicMapService:
             project_user_service: 项目成员权限服务。
             imagery_service: 影像实体产物校验服务。
             renderer: 专题图实体渲染器。
+            atlas_service: 独立专题图集业务服务。
 
         Returns:
             None: 无返回值。
@@ -74,6 +77,11 @@ class ThematicMapService:
         self.project_user_service = project_user_service or ProjectUserService()
         self.imagery_service = imagery_service or ImageryService()
         self.renderer = renderer or ThematicMapRenderer()
+        self.atlas_service = atlas_service or ThematicMapAtlasService(
+            dao=self.dao,
+            workbench_dao=self.workbench_dao,
+            project_user_service=self.project_user_service,
+        )
         self.storage_root = (
             Path(__file__).resolve().parents[2] / "storage" / "thematic_maps"
         )
@@ -388,15 +396,22 @@ class ThematicMapService:
             )
             for row in product_rows
         ]
+        atlas_eligible_product_count, atlases = await self.atlas_service.build_overview(
+            db,
+            task.id,
+        )
         return ThematicMapOverviewResponse(
             project_code=project_code,
             task_code=task_code,
             template_count=len(templates),
             eligible_source_count=sum(source.eligible for source in sources),
             product_count=len(products),
+            atlas_eligible_product_count=atlas_eligible_product_count,
+            atlas_count=len(atlases),
             templates=[self._template_response(item) for item in templates],
             sources=sources,
             products=products,
+            atlases=atlases,
         )
 
     async def generate_batch(

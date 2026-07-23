@@ -60,15 +60,57 @@ export interface ThematicMapProduct {
   preview_url: string | null
 }
 
+export interface ThematicMapAtlasItem {
+  sequence: number
+  product_code: string
+  map_name: string
+  map_number: string
+  map_date: string
+  product_size_bytes: number
+  product_checksum_sha256: string
+  member_path: string
+}
+
+export interface ThematicMapAtlas {
+  atlas_code: string
+  atlas_name: string
+  atlas_number: string
+  version: number
+  status: 'completed' | 'superseded' | 'invalid'
+  package_size_bytes: number
+  package_checksum_sha256: string
+  pdf_filename: string
+  pdf_size_bytes: number
+  pdf_checksum_sha256: string
+  pdf_page_count: number
+  member_count: number
+  product_count_snapshot: number
+  product_latest_at_snapshot: string
+  source_snapshot_sha256: string
+  atlas_manifest: Record<string, unknown>
+  generated_by: string
+  generated_by_code: string
+  generated_by_role: string
+  generated_at: string
+  superseded_at: string | null
+  members: ThematicMapAtlasItem[]
+  is_current: boolean
+  stale_reason: string | null
+  download_url: string | null
+}
+
 export interface ThematicMapOverview {
   project_code: string
   task_code: string
   template_count: number
   eligible_source_count: number
   product_count: number
+  atlas_eligible_product_count: number
+  atlas_count: number
   templates: ThematicMapTemplate[]
   sources: ThematicMapSource[]
   products: ThematicMapProduct[]
+  atlases: ThematicMapAtlas[]
 }
 
 export interface ThematicMapTemplateCreatePayload {
@@ -107,4 +149,16 @@ export interface ThematicMapBatchGeneratePayload {
 export interface ThematicMapBatchGenerateResult {
   generated_count: number
   products: ThematicMapProduct[]
+}
+
+export interface ThematicMapAtlasGeneratePayload {
+  atlas_name: string
+  atlas_number: string
+  product_codes: string[]
+  operator_code: string
+  comment: string
+}
+
+export interface ThematicMapAtlasGenerateResult {
+  atlas: ThematicMapAtlas
 }

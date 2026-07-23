@@ -301,6 +301,61 @@ def test_delivery_list_marks_new_thematic_map_as_stale() -> None:
     assert "专题图" in (response.packages[0].stale_reason or "")
 
 
+def test_delivery_list_marks_new_thematic_atlas_as_stale() -> None:
+    """验证生成专题图集后旧成果包因缺少图集归档快照而失效。"""
+    package = build_delivery_package()
+    reason = DeliveryService._get_stale_reason(
+        package,
+        SimpleNamespace(
+            total_plots=809,
+            updated_at=datetime(2026, 7, 20, tzinfo=UTC),
+        ),
+        DeliveryArchiveState(
+            thematic_map_count=0,
+            thematic_map_latest_at=None,
+            supervision_report_count=0,
+            supervision_report_latest_at=None,
+            dataset_asset_count=0,
+            dataset_asset_latest_at=None,
+            imagery_step_count=0,
+            imagery_step_latest_at=None,
+            thematic_atlas_count=1,
+            thematic_atlas_latest_at=datetime(2026, 7, 23, tzinfo=UTC),
+        ),
+    )
+
+    assert reason == "成果包缺少专题图集归档快照"
+
+
+def test_delivery_loads_verified_current_thematic_atlas(tmp_path: Path) -> None:
+    """验证交付归档只读取通过当前性和实体复核的图集 ZIP。"""
+    path = tmp_path / "atlas.zip"
+    path.write_bytes(b"PK\x03\x04verified-atlas")
+    atlas = SimpleNamespace(
+        atlas_code="TMA-TEST-001",
+        atlas_number="HLJ-ATLAS-2026",
+        atlas_name="黑龙江省农作物遥感监测专题图集",
+        member_count=3,
+        pdf_page_count=5,
+        package_uri="storage://thematic_maps/atlases/TMA-TEST-001.zip",
+    )
+    thematic_map_atlas_service = AsyncMock()
+    thematic_map_atlas_service.require_current_file.return_value = path
+    service = DeliveryService(
+        thematic_map_atlas_service=thematic_map_atlas_service
+    )
+
+    artifacts = asyncio.run(
+        service._load_thematic_atlas_artifacts(AsyncMock(), [atlas])
+    )
+
+    assert len(artifacts) == 1
+    assert artifacts[0]["path"] == "thematic_atlases/TMA-TEST-001.zip"
+    assert artifacts[0]["content"] == path.read_bytes()
+    assert artifacts[0]["record_count"] == 3
+    thematic_map_atlas_service.require_current_file.assert_awaited_once()
+
+
 def test_delivery_list_marks_superseded_version_as_history() -> None:
     """验证被新版本替代的成果包永远不会重新成为当前成果。"""
     package = build_delivery_package(status="superseded")

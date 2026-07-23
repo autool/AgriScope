@@ -1,6 +1,8 @@
 import request from './request'
 
 import type {
+  ThematicMapAtlasGeneratePayload,
+  ThematicMapAtlasGenerateResult,
   ThematicMapBatchGeneratePayload,
   ThematicMapBatchGenerateResult,
   ThematicMapOverview,
@@ -29,6 +31,19 @@ export const generateThematicMapProducts = (
   taskCode: string,
 ) => request.post<ThematicMapBatchGenerateResult>(
   '/v1/thematic-maps/products/generate',
+  payload,
+  {
+    params: { project_code: projectCode, task_code: taskCode },
+    timeout: 10 * 60 * 1000,
+  },
+)
+
+export const generateThematicMapAtlas = (
+  payload: ThematicMapAtlasGeneratePayload,
+  projectCode: string,
+  taskCode: string,
+) => request.post<ThematicMapAtlasGenerateResult>(
+  '/v1/thematic-maps/atlases/generate',
   payload,
   {
     params: { project_code: projectCode, task_code: taskCode },

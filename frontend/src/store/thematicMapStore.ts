@@ -3,12 +3,15 @@ import { computed, ref } from 'vue'
 
 import {
   createThematicMapTemplate,
+  generateThematicMapAtlas,
   generateThematicMapProducts,
   getThematicMapOverview,
 } from '@/api/thematicMap'
 import { useUserStore } from '@/store/userStore'
 import { useWorkbenchStore } from '@/store/workbenchStore'
 import type {
+  ThematicMapAtlas,
+  ThematicMapAtlasGeneratePayload,
   ThematicMapBatchGeneratePayload,
   ThematicMapOverview,
   ThematicMapProduct,
@@ -22,6 +25,7 @@ export const useThematicMapStore = defineStore('thematicMap', () => {
   const loadingRef = ref<boolean>(false)
   const savingTemplateRef = ref<boolean>(false)
   const generatingRef = ref<boolean>(false)
+  const generatingAtlasRef = ref<boolean>(false)
   const canManageComputed = computed<boolean>(() => (
     userStore.hasCapability('manage_thematic_maps')
   ))
@@ -88,6 +92,27 @@ export const useThematicMapStore = defineStore('thematicMap', () => {
     }
   }
 
+  const generateAtlas = async (
+    payload: Omit<ThematicMapAtlasGeneratePayload, 'operator_code'>,
+  ): Promise<ThematicMapAtlas> => {
+    const user = userStore.currentUserComputed
+    if (!user || !canGenerateComputed.value) {
+      throw new Error('当前项目身份无权生成专题图集')
+    }
+    generatingAtlasRef.value = true
+    try {
+      const result = await generateThematicMapAtlas(
+        { ...payload, operator_code: user.user_code },
+        workbenchStore.projectCodeComputed,
+        workbenchStore.taskCodeComputed,
+      )
+      await load()
+      return result.atlas
+    } finally {
+      generatingAtlasRef.value = false
+    }
+  }
+
   const productUrl = (
     product: ThematicMapProduct,
     disposition: 'inline' | 'attachment',
@@ -103,11 +128,19 @@ export const useThematicMapStore = defineStore('thematicMap', () => {
     return `${product.download_url}?${params.toString()}`
   }
 
+  const atlasUrl = (atlas: ThematicMapAtlas): string | null => {
+    const user = userStore.currentUserComputed
+    if (!user || !canDownloadComputed.value || !atlas.download_url) return null
+    const params = new URLSearchParams({ operator_code: user.user_code })
+    return `${atlas.download_url}?${params.toString()}`
+  }
+
   return {
     overviewRef,
     loadingRef,
     savingTemplateRef,
     generatingRef,
+    generatingAtlasRef,
     canManageComputed,
     canGenerateComputed,
     canDownloadComputed,
@@ -115,6 +148,8 @@ export const useThematicMapStore = defineStore('thematicMap', () => {
     load,
     createTemplate,
     generate,
+    generateAtlas,
     productUrl,
+    atlasUrl,
   }
 })

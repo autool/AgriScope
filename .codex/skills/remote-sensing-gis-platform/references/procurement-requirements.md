@@ -167,8 +167,14 @@ the platform has persisted evidence and executable workflows.
   layout, renderer version, output size/SHA-256, and stable operator-role evidence.
   Preview and download revalidate controlled path, signature, size, and checksum; maps
   made from public Sentinel-2 evidence retain a visible non-statutory-results label.
-  This contract is not evidence that regional block adjustment, fusion, color balancing,
-  mosaicking, historical atlas composition, or complete archival delivery is finished.
+  The implemented task-atlas contract requires the complete current verified PNG map set,
+  preserves an explicit page order, and atomically publishes a versioned ZIP containing a
+  cover/table-of-contents PDF, original PNG members, and a canonical checksum manifest.
+  It revalidates the current source set and every ZIP/PDF/member checksum before download
+  or delivery, supersedes prior versions, and makes delivery stale when atlas state changes.
+  This is executable task-level atlas composition; it is not evidence that regional block
+  adjustment, advanced seamline mosaicking, a supplied 1980–2024 historical corpus, or
+  complete offline-media archival delivery is finished.
 - Publish approved map/data services only through registered endpoints with application,
   approval, credentials, documentation, health state, usage audit, and revocation.
 - The implemented service-sharing contract uses persisted registrations, independent

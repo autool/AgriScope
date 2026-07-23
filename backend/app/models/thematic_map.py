@@ -148,6 +148,116 @@ class ThematicMapProduct(Base):
     )
 
 
+class ThematicMapAtlas(Base):
+    """由任务全部有效 PNG 专题图编排形成的实体图集。"""
+
+    __tablename__ = "thematic_map_atlases"
+    __table_args__ = (
+        UniqueConstraint("atlas_code", name="uq_thematic_map_atlas_code"),
+        UniqueConstraint(
+            "task_id",
+            "version",
+            name="uq_thematic_map_atlas_task_version",
+        ),
+        CheckConstraint(
+            "status IN ('completed', 'superseded', 'invalid')",
+            name="ck_thematic_map_atlas_status",
+        ),
+        CheckConstraint(
+            "member_count BETWEEN 2 AND 50 "
+            "AND pdf_page_count >= member_count + 2",
+            name="ck_thematic_map_atlas_counts",
+        ),
+        CheckConstraint(
+            "package_size_bytes > 0 AND pdf_size_bytes > 0 "
+            "AND char_length(package_checksum_sha256) = 64 "
+            "AND char_length(pdf_checksum_sha256) = 64 "
+            "AND char_length(source_snapshot_sha256) = 64",
+            name="ck_thematic_map_atlas_file_evidence",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    task_id: Mapped[int] = mapped_column(
+        ForeignKey("monitoring_tasks.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    atlas_code: Mapped[str] = mapped_column(String(100), nullable=False)
+    atlas_name: Mapped[str] = mapped_column(String(200), nullable=False)
+    atlas_number: Mapped[str] = mapped_column(String(100), nullable=False)
+    version: Mapped[int] = mapped_column(Integer, nullable=False)
+    status: Mapped[str] = mapped_column(String(20), nullable=False)
+    package_uri: Mapped[str] = mapped_column(String(500), nullable=False)
+    package_size_bytes: Mapped[int] = mapped_column(Integer, nullable=False)
+    package_checksum_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    pdf_filename: Mapped[str] = mapped_column(String(200), nullable=False)
+    pdf_size_bytes: Mapped[int] = mapped_column(Integer, nullable=False)
+    pdf_checksum_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    pdf_page_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    member_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    product_count_snapshot: Mapped[int] = mapped_column(Integer, nullable=False)
+    product_latest_at_snapshot: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+    )
+    source_snapshot_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    atlas_manifest: Mapped[dict] = mapped_column(JSON, nullable=False)
+    generated_by: Mapped[str] = mapped_column(String(100), nullable=False)
+    generated_by_code: Mapped[str] = mapped_column(String(50), nullable=False)
+    generated_by_role: Mapped[str] = mapped_column(String(40), nullable=False)
+    generated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        nullable=False,
+    )
+    superseded_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+
+
+class ThematicMapAtlasItem(Base):
+    """图集内专题图顺序和不可变来源快照。"""
+
+    __tablename__ = "thematic_map_atlas_items"
+    __table_args__ = (
+        UniqueConstraint(
+            "atlas_id",
+            "sequence",
+            name="uq_thematic_map_atlas_item_sequence",
+        ),
+        UniqueConstraint(
+            "atlas_id",
+            "product_id",
+            name="uq_thematic_map_atlas_item_product",
+        ),
+        CheckConstraint(
+            "sequence BETWEEN 1 AND 50 "
+            "AND product_size_bytes > 0 "
+            "AND char_length(product_checksum_sha256) = 64",
+            name="ck_thematic_map_atlas_item_evidence",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    atlas_id: Mapped[int] = mapped_column(
+        ForeignKey("thematic_map_atlases.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    product_id: Mapped[int] = mapped_column(
+        ForeignKey("thematic_map_products.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    sequence: Mapped[int] = mapped_column(Integer, nullable=False)
+    product_code: Mapped[str] = mapped_column(String(100), nullable=False)
+    map_name: Mapped[str] = mapped_column(String(200), nullable=False)
+    map_number: Mapped[str] = mapped_column(String(100), nullable=False)
+    map_date: Mapped[date] = mapped_column(Date, nullable=False)
+    product_size_bytes: Mapped[int] = mapped_column(Integer, nullable=False)
+    product_checksum_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    member_path: Mapped[str] = mapped_column(String(300), nullable=False)
+
+
 class ThematicMapEvent(Base):
     """专题图模板、生成和下载的不可变审计事件。"""
 

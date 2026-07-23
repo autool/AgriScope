@@ -6,16 +6,20 @@ from fastapi import APIRouter, Query, Response, status
 
 from app.api.deps import DatabaseSession
 from app.schemas.thematic_map import (
+    ThematicMapAtlasGenerateRequest,
+    ThematicMapAtlasGenerateResponse,
     ThematicMapBatchGenerateRequest,
     ThematicMapBatchGenerateResponse,
     ThematicMapOverviewResponse,
     ThematicMapTemplateCreateRequest,
     ThematicMapTemplateResponse,
 )
+from app.services.thematic_map_atlas_service import ThematicMapAtlasService
 from app.services.thematic_map_service import ThematicMapService
 
 router = APIRouter(prefix="/api/v1/thematic-maps", tags=["专题制图"])
 service = ThematicMapService()
+atlas_service = ThematicMapAtlasService()
 
 
 @router.get("/overview", response_model=ThematicMapOverviewResponse)
@@ -87,6 +91,31 @@ async def generate_thematic_map_products(
     return await service.generate_batch(db, project_code, task_code, request)
 
 
+@router.post(
+    "/atlases/generate",
+    response_model=ThematicMapAtlasGenerateResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+async def generate_thematic_map_atlas(
+    request: ThematicMapAtlasGenerateRequest,
+    db: DatabaseSession,
+    project_code: Annotated[str, Query(min_length=1, max_length=50)] = "RS-2026",
+    task_code: Annotated[str, Query(min_length=1, max_length=50)] = "RS-2026-045",
+) -> ThematicMapAtlasGenerateResponse:
+    """把当前任务全部有效 PNG 专题图按指定顺序编排为图集。
+
+    Args:
+        request: 图集名称、编号、完整成员顺序和审计说明。
+        db: FastAPI 注入的异步数据库会话。
+        project_code: 项目编号。
+        task_code: 作业任务编号。
+
+    Returns:
+        ThematicMapAtlasGenerateResponse: 图集 ZIP、PDF 和成员证据。
+    """
+    return await atlas_service.generate(db, project_code, task_code, request)
+
+
 @router.get(
     "/products/{product_code}/download",
     response_class=Response,
@@ -132,6 +161,37 @@ async def download_thematic_map_product(
             "Content-Disposition": (
                 f'{disposition}; filename="{download.filename}"'
             ),
+            "X-Content-Type-Options": "nosniff",
+        },
+    )
+
+
+@router.get(
+    "/atlases/{atlas_code}/download",
+    response_class=Response,
+    responses={200: {"content": {"application/zip": {}}}},
+)
+async def download_thematic_map_atlas(
+    atlas_code: str,
+    db: DatabaseSession,
+    operator_code: Annotated[str, Query(min_length=1, max_length=50)],
+) -> Response:
+    """鉴权并重新校验当前图集 ZIP、PDF 和全部成员后下载。
+
+    Args:
+        atlas_code: 专题图集编号。
+        db: FastAPI 注入的异步数据库会话。
+        operator_code: 下载人稳定编码。
+
+    Returns:
+        Response: 专题图集 ZIP 实体。
+    """
+    download = await atlas_service.get_download(db, atlas_code, operator_code)
+    return Response(
+        content=download.content,
+        media_type=download.media_type,
+        headers={
+            "Content-Disposition": f'attachment; filename="{download.filename}"',
             "X-Content-Type-Options": "nosniff",
         },
     )

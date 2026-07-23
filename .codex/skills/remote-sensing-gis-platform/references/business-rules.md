@@ -119,6 +119,13 @@
 - Persist explicit poor and good NDVI-delta thresholds. Publish an atomic UInt8 GeoTIFF with 0=NoData, 1=poor, 2=normal and 3=good. Vectorize poor pixels with 4-connectivity, then use PostGIS to clip them to task farmland, validate geometry, recompute geography hectares and apply the minimum-zone-area threshold. Reject rather than truncate above 500 accepted zones.
 - Store both source asset/step identities, acquisition times, controlled URIs, sizes, SHA256 values, NDVI bands, task farmland count/update snapshot, complete farmland area, common-footprint area, spatial coverage, valid-pixel ratio, both accepted gates, grid and class counts, algorithm version, stable operator role and generation basis. Atomically publish anomaly GeoJSON; before download or delivery, verify both outputs and revalidate both source-step URI/size/SHA256/NDVI snapshots. Delivery archive freshness must include referenced source-step update times as well as growth-run changes.
 
+## Thematic atlases
+
+- Build one current task atlas only from the complete set of checksum-verified PNG thematic-map products. Require 2–50 members, preserve an explicit user-defined order, and reject omissions, duplicates, invalid products, more than 250 MB of source pages, or browser preview images.
+- Generate a physical PDF on the server with a cover, paginated table of contents, and one normalized page per source map. Atomically publish a ZIP containing the PDF, every original PNG, and a canonical manifest. Persist version, member order, source product count/latest timestamp/digest, renderer version, PDF page count, stable generator role, and ZIP/PDF/member sizes and SHA256 values.
+- Keep one completed current atlas per task. Generating a new version supersedes prior completed atlases without deleting them. A thematic-map addition, removal, corruption, or source-set digest change makes an older atlas stale and blocks download.
+- Before atlas download or final delivery, revalidate the complete current source set, controlled ZIP path/signature/size/SHA256, exact safe member list, manifest/database equality, PDF signature/size/SHA256, and every embedded PNG size/SHA256. Delivery archives embed only the current verified atlas ZIP and snapshot atlas count/latest time so later atlas changes invalidate the package.
+
 ## Delivery
 
 - Generate only after final review.
@@ -132,8 +139,8 @@
 - Generate task vectors from `task_plots`, never from the entire plot table. Project managers generate packages; project managers and client reviewers may download them.
 - Block final review and package generation while quality issues or field-verification resolutions remain open. Mark a package stale when the task changed after generation or its plot count no longer matches the task scope.
 - Write through a temporary ZIP and atomically replace the final file. Recompute file size and SHA-256 before every download; retained stale packages are audit history, not current deliverables.
-- Include every existing checksum-verified thematic map and independent-supervision report as a physical ZIP member. Revalidate and reference the current source imagery, completed processing artifacts, and task/project dataset catalog with controlled URI, size, checksum, version, classification, and status evidence. Each embedded member except the recursively self-describing manifest stores its own size and SHA-256. Archive categories explicitly distinguish included, verified-reference, and not-provided evidence.
-- Snapshot thematic-map, supervision-report, dataset-catalog, and imagery-processing counts plus latest timestamps. Any later change makes the package stale. Generating a new version marks every prior completed package superseded so one task cannot expose multiple current deliverables.
+- Include every existing checksum-verified thematic map, current thematic atlas, and independent-supervision report as a physical ZIP member. Revalidate and reference the current source imagery, completed processing artifacts, and task/project dataset catalog with controlled URI, size, checksum, version, classification, and status evidence. Each embedded member except the recursively self-describing manifest stores its own size and SHA-256. Archive categories explicitly distinguish included, verified-reference, and not-provided evidence.
+- Snapshot thematic-map, thematic-atlas, supervision-report, dataset-catalog, and imagery-processing counts plus latest timestamps. Any later change makes the package stale. Generating a new version marks every prior completed package superseded so one task cannot expose multiple current deliverables.
 
 ## Service sharing
 
