@@ -12,6 +12,7 @@ ALTER TABLE farmland_plots ADD COLUMN IF NOT EXISTS land_class VARCHAR(50);
 ALTER TABLE farmland_plots ADD COLUMN IF NOT EXISTS crop_type VARCHAR(50);
 ALTER TABLE farmland_plots ADD COLUMN IF NOT EXISTS planting_mode VARCHAR(50);
 ALTER TABLE farmland_plots ADD COLUMN IF NOT EXISTS irrigation_condition VARCHAR(20);
+ALTER TABLE farmland_plots ADD COLUMN IF NOT EXISTS custom_attributes JSONB NOT NULL DEFAULT '{}'::jsonb;
 ALTER TABLE farmland_plots ADD COLUMN IF NOT EXISTS source_name VARCHAR(120);
 ALTER TABLE farmland_plots ADD COLUMN IF NOT EXISTS source_feature_id VARCHAR(80);
 ALTER TABLE farmland_plots ADD COLUMN IF NOT EXISTS source_uri VARCHAR(500);
@@ -98,6 +99,69 @@ CREATE TABLE IF NOT EXISTS project_rule_config_audits (
 
 CREATE INDEX IF NOT EXISTS idx_rule_config_audits_project_time
     ON project_rule_config_audits (project_id, created_at DESC);
+
+-- 自定义字段编码在项目内稳定且不可变；字段语义变更递增版本并写入审计。
+CREATE TABLE IF NOT EXISTS project_plot_attribute_fields (
+    id SERIAL PRIMARY KEY,
+    project_id INTEGER NOT NULL
+        REFERENCES monitoring_projects(id) ON DELETE CASCADE,
+    field_code VARCHAR(40) NOT NULL,
+    label VARCHAR(100) NOT NULL,
+    field_type VARCHAR(20) NOT NULL,
+    required BOOLEAN NOT NULL DEFAULT FALSE,
+    options JSONB NOT NULL DEFAULT '[]'::jsonb,
+    display_order INTEGER NOT NULL DEFAULT 0,
+    status VARCHAR(20) NOT NULL DEFAULT 'active',
+    version INTEGER NOT NULL DEFAULT 1,
+    created_by VARCHAR(100) NOT NULL,
+    created_by_code VARCHAR(50) NOT NULL,
+    created_by_role VARCHAR(40) NOT NULL,
+    updated_by VARCHAR(100) NOT NULL,
+    updated_by_code VARCHAR(50) NOT NULL,
+    updated_by_role VARCHAR(40) NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    CONSTRAINT uq_project_plot_attribute_field_code
+        UNIQUE (project_id, field_code),
+    CONSTRAINT ck_project_plot_attribute_field_type
+        CHECK (field_type IN ('text', 'number', 'date', 'boolean', 'single_select')),
+    CONSTRAINT ck_project_plot_attribute_field_status
+        CHECK (status IN ('active', 'inactive')),
+    CONSTRAINT ck_project_plot_attribute_field_order
+        CHECK (display_order BETWEEN 0 AND 9999),
+    CONSTRAINT ck_project_plot_attribute_field_version CHECK (version >= 1),
+    CONSTRAINT ck_project_plot_attribute_field_options CHECK (
+        (field_type = 'single_select' AND jsonb_array_length(options) > 0)
+        OR (field_type != 'single_select' AND options = '[]'::jsonb)
+    )
+);
+
+CREATE INDEX IF NOT EXISTS idx_project_plot_attribute_fields_project_order
+    ON project_plot_attribute_fields (project_id, status, display_order, id);
+
+CREATE TABLE IF NOT EXISTS project_plot_attribute_field_audits (
+    id SERIAL PRIMARY KEY,
+    project_id INTEGER NOT NULL
+        REFERENCES monitoring_projects(id) ON DELETE CASCADE,
+    field_id INTEGER NOT NULL
+        REFERENCES project_plot_attribute_fields(id) ON DELETE CASCADE,
+    action VARCHAR(20) NOT NULL,
+    previous_values JSONB NOT NULL DEFAULT '{}'::jsonb,
+    new_values JSONB NOT NULL DEFAULT '{}'::jsonb,
+    operator VARCHAR(100) NOT NULL,
+    operator_code VARCHAR(50) NOT NULL,
+    operator_role VARCHAR(40) NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    CONSTRAINT ck_project_plot_attribute_field_audit_action
+        CHECK (action IN ('created', 'updated'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_project_plot_attribute_field_audits_time
+    ON project_plot_attribute_field_audits (
+        project_id,
+        field_id,
+        created_at DESC
+    );
 
 ALTER TABLE project_rule_configs
     ADD COLUMN IF NOT EXISTS updated_by_code VARCHAR(50);
@@ -396,6 +460,7 @@ CREATE TABLE IF NOT EXISTS plot_versions (
     crop_type VARCHAR(50),
     planting_mode VARCHAR(50),
     irrigation_condition VARCHAR(20),
+    custom_attributes JSONB NOT NULL DEFAULT '{}'::jsonb,
     interpretation_status VARCHAR(30) NOT NULL,
     geom GEOMETRY(POLYGON, 4326) NOT NULL,
     change_summary VARCHAR(500),
@@ -412,6 +477,7 @@ CREATE INDEX IF NOT EXISTS idx_plot_versions_geom
 ALTER TABLE plot_versions ADD COLUMN IF NOT EXISTS created_by_code VARCHAR(50);
 ALTER TABLE plot_versions ADD COLUMN IF NOT EXISTS created_by_role VARCHAR(40);
 ALTER TABLE plot_versions ADD COLUMN IF NOT EXISTS owner_village VARCHAR(100);
+ALTER TABLE plot_versions ADD COLUMN IF NOT EXISTS custom_attributes JSONB NOT NULL DEFAULT '{}'::jsonb;
 
 -- 地块属性 Excel 每次导入保存原始工作簿实体、SHA256、逐行结果和稳定用户角色；
 -- 任一行校验失败时数据库事务与新建文件同时回滚。
@@ -424,6 +490,8 @@ CREATE TABLE IF NOT EXISTS plot_attribute_import_batches (
     file_uri VARCHAR(500) NOT NULL,
     file_size_bytes BIGINT NOT NULL,
     checksum_sha256 VARCHAR(64) NOT NULL,
+    definition_snapshot JSONB NOT NULL DEFAULT '[]'::jsonb,
+    definition_digest VARCHAR(64) NOT NULL,
     row_count INTEGER NOT NULL,
     changed_count INTEGER NOT NULL,
     unchanged_count INTEGER NOT NULL,
@@ -443,11 +511,37 @@ CREATE TABLE IF NOT EXISTS plot_attribute_import_batches (
     CONSTRAINT ck_plot_attribute_import_file_size
         CHECK (file_size_bytes > 0),
     CONSTRAINT ck_plot_attribute_import_checksum
-        CHECK (char_length(checksum_sha256) = 64)
+        CHECK (char_length(checksum_sha256) = 64),
+    CONSTRAINT ck_plot_attribute_import_definition_digest
+        CHECK (char_length(definition_digest) = 64)
 );
 
 CREATE INDEX IF NOT EXISTS idx_plot_attribute_import_batches_task_time
     ON plot_attribute_import_batches (task_id, imported_at DESC);
+
+ALTER TABLE plot_attribute_import_batches
+    ADD COLUMN IF NOT EXISTS definition_snapshot JSONB NOT NULL
+    DEFAULT '[]'::jsonb;
+ALTER TABLE plot_attribute_import_batches
+    ADD COLUMN IF NOT EXISTS definition_digest VARCHAR(64);
+UPDATE plot_attribute_import_batches
+SET definition_digest = '4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945'
+WHERE definition_digest IS NULL;
+ALTER TABLE plot_attribute_import_batches
+    ALTER COLUMN definition_digest SET NOT NULL;
+
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conname = 'ck_plot_attribute_import_definition_digest'
+    ) THEN
+        ALTER TABLE plot_attribute_import_batches
+            ADD CONSTRAINT ck_plot_attribute_import_definition_digest
+            CHECK (char_length(definition_digest) = 64);
+    END IF;
+END
+$$;
 
 CREATE TABLE IF NOT EXISTS plot_edit_operations (
     id SERIAL PRIMARY KEY,

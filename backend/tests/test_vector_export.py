@@ -35,6 +35,7 @@ def build_rows() -> list[SimpleNamespace]:
         "crop_type": "玉米",
         "planting_mode": "单季种植",
         "irrigation_condition": "灌溉",
+        "custom_attributes": {},
         "interpretation_status": "interpreted",
         "version": 2,
         "province_name": "黑龙江省",
@@ -162,6 +163,81 @@ def test_vector_export_renderer_creates_four_real_formats(tmp_path: Path) -> Non
     assert manifest["feature_count"] == 2
 
 
+def test_vector_export_preserves_custom_schema_aliases_and_historical_ledger(
+    tmp_path: Path,
+) -> None:
+    """验证四格式字段映射与完整 JSON 账本不会丢失停用历史值。"""
+    row = build_rows()[0]
+    row.custom_attributes = {
+        "soil_type": "黑土",
+        "survey_score": 98.5,
+        "legacy_code": "OLD-001",
+    }
+    snapshot = [
+        {
+            "field_code": "soil_type",
+            "label": "土壤类型",
+            "field_type": "single_select",
+            "required": True,
+            "options": ["黑土", "白浆土"],
+            "display_order": 10,
+            "version": 1,
+        },
+        {
+            "field_code": "survey_score",
+            "label": "调查评分",
+            "field_type": "number",
+            "required": False,
+            "options": [],
+            "display_order": 20,
+            "version": 2,
+        },
+    ]
+    content, manifest = VectorExportRenderer.build_archive(
+        [row],
+        ["geojson", "shapefile", "kml", "filegdb"],
+        [],
+        [],
+        build_task(),
+        2,
+        "VEXP-CUSTOM-001",
+        "自定义属性矢量成果",
+        1,
+        datetime(2026, 7, 23, 9, 30, tzinfo=UTC),
+        build_operator(),
+        "验证活动字段别名与历史值账本",
+        snapshot,
+    )
+    archive_path = tmp_path / "custom-vector.zip"
+    archive_path.write_bytes(content)
+
+    with ZipFile(archive_path) as archive:
+        geojson = json.loads(archive.read("geojson/farmland_plots.geojson"))
+        ledger = json.loads(archive.read("attributes/custom_attributes.json"))
+        archive.extractall(tmp_path / "custom-vector")
+
+    properties = geojson["features"][0]["properties"]
+    assert properties["custom:soil_type"] == "黑土"
+    assert properties["custom:survey_score"] == 98.5
+    assert ledger["items"][0]["custom_attributes"]["legacy_code"] == "OLD-001"
+    assert manifest["custom_attribute_schema"]["field_aliases"] == {
+        "soil_type": {
+            "shapefile": "CUST001",
+            "filegdb": "custom_soil_type",
+        },
+        "survey_score": {
+            "shapefile": "CUST002",
+            "filegdb": "custom_survey_score",
+        },
+    }
+    with fiona.open(
+        tmp_path / "custom-vector" / "shapefile" / "farmland_plots.shp"
+    ) as source:
+        feature = next(iter(source))
+        assert feature.properties["CUST001"] == "黑土"
+        assert feature.properties["CUST002"] == pytest.approx(98.5)
+
+
 def test_vector_export_service_generates_and_cross_validates_manifest(
     tmp_path: Path,
 ) -> None:
@@ -183,10 +259,17 @@ def test_vector_export_service_generates_and_cross_validates_manifest(
     workbench_dao.get_task_by_code_for_update.return_value = task
     user_service = AsyncMock()
     user_service.require_capability.return_value = operator
+    field_service = MagicMock()
+    field_service.get_active_fields_by_project_id = AsyncMock(return_value=[])
+    field_service.build_schema_snapshot.return_value = []
+    field_service.schema_digest.return_value = (
+        "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+    )
     service = VectorExportService(
         dao=dao,
         workbench_dao=workbench_dao,
         project_user_service=user_service,
+        plot_attribute_field_service=field_service,
         storage_root=tmp_path,
     )
     db = AsyncMock()

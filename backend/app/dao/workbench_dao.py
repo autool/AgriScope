@@ -194,9 +194,7 @@ class WorkbenchDAO:
             MonitoringTask | None: 已加行锁的任务；不存在时返回 None。
         """
         result = await db.execute(
-            select(MonitoringTask)
-            .where(MonitoringTask.id == task_id)
-            .with_for_update()
+            select(MonitoringTask).where(MonitoringTask.id == task_id).with_for_update()
         )
         return result.scalar_one_or_none()
 
@@ -1193,6 +1191,7 @@ class WorkbenchDAO:
         crop_type: str | None,
         planting_mode: str | None,
         irrigation_condition: str | None,
+        custom_attributes: dict[str, object],
     ) -> FarmlandPlot | None:
         """写入新解译图斑和 PostGIS 几何。
 
@@ -1206,6 +1205,7 @@ class WorkbenchDAO:
             crop_type: 作物类型。
             planting_mode: 种植模式。
             irrigation_condition: 灌排条件。
+            custom_attributes: 已通过项目字段定义校验的自定义属性。
 
         Returns:
             FarmlandPlot | None: 新建图斑；范围不在行政区内时返回 None。
@@ -1232,6 +1232,7 @@ class WorkbenchDAO:
             INSERT INTO farmland_plots (
                 plot_code, owner_village, area_ha, geom, land_class,
                 crop_type, planting_mode, irrigation_condition,
+                custom_attributes,
                 interpretation_status, version, updated_at, source_name,
                 source_feature_id, source_version, source_updated_at,
                 province_name, city_name, district_name, district_code
@@ -1240,7 +1241,8 @@ class WorkbenchDAO:
                 :plot_code, :owner_village, :area_ha,
                 candidate.geom,
                 :land_class, :crop_type, :planting_mode,
-                :irrigation_condition, 'interpreting', 1, NOW(),
+                :irrigation_condition, CAST(:custom_attributes AS JSONB),
+                'interpreting', 1, NOW(),
                 '内业人工解译', :plot_code, '1', NOW(), '黑龙江省',
                 city_match.boundary_name, district_match.boundary_name,
                 district_match.boundary_code
@@ -1260,6 +1262,11 @@ class WorkbenchDAO:
                 "crop_type": crop_type,
                 "planting_mode": planting_mode,
                 "irrigation_condition": irrigation_condition,
+                "custom_attributes": json.dumps(
+                    custom_attributes,
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                ),
             },
         )
         if result.rowcount == 0:
@@ -1299,6 +1306,7 @@ class WorkbenchDAO:
             INSERT INTO farmland_plots (
                 plot_code, owner_village, area_ha, geom, land_class,
                 crop_type, planting_mode, irrigation_condition,
+                custom_attributes,
                 interpretation_status, version, updated_at, source_name,
                 source_feature_id, source_version, source_updated_at,
                 province_name, city_name, district_name, district_code
@@ -1307,6 +1315,7 @@ class WorkbenchDAO:
                 :child_plot_code, source.owner_village, :area_ha,
                 child.geom, source.land_class, source.crop_type,
                 source.planting_mode, source.irrigation_condition,
+                source.custom_attributes,
                 'interpreting', 1, NOW(), '内业图斑分割',
                 :child_plot_code, '1', NOW(), source.province_name,
                 source.city_name, source.district_name, source.district_code
@@ -1341,6 +1350,7 @@ class WorkbenchDAO:
         crop_type: str | None,
         planting_mode: str | None,
         irrigation_condition: str | None,
+        custom_attributes: dict[str, object],
     ) -> FarmlandPlot | None:
         """继承行政层级并写入人工确认属性的合并结果图斑。
 
@@ -1355,6 +1365,7 @@ class WorkbenchDAO:
             crop_type: 人工确认作物类型。
             planting_mode: 人工确认种植模式。
             irrigation_condition: 人工确认灌排条件。
+            custom_attributes: 人工确认的项目自定义属性。
 
         Returns:
             FarmlandPlot | None: 合并结果图斑；源图斑不存在时返回 None。
@@ -1370,6 +1381,7 @@ class WorkbenchDAO:
             INSERT INTO farmland_plots (
                 plot_code, owner_village, area_ha, geom, land_class,
                 crop_type, planting_mode, irrigation_condition,
+                custom_attributes,
                 interpretation_status, version, updated_at, source_name,
                 source_feature_id, source_version, source_updated_at,
                 province_name, city_name, district_name, district_code
@@ -1378,6 +1390,7 @@ class WorkbenchDAO:
                 :merged_plot_code, :owner_village, :area_ha,
                 merged.geom, :land_class, :crop_type,
                 :planting_mode, :irrigation_condition,
+                CAST(:custom_attributes AS JSONB),
                 'interpreting', 1, NOW(), '内业图斑合并',
                 :merged_plot_code, '1', NOW(), source.province_name,
                 source.city_name, source.district_name, source.district_code
@@ -1398,6 +1411,11 @@ class WorkbenchDAO:
                 "crop_type": crop_type,
                 "planting_mode": planting_mode,
                 "irrigation_condition": irrigation_condition,
+                "custom_attributes": json.dumps(
+                    custom_attributes,
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                ),
             },
         )
         if result.rowcount == 0:
@@ -1468,7 +1486,8 @@ class WorkbenchDAO:
             """
             WITH restore_version AS (
                 SELECT owner_village, land_class, crop_type, planting_mode,
-                       irrigation_condition, interpretation_status, geom
+                       irrigation_condition, custom_attributes,
+                       interpretation_status, geom
                 FROM plot_versions
                 WHERE plot_code = :plot_code
                   AND interpretation_status != 'deleted'
@@ -1481,6 +1500,7 @@ class WorkbenchDAO:
                 crop_type = restore_version.crop_type,
                 planting_mode = restore_version.planting_mode,
                 irrigation_condition = restore_version.irrigation_condition,
+                custom_attributes = restore_version.custom_attributes,
                 interpretation_status = restore_version.interpretation_status,
                 geom = restore_version.geom,
                 area_ha = ROUND((

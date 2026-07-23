@@ -22,6 +22,7 @@ from app.schemas.plot_attribute_workbook import (
     PlotAttributeWorkbookImportMetadata,
     PlotAttributeWorkbookRow,
 )
+from app.services.plot_attribute_field_service import PlotAttributeFieldService
 from app.services.plot_attribute_workbook_parser import (
     MAX_WORKBOOK_ROWS,
     PlotAttributeWorkbookParser,
@@ -52,6 +53,7 @@ class PlotAttributeWorkbookService:
         parser: PlotAttributeWorkbookParser | None = None,
         storage: PlotAttributeWorkbookStorage | None = None,
         user_service: ProjectUserService | None = None,
+        field_service: PlotAttributeFieldService | None = None,
     ) -> None:
         """初始化地块属性工作簿服务。
 
@@ -61,6 +63,7 @@ class PlotAttributeWorkbookService:
             parser: XLSX 安全解析与生成器。
             storage: 原始工作簿受控存储。
             user_service: 稳定项目用户权限服务。
+            field_service: 项目自定义字段定义与值校验服务。
 
         Returns:
             None: 无返回值。
@@ -70,6 +73,7 @@ class PlotAttributeWorkbookService:
         self.parser = parser or PlotAttributeWorkbookParser()
         self.storage = storage or PlotAttributeWorkbookStorage()
         self.user_service = user_service or ProjectUserService()
+        self.field_service = field_service or PlotAttributeFieldService()
 
     @staticmethod
     def _safe_filename(filename: str) -> str:
@@ -114,6 +118,7 @@ class PlotAttributeWorkbookService:
             crop_type=plot.crop_type,
             planting_mode=plot.planting_mode,
             irrigation_condition=plot.irrigation_condition,
+            custom_attributes=dict(getattr(plot, "custom_attributes", {}) or {}),
             interpretation_status=plot.interpretation_status,
             geom=plot.geom,
             change_summary=change_summary,
@@ -143,6 +148,8 @@ class PlotAttributeWorkbookService:
                 plot.crop_type != row.crop_type,
                 plot.planting_mode != row.planting_mode,
                 plot.irrigation_condition != row.irrigation_condition,
+                dict(getattr(plot, "custom_attributes", {}) or {})
+                != row.custom_attributes,
             )
         )
 
@@ -168,6 +175,8 @@ class PlotAttributeWorkbookService:
             original_filename=batch.original_filename,
             file_size_bytes=batch.file_size_bytes,
             checksum_sha256=batch.checksum_sha256,
+            definition_snapshot=list(batch.definition_snapshot or []),
+            definition_digest=batch.definition_digest,
             row_count=batch.row_count,
             changed_count=batch.changed_count,
             unchanged_count=batch.unchanged_count,
@@ -240,10 +249,15 @@ class PlotAttributeWorkbookService:
                 )
         if not plots:
             raise ValidationException("当前导出范围没有有效图斑")
+        active_fields = await self.field_service.get_active_fields_by_project_id(
+            db,
+            task.project_id,
+        )
+        definition_snapshot = self.field_service.build_schema_snapshot(active_fields)
         safe_task_code = re.sub(r"[^\w-]+", "_", task_code)
         return PlotAttributeWorkbookExport(
             filename=f"{safe_task_code}_plot_attributes.xlsx",
-            content=self.parser.build_export(plots),
+            content=self.parser.build_export(plots, definition_snapshot),
             row_count=len(plots),
         )
 
@@ -278,7 +292,19 @@ class PlotAttributeWorkbookService:
             metadata.operator_code,
             "import_plot_attributes",
         )
-        rows = self.parser.parse(filename, content)
+        active_fields = await self.field_service.get_active_fields_by_project_id(
+            db,
+            task_snapshot.project_id,
+        )
+        definition_snapshot = self.field_service.build_schema_snapshot(active_fields)
+        definition_digest = self.field_service.schema_digest(definition_snapshot)
+        parsed = self.parser.parse(
+            filename,
+            content,
+            expected_snapshot=definition_snapshot,
+            expected_digest=definition_digest,
+        )
+        rows = parsed.rows
         stored = await asyncio.to_thread(self.storage.store, filename, content)
         completed = False
         try:
@@ -295,6 +321,12 @@ class PlotAttributeWorkbookService:
                 task.project_id,
                 metadata.operator_code,
                 "import_plot_attributes",
+            )
+            all_field_definitions = (
+                await self.field_service.get_all_fields_by_project_id(
+                    db,
+                    task.project_id,
+                )
             )
             plot_codes = [row.plot_code for row in rows]
             plots = list(
@@ -339,6 +371,16 @@ class PlotAttributeWorkbookService:
             updated_plot_codes: list[str] = []
             for row in rows:
                 plot = plots_by_code[row.plot_code]
+                normalized_custom_attributes = (
+                    self.field_service.validate_custom_attributes(
+                        all_field_definitions,
+                        row.custom_attributes,
+                        existing=dict(getattr(plot, "custom_attributes", {}) or {}),
+                    )
+                )
+                row = row.model_copy(
+                    update={"custom_attributes": normalized_custom_attributes}
+                )
                 if not self._row_changes_plot(row, plot):
                     continue
                 plot.owner_village = row.owner_village
@@ -346,6 +388,7 @@ class PlotAttributeWorkbookService:
                 plot.crop_type = row.crop_type
                 plot.planting_mode = row.planting_mode
                 plot.irrigation_condition = row.irrigation_condition
+                plot.custom_attributes = row.custom_attributes
                 plot.interpretation_status = "interpreted"
                 plot.version += 1
                 plot.updated_at = updated_at
@@ -373,9 +416,10 @@ class PlotAttributeWorkbookService:
                     db,
                     task.id,
                 )
-                total_plots, completed_plots = (
-                    await self.workbench_dao.count_plot_progress(db, task.id)
-                )
+                (
+                    total_plots,
+                    completed_plots,
+                ) = await self.workbench_dao.count_plot_progress(db, task.id)
                 task.status = "interpreting"
                 task.total_plots = total_plots
                 task.completed_plots = completed_plots
@@ -394,6 +438,8 @@ class PlotAttributeWorkbookService:
                     file_uri=stored.file_uri,
                     file_size_bytes=stored.file_size_bytes,
                     checksum_sha256=stored.checksum_sha256,
+                    definition_snapshot=parsed.definition_snapshot,
+                    definition_digest=parsed.definition_digest,
                     row_count=len(rows),
                     changed_count=changed_count,
                     unchanged_count=unchanged_count,

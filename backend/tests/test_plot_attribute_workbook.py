@@ -78,6 +78,7 @@ def build_plot(
         crop_type=crop_type,
         planting_mode="单季种植" if land_class == "耕地" else None,
         irrigation_condition="良好" if land_class == "耕地" else None,
+        custom_attributes={},
         interpretation_status="interpreted",
         geom=f"geometry-{plot_code}",
         updated_at=datetime.now(UTC),
@@ -144,11 +145,25 @@ def build_service(
         )
 
     storage.store.side_effect = store
+    field_service = MagicMock()
+    field_service.get_active_fields_by_project_id = AsyncMock(return_value=[])
+    field_service.get_all_fields_by_project_id = AsyncMock(return_value=[])
+    field_service.build_schema_snapshot.return_value = []
+    field_service.schema_digest.return_value = (
+        "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+    )
+    field_service.validate_custom_attributes.side_effect = (
+        lambda _fields, submitted, existing=None: {
+            **(existing or {}),
+            **(submitted or {}),
+        }
+    )
     service = PlotAttributeWorkbookService(
         dao=dao,
         workbench_dao=workbench_dao,
         storage=storage,
         user_service=user_service,
+        field_service=field_service,
     )
     return service, dao, workbench_dao, user_service, storage
 

@@ -4,6 +4,7 @@ import { message } from 'ant-design-vue'
 import { storeToRefs } from 'pinia'
 import { computed, onMounted, ref, watch } from 'vue'
 
+import PlotAttributeFieldManager from '@/components/settings/PlotAttributeFieldManager.vue'
 import { useRuleConfigStore } from '@/store/ruleConfigStore'
 import { useUserStore } from '@/store/userStore'
 
@@ -256,6 +257,8 @@ onMounted(() => {
           </a-button>
         </div>
       </section>
+
+      <PlotAttributeFieldManager :project-code="configRef?.project_code || 'RS-2026'" />
 
       <section class="workflow-section">
         <h3>审核流程</h3>

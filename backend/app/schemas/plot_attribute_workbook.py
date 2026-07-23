@@ -19,6 +19,7 @@ class PlotAttributeWorkbookRow(BaseModel):
     crop_type: str | None = Field(default=None, max_length=50)
     planting_mode: str | None = Field(default=None, max_length=50)
     irrigation_condition: str | None = Field(default=None, max_length=20)
+    custom_attributes: dict[str, object] = Field(default_factory=dict)
 
     model_config = ConfigDict(extra="forbid")
 
@@ -162,6 +163,8 @@ class PlotAttributeImportBatchResponse(BaseModel):
     original_filename: str
     file_size_bytes: int
     checksum_sha256: str
+    definition_snapshot: list[dict]
+    definition_digest: str
     row_count: int
     changed_count: int
     unchanged_count: int

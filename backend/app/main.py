@@ -27,6 +27,7 @@ from app.api.v1.endpoints import (
     imagery_registration,
     monitoring_network,
     plot,
+    plot_attribute_field,
     plot_attribute_workbook,
     production,
     project_user,
@@ -189,6 +190,7 @@ async def handle_unexpected_exception(
 
 app.include_router(health.router)
 app.include_router(plot.router)
+app.include_router(plot_attribute_field.router)
 app.include_router(plot_attribute_workbook.router)
 app.include_router(project_user.router)
 app.include_router(workbench.router)

@@ -107,6 +107,8 @@ export const useWorkbenchStore = defineStore('workbench', () => {
       || plotAttributesRef.value.planting_mode !== plotDraftRef.value.planting_mode
       || plotAttributesRef.value.irrigation_condition
         !== plotDraftRef.value.irrigation_condition
+      || JSON.stringify(plotAttributesRef.value.custom_attributes)
+        !== JSON.stringify(plotDraftRef.value.custom_attributes)
     )
   })
   const taskEditableComputed = computed<boolean>(() => (
@@ -146,6 +148,7 @@ export const useWorkbenchStore = defineStore('workbench', () => {
     crop_type: attributes.crop_type,
     planting_mode: attributes.planting_mode,
     irrigation_condition: attributes.irrigation_condition,
+    custom_attributes: { ...attributes.custom_attributes },
   })
 
   /**

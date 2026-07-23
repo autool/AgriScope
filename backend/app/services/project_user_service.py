@@ -103,6 +103,7 @@ ROLE_CAPABILITIES: dict[str, tuple[str, ...]] = {
         "edit_plots",
         "export_plot_attributes",
         "import_plot_attributes",
+        "manage_plot_attribute_fields",
         "manage_imagery",
         "process_imagery",
         "import_disaster",
@@ -261,7 +262,5 @@ class ProjectUserService:
         if user is None:
             raise PermissionDeniedException("当前用户不属于该项目或账号已停用")
         if capability not in ROLE_CAPABILITIES.get(user.role_code, ()):
-            raise PermissionDeniedException(
-                f"{user.role_name}无权执行当前业务节点"
-            )
+            raise PermissionDeniedException(f"{user.role_name}无权执行当前业务节点")
         return user

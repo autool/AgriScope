@@ -3,6 +3,7 @@
 from datetime import datetime
 
 from sqlalchemy import (
+    JSON,
     BigInteger,
     CheckConstraint,
     DateTime,
@@ -39,6 +40,10 @@ class PlotAttributeImportBatch(Base):
             "length(checksum_sha256) = 64",
             name="ck_plot_attribute_import_checksum",
         ),
+        CheckConstraint(
+            "length(definition_digest) = 64",
+            name="ck_plot_attribute_import_definition_digest",
+        ),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
@@ -55,6 +60,12 @@ class PlotAttributeImportBatch(Base):
     file_uri: Mapped[str] = mapped_column(String(500), nullable=False)
     file_size_bytes: Mapped[int] = mapped_column(BigInteger, nullable=False)
     checksum_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    definition_snapshot: Mapped[list[dict]] = mapped_column(
+        JSON,
+        nullable=False,
+        default=list,
+    )
+    definition_digest: Mapped[str] = mapped_column(String(64), nullable=False)
     row_count: Mapped[int] = mapped_column(Integer, nullable=False)
     changed_count: Mapped[int] = mapped_column(Integer, nullable=False)
     unchanged_count: Mapped[int] = mapped_column(Integer, nullable=False)

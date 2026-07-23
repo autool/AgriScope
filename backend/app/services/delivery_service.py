@@ -38,6 +38,7 @@ from app.services.field_verification_artifact_service import (
     FieldVerificationArtifactService,
 )
 from app.services.imagery_service import ImageryService
+from app.services.plot_attribute_field_service import PlotAttributeFieldService
 from app.services.plot_attribute_workbook_service import (
     PlotAttributeWorkbookService,
 )
@@ -82,6 +83,7 @@ class DeliveryService:
         statistics_report_service: StatisticsReportService | None = None,
         vector_export_service: VectorExportService | None = None,
         plot_attribute_workbook_service: PlotAttributeWorkbookService | None = None,
+        plot_attribute_field_service: PlotAttributeFieldService | None = None,
     ) -> None:
         """初始化成果交付服务。
 
@@ -99,6 +101,7 @@ class DeliveryService:
             statistics_report_service: 面积统计正式报告实体校验服务。
             vector_export_service: 多格式矢量成果实体校验服务。
             plot_attribute_workbook_service: 地块属性导入源文件复核服务。
+            plot_attribute_field_service: 项目地块自定义字段定义服务。
 
         Returns:
             None: 无返回值。
@@ -123,6 +126,9 @@ class DeliveryService:
         self.vector_export_service = vector_export_service or VectorExportService()
         self.plot_attribute_workbook_service = (
             plot_attribute_workbook_service or PlotAttributeWorkbookService()
+        )
+        self.plot_attribute_field_service = (
+            plot_attribute_field_service or PlotAttributeFieldService()
         )
         self.storage_dir = (
             Path(__file__).resolve().parents[2] / "storage" / "deliveries"
@@ -608,6 +614,12 @@ class DeliveryService:
                 task.id,
             )
         )
+        plot_attribute_fields = (
+            await self.plot_attribute_field_service.get_all_fields_by_project_id(
+                db,
+                task.project_id,
+            )
+        )
         field_artifact_events = await self.field_artifact_service.list_task_events(
             db,
             task.id,
@@ -683,6 +695,7 @@ class DeliveryService:
             "field_artifacts": field_artifacts,
             "field_import_workbooks": field_import_workbooks,
             "plot_attribute_import_workbooks": plot_attribute_import_workbooks,
+            "plot_attribute_fields": plot_attribute_fields,
             "field_artifact_events": field_artifact_events,
             "field_missing_photo_count": field_missing_photo_count,
             "reviews": reviews,
@@ -1063,6 +1076,8 @@ class DeliveryService:
                 "file_uri": workbook.file_uri,
                 "file_size_bytes": workbook.file_size_bytes,
                 "checksum_sha256": workbook.checksum_sha256,
+                "definition_snapshot": workbook.definition_snapshot,
+                "definition_digest": workbook.definition_digest,
                 "row_count": workbook.row_count,
                 "changed_count": workbook.changed_count,
                 "unchanged_count": workbook.unchanged_count,
@@ -1078,8 +1093,12 @@ class DeliveryService:
             }
             for workbook in source_data["plot_attribute_import_workbooks"]
         ]
+        plot_attribute_field_manifest = [
+            PlotAttributeFieldService.definition_snapshot(field)
+            for field in source_data["plot_attribute_fields"]
+        ]
         archive_index = {
-            "schema_version": "delivery-archive-v3",
+            "schema_version": "delivery-archive-v4",
             "task_code": task.task_code,
             "task_name": task.task_name,
             "categories": {
@@ -1171,6 +1190,14 @@ class DeliveryService:
                         "plot_attribute_import_changed_count"
                     ],
                 },
+                "plot_attribute_field_schema": {
+                    "status": "included",
+                    "count": len(plot_attribute_field_manifest),
+                    "active_count": sum(
+                        item["status"] == "active"
+                        for item in plot_attribute_field_manifest
+                    ),
+                },
                 "disaster_evidence": {
                     "status": quality_summary["disaster_evidence_status"],
                     "count": quality_summary["disaster_patch_count"],
@@ -1225,6 +1252,14 @@ class DeliveryService:
                 len(source_data["field_artifact_events"]),
                 "外业实体证据上传和下载的稳定用户角色事件",
                 cls._json_text(source_data["field_artifact_events"]),
+            ),
+            cls._text_entry(
+                "attributes/field_definitions.json",
+                "地块属性定义",
+                "JSON",
+                len(plot_attribute_field_manifest),
+                "项目自定义字段编码、类型、必填、选项、状态和版本快照",
+                cls._json_text(plot_attribute_field_manifest),
             ),
             cls._text_entry(
                 "attributes/import_manifest.json",
@@ -1645,6 +1680,7 @@ class DeliveryService:
                         "crop_type": row.crop_type,
                         "planting_mode": row.planting_mode,
                         "irrigation_condition": row.irrigation_condition,
+                        "custom_attributes": dict(row.custom_attributes or {}),
                         "interpretation_status": row.interpretation_status,
                         "version": row.version,
                     },

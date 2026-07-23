@@ -36,6 +36,8 @@ class VerifiedPlotAttributeImportWorkbook:
     file_uri: str
     file_size_bytes: int
     checksum_sha256: str
+    definition_snapshot: list[dict]
+    definition_digest: str
     row_count: int
     changed_count: int
     unchanged_count: int
@@ -59,9 +61,7 @@ class PlotAttributeWorkbookStorage:
             None: 无返回值。
         """
         self.storage_root = storage_root or (
-            Path(__file__).resolve().parents[2]
-            / "storage"
-            / "plot-attribute-imports"
+            Path(__file__).resolve().parents[2] / "storage" / "plot-attribute-imports"
         )
 
     def store(self, filename: str, content: bytes) -> StoredPlotAttributeWorkbook:
@@ -153,8 +153,13 @@ class PlotAttributeWorkbookStorage:
         checksum = hashlib.sha256(content).hexdigest()
         if checksum != batch.checksum_sha256:
             raise ValidationException("地块属性工作簿 SHA256 校验失败")
-        rows = parser.parse(batch.original_filename, content)
-        if len(rows) != batch.row_count:
+        parsed = parser.parse(
+            batch.original_filename,
+            content,
+            expected_snapshot=list(batch.definition_snapshot or []),
+            expected_digest=batch.definition_digest,
+        )
+        if len(parsed) != batch.row_count:
             raise ValidationException("地块属性工作簿行数与导入批次不一致")
         if batch.changed_count + batch.unchanged_count != batch.row_count:
             raise ValidationException("地块属性工作簿批次变更数量不一致")
@@ -165,6 +170,8 @@ class PlotAttributeWorkbookStorage:
             file_uri=batch.file_uri,
             file_size_bytes=batch.file_size_bytes,
             checksum_sha256=batch.checksum_sha256,
+            definition_snapshot=list(batch.definition_snapshot or []),
+            definition_digest=batch.definition_digest,
             row_count=batch.row_count,
             changed_count=batch.changed_count,
             unchanged_count=batch.unchanged_count,

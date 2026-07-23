@@ -786,6 +786,7 @@ def test_delivery_generation_archives_verified_physical_evidence(
         crop_type="corn",
         planting_mode="single",
         irrigation_condition="irrigated",
+        custom_attributes={},
         interpretation_status="interpreted",
         version=1,
     )
@@ -931,8 +932,17 @@ def test_delivery_generation_archives_verified_physical_evidence(
     )
     vector_export_dao = AsyncMock()
     vector_export_dao.count_features.return_value = 1
+    vector_field_service = MagicMock()
+    vector_field_service.get_active_fields_by_project_id = AsyncMock(
+        return_value=[]
+    )
+    vector_field_service.build_schema_snapshot.return_value = []
+    vector_field_service.schema_digest.return_value = (
+        "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+    )
     vector_export_service = VectorExportService(
         dao=vector_export_dao,
+        plot_attribute_field_service=vector_field_service,
         storage_root=vector_export_root,
     )
     field_artifact_service = build_field_artifact_service()
@@ -979,6 +989,10 @@ def test_delivery_generation_archives_verified_physical_evidence(
             checksum_sha256=hashlib.sha256(
                 plot_attribute_workbook_path.read_bytes()
             ).hexdigest(),
+            definition_snapshot=[],
+            definition_digest=(
+                "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+            ),
             row_count=1,
             changed_count=1,
             unchanged_count=0,
@@ -989,6 +1003,14 @@ def test_delivery_generation_archives_verified_physical_evidence(
             imported_at=generated_at,
         )
     ]
+    plot_attribute_field_service = MagicMock()
+    plot_attribute_field_service.get_active_fields_by_project_id = AsyncMock(
+        return_value=[]
+    )
+    plot_attribute_field_service.get_all_fields_by_project_id = AsyncMock(
+        return_value=[]
+    )
+    plot_attribute_field_service.definition_snapshot.side_effect = lambda field: field
     service = DeliveryService(
         dao=dao,
         workbench_dao=workbench_dao,
@@ -1003,6 +1025,7 @@ def test_delivery_generation_archives_verified_physical_evidence(
         vector_export_service=vector_export_service,
         field_artifact_service=field_artifact_service,
         plot_attribute_workbook_service=plot_attribute_workbook_service,
+        plot_attribute_field_service=plot_attribute_field_service,
     )
     service.storage_dir = tmp_path / "deliveries"
     db = AsyncMock()
@@ -1059,7 +1082,7 @@ def test_delivery_generation_archives_verified_physical_evidence(
         assert attribute_manifest[0]["batch_code"] == "PATTR-TEST-001"
         assert attribute_manifest[0]["changed_count"] == 1
         archive_index = json.loads(archive.read("archive/archive_index.json"))
-        assert archive_index["schema_version"] == "delivery-archive-v3"
+        assert archive_index["schema_version"] == "delivery-archive-v4"
         assert archive_index["categories"]["plot_attribute_imports"] == {
             "status": "included",
             "count": 1,

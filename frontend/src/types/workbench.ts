@@ -441,6 +441,7 @@ export interface PlotAttributes {
   crop_type: string | null
   planting_mode: string | null
   irrigation_condition: string | null
+  custom_attributes: CustomAttributeValues
   source_name: string | null
   source_feature_id: string | null
   source_uri: string | null
@@ -460,6 +461,7 @@ export interface PlotAttributeUpdate {
   crop_type: string | null
   planting_mode: string | null
   irrigation_condition: string | null
+  custom_attributes: CustomAttributeValues
 }
 
 export interface PlotAttributeMutationPayload extends PlotAttributeUpdate {
@@ -722,6 +724,7 @@ export interface PlotProperties extends Record<string, unknown> {
   owner_village?: string | null
   area_ha?: number | null
   land_class?: string | null
+  custom_attributes?: CustomAttributeValues
   source_name?: string | null
   source_feature_id?: string | null
   source_uri?: string | null
@@ -1069,3 +1072,4 @@ export interface PlotVersionList {
     change_summary?: string | null
   }>
 }
+import type { CustomAttributeValues } from '@/types/plotAttributeField'

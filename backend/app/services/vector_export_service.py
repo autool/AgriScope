@@ -28,6 +28,7 @@ from app.schemas.vector_export import (
     VectorExportOptionsResponse,
     VectorExportPackageResponse,
 )
+from app.services.plot_attribute_field_service import PlotAttributeFieldService
 from app.services.project_user_service import ProjectUserService
 from app.services.vector_export_renderer import VectorExportRenderer
 
@@ -54,6 +55,7 @@ class VectorExportService:
         workbench_dao: WorkbenchDAO | None = None,
         project_user_service: ProjectUserService | None = None,
         renderer: VectorExportRenderer | None = None,
+        plot_attribute_field_service: PlotAttributeFieldService | None = None,
         storage_root: Path | None = None,
     ) -> None:
         """初始化矢量成果导出服务。
@@ -63,6 +65,7 @@ class VectorExportService:
             workbench_dao: 工作台公共 DAO。
             project_user_service: 项目用户能力服务。
             renderer: 多格式实体渲染器。
+            plot_attribute_field_service: 项目自定义字段定义服务。
             storage_root: 可注入受控存储根目录。
 
         Returns:
@@ -72,6 +75,9 @@ class VectorExportService:
         self.workbench_dao = workbench_dao or WorkbenchDAO()
         self.project_user_service = project_user_service or ProjectUserService()
         self.renderer = renderer or VectorExportRenderer()
+        self.plot_attribute_field_service = (
+            plot_attribute_field_service or PlotAttributeFieldService()
+        )
         self.storage_root = storage_root or (
             Path(__file__).resolve().parents[2] / "storage" / "vector-exports"
         )
@@ -173,7 +179,7 @@ class VectorExportService:
             None: 证据一致时无返回值。
         """
         if (
-            manifest.get("schema_version") != "vector-export-v1"
+            manifest.get("schema_version") != "vector-export-v2"
             or manifest.get("export_code") != package.export_code
             or manifest.get("version") != package.version
             or manifest.get("feature_count") != package.feature_count
@@ -218,6 +224,43 @@ class VectorExportService:
                 raise ValidationException(
                     f"矢量成果 manifest 文件证据不一致：{path}"
                 )
+        custom_schema = manifest.get("custom_attribute_schema")
+        if not isinstance(custom_schema, dict):
+            raise ValidationException("矢量成果缺少自定义属性模式快照")
+        definition_snapshot = custom_schema.get("definition_snapshot")
+        definition_digest = custom_schema.get("definition_digest")
+        field_aliases = custom_schema.get("field_aliases")
+        if (
+            not isinstance(definition_snapshot, list)
+            or not isinstance(definition_digest, str)
+            or not isinstance(field_aliases, dict)
+        ):
+            raise ValidationException("矢量成果自定义属性模式快照不合法")
+        calculated_digest = sha256(
+            json.dumps(
+                definition_snapshot,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        ).hexdigest()
+        if definition_digest != calculated_digest:
+            raise ValidationException("矢量成果自定义属性模式摘要不一致")
+        ledger_content = member_contents.get("attributes/custom_attributes.json")
+        if ledger_content is None:
+            raise ValidationException("矢量成果缺少完整自定义属性账本")
+        try:
+            ledger = json.loads(ledger_content.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise ValidationException("矢量成果自定义属性账本损坏") from exc
+        ledger_items = ledger.get("items") if isinstance(ledger, dict) else None
+        if (
+            not isinstance(ledger, dict)
+            or ledger.get("schema_version") != "plot-custom-attributes-v1"
+            or not isinstance(ledger_items, list)
+            or len(ledger_items) != package.feature_count
+        ):
+            raise ValidationException("矢量成果自定义属性账本数量不一致")
 
     def verify_package_file(self, package: VectorExportPackage) -> Path:
         """复核 ZIP、逐成员校验值和四种真实格式可读性。
@@ -496,6 +539,15 @@ class VectorExportService:
         )
         if len(rows) != feature_count:
             raise ValidationException("导出范围在生成期间发生变化，请重新发起")
+        custom_fields = (
+            await self.plot_attribute_field_service.get_active_fields_by_project_id(
+                db,
+                task.project_id,
+            )
+        )
+        definition_snapshot = (
+            self.plot_attribute_field_service.build_schema_snapshot(custom_fields)
+        )
         version = await self.dao.get_next_version(db, task.id)
         generated_at = datetime.now(UTC)
         export_code = (
@@ -516,6 +568,7 @@ class VectorExportService:
             generated_at,
             operator,
             request.comment,
+            definition_snapshot,
         )
         relative_path = f"{task_code}/{export_code}.zip"
         final_path = self._resolve_path(relative_path)

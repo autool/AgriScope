@@ -98,6 +98,7 @@ class VectorExportDAO:
                 FarmlandPlot.crop_type,
                 FarmlandPlot.planting_mode,
                 FarmlandPlot.irrigation_condition,
+                FarmlandPlot.custom_attributes,
                 FarmlandPlot.interpretation_status,
                 FarmlandPlot.version,
                 FarmlandPlot.province_name,

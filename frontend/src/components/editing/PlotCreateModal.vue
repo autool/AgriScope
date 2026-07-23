@@ -2,7 +2,11 @@
 import { message } from 'ant-design-vue'
 import { computed, ref, watch } from 'vue'
 
+import PlotCustomAttributeEditor from '@/components/editing/PlotCustomAttributeEditor.vue'
+import { usePlotAttributeFieldStore } from '@/store/plotAttributeFieldStore'
 import { useUserStore } from '@/store/userStore'
+import { useWorkbenchStore } from '@/store/workbenchStore'
+import type { CustomAttributeValues } from '@/types/plotAttributeField'
 import type { PlotCreateDraftPayload, PolygonGeometry } from '@/types/workbench'
 
 interface PlotCreateModalProps {
@@ -15,6 +19,8 @@ const props = withDefaults(defineProps<PlotCreateModalProps>(), {
   loading: false,
 })
 const userStore = useUserStore()
+const workbenchStore = useWorkbenchStore()
+const fieldStore = usePlotAttributeFieldStore()
 
 const emit = defineEmits<{
   cancel: []
@@ -28,6 +34,7 @@ const cropTypeRef = ref<string | null>(null)
 const plantingModeRef = ref<string | null>(null)
 const irrigationConditionRef = ref<string | null>(null)
 const commentRef = ref<string>('')
+const customAttributesRef = ref<CustomAttributeValues>({})
 
 const landClassOptions = ['耕地', '园地', '林地', '草地', '水域', '建设用地']
 const cropTypeOptions = ['水稻', '玉米', '小麦', '大豆', '马铃薯', '蔬菜']
@@ -44,6 +51,9 @@ const resetForm = (): void => {
   plantingModeRef.value = null
   irrigationConditionRef.value = null
   commentRef.value = ''
+  customAttributesRef.value = Object.fromEntries(
+    fieldStore.activeFieldsComputed.map((field) => [field.field_code, null]),
+  )
 }
 
 const handleLandClassChange = (value: string): void => {
@@ -68,6 +78,13 @@ const submit = (): void => {
     message.warning('耕地图斑必须选择作物类型')
     return
   }
+  const missingCustomField = fieldStore.activeFieldsComputed.find(
+    (field) => field.required && customAttributesRef.value[field.field_code] == null,
+  )
+  if (missingCustomField) {
+    message.warning(`请填写自定义必填字段“${missingCustomField.label}”`)
+    return
+  }
   emit('submit', {
     plot_code: plotCodeRef.value.trim() || null,
     owner_village: ownerVillageRef.value.trim(),
@@ -76,6 +93,7 @@ const submit = (): void => {
     crop_type: cropTypeRef.value,
     planting_mode: plantingModeRef.value,
     irrigation_condition: irrigationConditionRef.value,
+    custom_attributes: customAttributesRef.value,
     comment: commentRef.value.trim() || null,
   })
 }
@@ -83,7 +101,9 @@ const submit = (): void => {
 watch(
   () => props.open,
   (open) => {
-    if (open) resetForm()
+    if (open) {
+      void fieldStore.load(workbenchStore.projectCodeComputed).then(resetForm)
+    }
   },
 )
 </script>
@@ -145,6 +165,18 @@ watch(
           </a-select>
         </a-form-item>
       </div>
+      <a-divider orientation="left">项目自定义属性</a-divider>
+      <a-empty
+        v-if="!fieldStore.activeFieldsComputed.length"
+        :image="null"
+        description="项目尚未配置自定义字段"
+      />
+      <PlotCustomAttributeEditor
+        v-else
+        :fields="fieldStore.activeFieldsComputed"
+        :values="customAttributesRef"
+        @change="(code, value) => customAttributesRef = { ...customAttributesRef, [code]: value }"
+      />
       <a-form-item label="操作身份">
         <strong>
           {{ userStore.currentUserComputed?.display_name || '--' }} ·

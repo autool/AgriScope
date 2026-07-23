@@ -72,6 +72,7 @@ class PlotVersionResponse(BaseModel):
     crop_type: str | None
     planting_mode: str | None
     irrigation_condition: str | None
+    custom_attributes: dict[str, object]
     interpretation_status: str
     change_summary: str | None
     created_by: str

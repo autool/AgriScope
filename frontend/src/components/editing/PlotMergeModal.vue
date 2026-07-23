@@ -2,6 +2,10 @@
 import { message } from 'ant-design-vue'
 import { computed, ref, watch } from 'vue'
 
+import PlotCustomAttributeEditor from '@/components/editing/PlotCustomAttributeEditor.vue'
+import { usePlotAttributeFieldStore } from '@/store/plotAttributeFieldStore'
+import { useWorkbenchStore } from '@/store/workbenchStore'
+import type { CustomAttributeValues } from '@/types/plotAttributeField'
 import type { PlotAttributes, PlotMergeDraftPayload } from '@/types/workbench'
 
 interface PlotMergeModalProps {
@@ -15,6 +19,8 @@ const emit = defineEmits<{
   cancel: []
   submit: [payload: PlotMergeDraftPayload]
 }>()
+const fieldStore = usePlotAttributeFieldStore()
+const workbenchStore = useWorkbenchStore()
 
 const ownerVillageRef = ref<string>('')
 const landClassRef = ref<string | null>(null)
@@ -22,6 +28,7 @@ const cropTypeRef = ref<string | null>(null)
 const plantingModeRef = ref<string | null>(null)
 const irrigationConditionRef = ref<string | null>(null)
 const commentRef = ref<string>('')
+const customAttributesRef = ref<CustomAttributeValues>({})
 
 const landClassOptions = ['耕地', '园地', '林地', '草地', '水域', '建设用地']
 const cropTypeOptions = ['水稻', '玉米', '小麦', '大豆', '马铃薯', '蔬菜']
@@ -41,7 +48,14 @@ const conflictFieldsComputed = computed<string[]>(() => [
   ['种植模式', props.items.map((item) => item.planting_mode)],
   ['灌排条件', props.items.map((item) => item.irrigation_condition)],
 ].filter(([, values]) => uniqueValues(values as unknown[]).length > 1)
-  .map(([label]) => label as string))
+  .map(([label]) => label as string)
+  .concat(
+    fieldStore.activeFieldsComputed
+      .filter((field) => uniqueValues(
+        props.items.map((item) => item.custom_attributes[field.field_code]),
+      ).length > 1)
+      .map((field) => field.label),
+  ))
 
 const cropRequiredComputed = computed<boolean>(() => landClassRef.value === '耕地')
 
@@ -60,6 +74,14 @@ const resetForm = (): void => {
   )
   irrigationConditionRef.value = getCommonValue(
     props.items.map((item) => item.irrigation_condition),
+  )
+  customAttributesRef.value = Object.fromEntries(
+    fieldStore.activeFieldsComputed.map((field) => [
+      field.field_code,
+      getCommonValue(
+        props.items.map((item) => item.custom_attributes[field.field_code]),
+      ),
+    ]),
   )
   commentRef.value = ''
 }
@@ -90,6 +112,13 @@ const submit = (): void => {
     message.warning('请填写至少 8 个字符的合并依据')
     return
   }
+  const missingCustomField = fieldStore.activeFieldsComputed.find(
+    (field) => field.required && customAttributesRef.value[field.field_code] == null,
+  )
+  if (missingCustomField) {
+    message.warning(`请确认自定义必填字段“${missingCustomField.label}”`)
+    return
+  }
   emit('submit', {
     plot_codes: props.items.map((item) => item.plot_code),
     owner_village: ownerVillageRef.value.trim(),
@@ -97,6 +126,7 @@ const submit = (): void => {
     crop_type: cropRequiredComputed.value ? cropTypeRef.value : null,
     planting_mode: plantingModeRef.value,
     irrigation_condition: irrigationConditionRef.value,
+    custom_attributes: customAttributesRef.value,
     comment: commentRef.value.trim(),
   })
 }
@@ -104,7 +134,9 @@ const submit = (): void => {
 watch(
   () => props.open,
   (open) => {
-    if (open) resetForm()
+    if (open) {
+      void fieldStore.load(workbenchStore.projectCodeComputed).then(resetForm)
+    }
   },
 )
 </script>
@@ -182,6 +214,18 @@ watch(
           </a-select>
         </a-form-item>
       </div>
+      <a-divider orientation="left">项目自定义属性</a-divider>
+      <a-empty
+        v-if="!fieldStore.activeFieldsComputed.length"
+        :image="null"
+        description="项目尚未配置自定义字段"
+      />
+      <PlotCustomAttributeEditor
+        v-else
+        :fields="fieldStore.activeFieldsComputed"
+        :values="customAttributesRef"
+        @change="(code, value) => customAttributesRef = { ...customAttributesRef, [code]: value }"
+      />
       <a-form-item label="合并依据" required>
         <a-textarea
           v-model:value="commentRef"

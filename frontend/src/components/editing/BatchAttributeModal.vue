@@ -2,7 +2,11 @@
 import { message } from 'ant-design-vue'
 import { computed, ref, watch } from 'vue'
 
+import PlotCustomAttributeEditor from '@/components/editing/PlotCustomAttributeEditor.vue'
+import { usePlotAttributeFieldStore } from '@/store/plotAttributeFieldStore'
 import { useUserStore } from '@/store/userStore'
+import { useWorkbenchStore } from '@/store/workbenchStore'
+import type { CustomAttributeValues } from '@/types/plotAttributeField'
 import type { BatchPlotAttributeUpdateDraft } from '@/types/workbench'
 
 interface BatchAttributeModalProps {
@@ -15,6 +19,8 @@ const props = withDefaults(defineProps<BatchAttributeModalProps>(), {
   loading: false,
 })
 const userStore = useUserStore()
+const fieldStore = usePlotAttributeFieldStore()
+const workbenchStore = useWorkbenchStore()
 const emit = defineEmits<{
   cancel: []
   submit: [payload: BatchPlotAttributeUpdateDraft]
@@ -25,6 +31,8 @@ const cropTypeRef = ref<string | undefined>()
 const plantingModeRef = ref<string | undefined>()
 const irrigationConditionRef = ref<string | undefined>()
 const commentRef = ref<string>('')
+const updateCustomAttributesRef = ref<boolean>(false)
+const customAttributesRef = ref<CustomAttributeValues>({})
 
 const cropRequiredComputed = computed<boolean>(() => landClassRef.value === '耕地')
 const plotPreviewComputed = computed<string>(() => {
@@ -46,6 +54,11 @@ watch(
     plantingModeRef.value = undefined
     irrigationConditionRef.value = undefined
     commentRef.value = ''
+    updateCustomAttributesRef.value = false
+    customAttributesRef.value = Object.fromEntries(
+      fieldStore.activeFieldsComputed.map((field) => [field.field_code, null]),
+    )
+    void fieldStore.load(workbenchStore.projectCodeComputed)
   },
 )
 
@@ -77,6 +90,9 @@ const submit = (): void => {
       crop_type: cropRequiredComputed.value ? cropTypeRef.value || null : null,
       planting_mode: plantingModeRef.value || null,
       irrigation_condition: irrigationConditionRef.value || null,
+      custom_attributes: updateCustomAttributesRef.value
+        ? customAttributesRef.value
+        : {},
     },
     comment: commentRef.value.trim(),
   })
@@ -112,6 +128,24 @@ const submit = (): void => {
         <span>一级地类 <b>*</b></span>
         <a-select v-model:value="landClassRef" :options="landClassOptions.map((value) => ({ value, label: value }))" />
       </label>
+      <label v-if="fieldStore.activeFieldsComputed.length" class="custom-toggle">
+        <span>自定义属性</span>
+        <a-switch
+          v-model:checked="updateCustomAttributesRef"
+          checked-children="批量赋值"
+          un-checked-children="保持原值"
+        />
+      </label>
+      <div
+        v-if="updateCustomAttributesRef && fieldStore.activeFieldsComputed.length"
+        class="custom-editor-row"
+      >
+        <PlotCustomAttributeEditor
+          :fields="fieldStore.activeFieldsComputed"
+          :values="customAttributesRef"
+          @change="(code, value) => customAttributesRef = { ...customAttributesRef, [code]: value }"
+        />
+      </div>
       <label>
         <span>作物类型 <b v-if="cropRequiredComputed">*</b></span>
         <a-select
@@ -194,4 +228,6 @@ const submit = (): void => {
 
 .batch-form label > span b { color: #d4380d; }
 .batch-form .comment-row { grid-column: 1 / -1; }
+.batch-form .custom-toggle { justify-content: space-between; }
+.custom-editor-row { grid-column: 1 / -1; padding: 10px; background: #f7f9f8; border: 1px solid #e4eae6; border-radius: 6px; }
 </style>

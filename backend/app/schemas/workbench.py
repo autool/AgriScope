@@ -70,6 +70,7 @@ class PlotAttributeUpdateRequest(BaseModel):
     crop_type: str | None = None
     planting_mode: str | None = None
     irrigation_condition: str | None = None
+    custom_attributes: dict[str, object] | None = None
 
     model_config = ConfigDict(extra="forbid")
 
@@ -349,6 +350,7 @@ class PlotAttributesResponse(BaseModel):
     crop_type: str | None
     planting_mode: str | None
     irrigation_condition: str | None
+    custom_attributes: dict[str, object]
     source_name: str | None = None
     source_feature_id: str | None = None
     source_uri: str | None = None

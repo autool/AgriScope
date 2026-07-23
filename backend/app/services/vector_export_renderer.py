@@ -14,6 +14,7 @@ from zipfile import ZIP_DEFLATED, ZipFile
 import fiona
 
 from app.core.exceptions import ValidationException
+from app.schemas.plot_attribute_field import PlotAttributeFieldDefinition
 
 KML_NAMESPACE = "http://www.opengis.net/kml/2.2"
 ElementTree.register_namespace("", KML_NAMESPACE)
@@ -39,11 +40,16 @@ class VectorExportRenderer:
         return value
 
     @classmethod
-    def _properties(cls, row: object) -> dict[str, object]:
+    def _properties(
+        cls,
+        row: object,
+        definitions: list[PlotAttributeFieldDefinition],
+    ) -> dict[str, object]:
         """构建完整业务属性和来源血缘。
 
         Args:
             row: DAO 导出行。
+            definitions: 当前项目活动字段定义快照。
 
         Returns:
             dict[str, object]: 标准字段属性。
@@ -68,17 +74,31 @@ class VectorExportRenderer:
             "source_version",
             "source_updated_at",
         )
-        return {
-            name: cls._serialize_value(getattr(row, name, None))
-            for name in field_names
+        properties = {
+            name: cls._serialize_value(getattr(row, name, None)) for name in field_names
         }
+        custom_values = getattr(row, "custom_attributes", {}) or {}
+        properties.update(
+            {
+                f"custom:{definition.field_code}": cls._serialize_value(
+                    custom_values.get(definition.field_code)
+                )
+                for definition in definitions
+            }
+        )
+        return properties
 
     @classmethod
-    def _features(cls, rows: list[object]) -> list[dict[str, object]]:
+    def _features(
+        cls,
+        rows: list[object],
+        definitions: list[PlotAttributeFieldDefinition],
+    ) -> list[dict[str, object]]:
         """构建标准 GeoJSON Feature 列表。
 
         Args:
             rows: 任务作用域导出行。
+            definitions: 当前项目活动字段定义快照。
 
         Returns:
             list[dict[str, object]]: 完整属性与 Polygon 几何。
@@ -92,17 +112,66 @@ class VectorExportRenderer:
                 {
                     "type": "Feature",
                     "geometry": geometry,
-                    "properties": cls._properties(row),
+                    "properties": cls._properties(row, definitions),
                 }
             )
         return features
 
     @staticmethod
-    def _fiona_schema(*, shapefile: bool) -> dict[str, object]:
+    def _fiona_field_type(
+        definition: PlotAttributeFieldDefinition,
+        *,
+        shapefile: bool,
+    ) -> str:
+        """把自定义字段类型映射为 Fiona 字段类型。
+
+        Args:
+            definition: 项目字段定义。
+            shapefile: 是否为 DBF 受限字段。
+
+        Returns:
+            str: Fiona schema 字段类型。
+        """
+        if definition.field_type == "number":
+            return "float:18.6" if shapefile else "float"
+        if definition.field_type == "boolean":
+            return "int"
+        if definition.field_type == "date":
+            return "str:10"
+        return "str:254" if shapefile else "str:500"
+
+    @staticmethod
+    def _custom_field_aliases(
+        definitions: list[PlotAttributeFieldDefinition],
+    ) -> dict[str, dict[str, str]]:
+        """生成 Shapefile 和 FileGDB 稳定字段别名。
+
+        Args:
+            definitions: 活动字段定义。
+
+        Returns:
+            dict[str, dict[str, str]]: 按字段编码索引的两种别名。
+        """
+        return {
+            definition.field_code: {
+                "shapefile": f"CUST{index:03d}",
+                "filegdb": f"custom_{definition.field_code}",
+            }
+            for index, definition in enumerate(definitions, start=1)
+        }
+
+    @classmethod
+    def _fiona_schema(
+        cls,
+        *,
+        shapefile: bool,
+        definitions: list[PlotAttributeFieldDefinition],
+    ) -> dict[str, object]:
         """返回 Shapefile 短字段或 FileGDB 完整字段模式。
 
         Args:
             shapefile: 是否受十字符字段名限制。
+            definitions: 当前项目活动字段定义快照。
 
         Returns:
             dict[str, object]: Fiona schema。
@@ -149,14 +218,28 @@ class VectorExportRenderer:
                 "source_version": "str:80",
                 "source_updated_at": "str:40",
             }
+        aliases = cls._custom_field_aliases(definitions)
+        for definition in definitions:
+            alias = aliases[definition.field_code][
+                "shapefile" if shapefile else "filegdb"
+            ]
+            properties[alias] = cls._fiona_field_type(
+                definition,
+                shapefile=shapefile,
+            )
         return {"geometry": "Polygon", "properties": properties}
 
-    @staticmethod
-    def _shapefile_properties(properties: dict[str, object]) -> dict[str, object]:
+    @classmethod
+    def _shapefile_properties(
+        cls,
+        properties: dict[str, object],
+        definitions: list[PlotAttributeFieldDefinition],
+    ) -> dict[str, object]:
         """映射为 Shapefile 十字符字段名。
 
         Args:
             properties: 完整业务属性。
+            definitions: 当前项目活动字段定义快照。
 
         Returns:
             dict[str, object]: DBF 可写短字段属性。
@@ -181,10 +264,42 @@ class VectorExportRenderer:
             "SRC_VER": "source_version",
             "SRC_TIME": "source_updated_at",
         }
-        return {
-            target: properties.get(source)
-            for target, source in mapping.items()
+        mapped = {target: properties.get(source) for target, source in mapping.items()}
+        aliases = cls._custom_field_aliases(definitions)
+        for definition in definitions:
+            value = properties.get(f"custom:{definition.field_code}")
+            if definition.field_type == "boolean" and value is not None:
+                value = 1 if value else 0
+            mapped[aliases[definition.field_code]["shapefile"]] = value
+        return mapped
+
+    @classmethod
+    def _filegdb_properties(
+        cls,
+        properties: dict[str, object],
+        definitions: list[PlotAttributeFieldDefinition],
+    ) -> dict[str, object]:
+        """把自定义字段映射为 FileGDB 合法完整字段名。
+
+        Args:
+            properties: GeoJSON/KML 使用的完整属性。
+            definitions: 当前项目活动字段定义快照。
+
+        Returns:
+            dict[str, object]: 与 FileGDB schema 一致的属性。
+        """
+        result = {
+            key: value
+            for key, value in properties.items()
+            if not key.startswith("custom:")
         }
+        aliases = cls._custom_field_aliases(definitions)
+        for definition in definitions:
+            value = properties.get(f"custom:{definition.field_code}")
+            if definition.field_type == "boolean" and value is not None:
+                value = 1 if value else 0
+            result[aliases[definition.field_code]["filegdb"]] = value
+        return result
 
     @classmethod
     def _write_geojson(
@@ -216,12 +331,14 @@ class VectorExportRenderer:
         cls,
         path: Path,
         features: list[dict[str, object]],
+        definitions: list[PlotAttributeFieldDefinition],
     ) -> None:
         """使用 Fiona/GDAL 写入真实 ESRI Shapefile 文件组。
 
         Args:
             path: `.shp` 主文件路径。
             features: 标准要素列表。
+            definitions: 当前项目活动字段定义快照。
 
         Returns:
             None: 文件组写入完成。
@@ -232,14 +349,18 @@ class VectorExportRenderer:
             "w",
             driver="ESRI Shapefile",
             crs="EPSG:4326",
-            schema=cls._fiona_schema(shapefile=True),
+            schema=cls._fiona_schema(
+                shapefile=True,
+                definitions=definitions,
+            ),
             encoding="UTF-8",
         ) as collection:
             collection.writerecords(
                 {
                     "geometry": feature["geometry"],
                     "properties": cls._shapefile_properties(
-                        feature["properties"]  # type: ignore[arg-type]
+                        feature["properties"],  # type: ignore[arg-type]
+                        definitions,
                     ),
                 }
                 for feature in features
@@ -250,12 +371,14 @@ class VectorExportRenderer:
         cls,
         path: Path,
         features: list[dict[str, object]],
+        definitions: list[PlotAttributeFieldDefinition],
     ) -> None:
         """使用开源 OpenFileGDB 驱动创建真实 FileGDB 目录。
 
         Args:
             path: `.gdb` 目录路径。
             features: 标准要素列表。
+            definitions: 当前项目活动字段定义快照。
 
         Returns:
             None: FileGDB 图层写入完成。
@@ -267,13 +390,19 @@ class VectorExportRenderer:
             driver="OpenFileGDB",
             layer="farmland_plots",
             crs="EPSG:4326",
-            schema=cls._fiona_schema(shapefile=False),
+            schema=cls._fiona_schema(
+                shapefile=False,
+                definitions=definitions,
+            ),
             encoding="UTF-8",
         ) as collection:
             collection.writerecords(
                 {
                     "geometry": feature["geometry"],
-                    "properties": feature["properties"],
+                    "properties": cls._filegdb_properties(
+                        feature["properties"],  # type: ignore[arg-type]
+                        definitions,
+                    ),
                 }
                 for feature in features
             )
@@ -308,8 +437,7 @@ class VectorExportRenderer:
                 f"{{{KML_NAMESPACE}}}coordinates",
             )
             coordinate_node.text = " ".join(
-                f"{float(point[0]):.10f},{float(point[1]):.10f},0"
-                for point in ring
+                f"{float(point[0]):.10f},{float(point[1]):.10f},0" for point in ring
             )
 
     @classmethod
@@ -419,6 +547,21 @@ class VectorExportRenderer:
         Returns:
             None: 全部格式可读且数量一致时无返回值。
         """
+        try:
+            attribute_ledger = json.loads(
+                (root / "attributes" / "custom_attributes.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise ValidationException("自定义属性交付账本不可读取") from exc
+        ledger_items = (
+            attribute_ledger.get("items")
+            if isinstance(attribute_ledger, dict)
+            else None
+        )
+        if not isinstance(ledger_items, list) or len(ledger_items) != expected_count:
+            raise ValidationException("自定义属性交付账本数量不一致")
         if "geojson" in formats:
             geojson_path = root / "geojson" / "farmland_plots.geojson"
             try:
@@ -450,9 +593,7 @@ class VectorExportRenderer:
                 ).getroot()
             except (OSError, ElementTree.ParseError) as exc:
                 raise ValidationException("KML 实体不可读取") from exc
-            placemarks = kml_root.findall(
-                f".//{{{KML_NAMESPACE}}}Placemark"
-            )
+            placemarks = kml_root.findall(f".//{{{KML_NAMESPACE}}}Placemark")
             if len(placemarks) != expected_count:
                 raise ValidationException("KML 实体要素数量不一致")
         if "filegdb" in formats:
@@ -478,6 +619,8 @@ class VectorExportRenderer:
             return "Shapefile"
         if relative_path.startswith("kml/"):
             return "KML"
+        if relative_path.startswith("attributes/"):
+            return "JSON"
         return "FileGDB"
 
     @classmethod
@@ -495,6 +638,7 @@ class VectorExportRenderer:
         generated_at: datetime,
         operator: object,
         comment: str,
+        definition_snapshot: list[dict] | None = None,
     ) -> tuple[bytes, dict]:
         """生成并验证多格式矢量成果 ZIP。
 
@@ -511,13 +655,40 @@ class VectorExportRenderer:
             generated_at: 生成时间。
             operator: 持久化项目用户。
             comment: 生成依据。
+            definition_snapshot: 当前项目活动自定义字段模式快照。
 
         Returns:
             tuple[bytes, dict]: ZIP 字节和逐文件 manifest。
         """
-        features = cls._features(rows)
+        snapshot = definition_snapshot or []
+        definitions = [
+            PlotAttributeFieldDefinition.model_validate(item) for item in snapshot
+        ]
+        features = cls._features(rows, definitions)
         with tempfile.TemporaryDirectory(prefix="agriscope-vector-") as directory:
             root = Path(directory)
+            attribute_ledger = {
+                "schema_version": "plot-custom-attributes-v1",
+                "items": [
+                    {
+                        "plot_code": getattr(row, "plot_code", None),
+                        "custom_attributes": dict(
+                            getattr(row, "custom_attributes", {}) or {}
+                        ),
+                    }
+                    for row in rows
+                ],
+            }
+            ledger_path = root / "attributes" / "custom_attributes.json"
+            ledger_path.parent.mkdir(parents=True, exist_ok=True)
+            ledger_path.write_text(
+                json.dumps(
+                    attribute_ledger,
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                ),
+                encoding="utf-8",
+            )
             if "geojson" in formats:
                 cls._write_geojson(
                     root / "geojson" / "farmland_plots.geojson",
@@ -527,6 +698,7 @@ class VectorExportRenderer:
                 cls._write_shapefile(
                     root / "shapefile" / "farmland_plots.shp",
                     features,
+                    definitions,
                 )
             if "kml" in formats:
                 cls._write_kml(
@@ -538,6 +710,7 @@ class VectorExportRenderer:
                 cls._write_filegdb(
                     root / "filegdb" / "farmland_plots.gdb",
                     features,
+                    definitions,
                 )
             cls.validate_directory(root, formats, len(features))
             files = []
@@ -553,7 +726,7 @@ class VectorExportRenderer:
                     }
                 )
             manifest = {
-                "schema_version": "vector-export-v1",
+                "schema_version": "vector-export-v2",
                 "export_code": export_code,
                 "export_title": export_title,
                 "version": version,
@@ -569,6 +742,18 @@ class VectorExportRenderer:
                 },
                 "formats": formats,
                 "feature_count": len(features),
+                "custom_attribute_schema": {
+                    "definition_snapshot": snapshot,
+                    "definition_digest": sha256(
+                        json.dumps(
+                            snapshot,
+                            ensure_ascii=False,
+                            sort_keys=True,
+                            separators=(",", ":"),
+                        ).encode("utf-8")
+                    ).hexdigest(),
+                    "field_aliases": cls._custom_field_aliases(definitions),
+                },
                 "generator": {
                     "display_name": operator.display_name,
                     "user_code": operator.user_code,

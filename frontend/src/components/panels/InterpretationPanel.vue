@@ -1,15 +1,18 @@
 <script setup lang="ts">
 import { message } from 'ant-design-vue'
 import { storeToRefs } from 'pinia'
-import { computed, ref } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 
 import PlotAttributeWorkbookModal from '@/components/editing/PlotAttributeWorkbookModal.vue'
+import PlotCustomAttributeEditor from '@/components/editing/PlotCustomAttributeEditor.vue'
 import TaskQualityPanel from '@/components/quality/TaskQualityPanel.vue'
+import { usePlotAttributeFieldStore } from '@/store/plotAttributeFieldStore'
 import { useWorkbenchStore } from '@/store/workbenchStore'
 import type { PlotAttributeUpdate, QualityRuleResult } from '@/types/workbench'
 import { formatArea, hectaresToMu } from '@/utils/area'
 
 const workbenchStore = useWorkbenchStore()
+const fieldStore = usePlotAttributeFieldStore()
 const workbookModalOpenRef = ref<boolean>(false)
 const {
   plotAttributesRef,
@@ -22,6 +25,7 @@ const {
   qualityCheckingRef,
   qualityResultRef,
 } = storeToRefs(workbenchStore)
+const { activeFieldsComputed, loadingRef: fieldLoadingRef } = storeToRefs(fieldStore)
 
 const landClassOptions = ['耕地', '园地', '林地', '草地', '水域', '建设用地']
 const cropTypeOptions = ['水稻', '玉米', '小麦', '大豆', '马铃薯', '蔬菜']
@@ -42,6 +46,19 @@ const updateDraft = <TKey extends keyof PlotAttributeUpdate>(
   }
 }
 
+const updateCustomAttribute = (
+  fieldCode: string,
+  value: string | number | boolean | null,
+): void => {
+  if (!plotDraftRef.value) return
+  workbenchStore.updatePlotDraft({
+    custom_attributes: {
+      ...plotDraftRef.value.custom_attributes,
+      [fieldCode]: value,
+    },
+  })
+}
+
 const savePlot = async (): Promise<void> => {
   if (!canEditPlotsComputed.value) {
     message.warning('当前项目身份无权编辑图斑属性')
@@ -53,6 +70,14 @@ const savePlot = async (): Promise<void> => {
   }
   if (cropRequiredComputed.value && !plotDraftRef.value.crop_type) {
     message.warning('耕地图斑必须选择作物类型')
+    return
+  }
+  const missingCustomField = activeFieldsComputed.value.find(
+    (field) => field.required
+      && plotDraftRef.value?.custom_attributes[field.field_code] == null,
+  )
+  if (missingCustomField) {
+    message.warning(`请填写自定义必填字段“${missingCustomField.label}”`)
     return
   }
   const attributes = await workbenchStore.saveSelectedPlot()
@@ -91,6 +116,18 @@ const statusLabel = (rule: QualityRuleResult): string => ({
   warning: rule.rule_code === 'POSITIONAL_ACCURACY_CONFIG' ? '待配置' : '警告',
   fail: '不通过',
 }[rule.status])
+
+watch(
+  () => workbenchStore.projectCodeComputed,
+  (projectCode) => {
+    if (projectCode) void fieldStore.load(projectCode)
+  },
+  { immediate: true },
+)
+
+onMounted(() => {
+  void fieldStore.load(workbenchStore.projectCodeComputed)
+})
 </script>
 
 <template>
@@ -197,6 +234,24 @@ const statusLabel = (rule: QualityRuleResult): string => ({
         </div>
       </div>
 
+      <div class="attribute-form custom-form">
+        <h3>项目自定义属性</h3>
+        <a-spin :spinning="fieldLoadingRef">
+          <a-empty
+            v-if="!activeFieldsComputed.length"
+            :image="null"
+            description="项目尚未配置自定义字段"
+          />
+          <PlotCustomAttributeEditor
+            v-else
+            :fields="activeFieldsComputed"
+            :values="plotDraftRef.custom_attributes"
+            :disabled="!canEditPlotsComputed"
+            @change="updateCustomAttribute"
+          />
+        </a-spin>
+      </div>
+
       <div class="actions">
         <a-button
           :disabled="!plotDirtyComputed || !canEditPlotsComputed"
@@ -276,6 +331,7 @@ header strong { font-size: 15px; }
 .source-card a { position: absolute; top: 10px; right: 10px; font-size: 9px; }
 .source-card p { margin: 7px 0 0; font-size: 8px; color: #76827c; }
 .attribute-form { padding-top: 12px; border-top: 1px solid #e6eae8; }
+.custom-form { margin-top: 12px; }
 .attribute-form h3 { margin-bottom: 12px; font-size: 12px; }
 .attribute-form label { display: grid; grid-template-columns: 78px minmax(0, 1fr); gap: 8px; align-items: center; margin-bottom: 10px; font-size: 10px; }
 .attribute-form label > span b { color: #d4380d; }

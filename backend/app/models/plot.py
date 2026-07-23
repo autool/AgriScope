@@ -4,7 +4,7 @@ from datetime import datetime
 from decimal import Decimal
 
 from geoalchemy2 import Geometry
-from sqlalchemy import DateTime, Integer, Numeric, String, func
+from sqlalchemy import JSON, DateTime, Integer, Numeric, String, func
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 
@@ -29,6 +29,7 @@ class FarmlandPlot(Base):
     crop_type: Mapped[str | None] = mapped_column(String(50), nullable=True)
     planting_mode: Mapped[str | None] = mapped_column(String(50), nullable=True)
     irrigation_condition: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    custom_attributes: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
     source_name: Mapped[str | None] = mapped_column(String(120), nullable=True)
     source_feature_id: Mapped[str | None] = mapped_column(String(80), nullable=True)
     source_uri: Mapped[str | None] = mapped_column(String(500), nullable=True)

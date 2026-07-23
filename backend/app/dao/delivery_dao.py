@@ -82,9 +82,7 @@ class DeliveryDAO:
             DeliveryPackage | None: 成果交付包，不存在时返回 None。
         """
         result = await db.execute(
-            select(DeliveryPackage).where(
-                DeliveryPackage.package_code == package_code
-            )
+            select(DeliveryPackage).where(DeliveryPackage.package_code == package_code)
         )
         return result.scalar_one_or_none()
 
@@ -465,6 +463,7 @@ class DeliveryDAO:
                 FarmlandPlot.crop_type,
                 FarmlandPlot.planting_mode,
                 FarmlandPlot.irrigation_condition,
+                FarmlandPlot.custom_attributes,
                 FarmlandPlot.interpretation_status,
                 FarmlandPlot.version,
                 func.ST_AsGeoJSON(FarmlandPlot.geom).label("geometry"),

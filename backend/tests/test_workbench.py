@@ -5,7 +5,7 @@ from datetime import UTC, date, datetime
 from decimal import Decimal
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from pydantic import ValidationError
@@ -63,6 +63,7 @@ def test_plot_attribute_request_accepts_farmland_crop() -> None:
         crop_type="玉米",
         planting_mode="单季种植",
         irrigation_condition="良好",
+        custom_attributes={},
     )
 
     assert request.crop_type == "玉米"
@@ -129,6 +130,7 @@ def build_editable_plot(
         crop_type="玉米",
         planting_mode="单季种植",
         irrigation_condition="良好",
+        custom_attributes={},
         interpretation_status=status,
         version=version,
         geom="polygon-geometry",
@@ -176,6 +178,20 @@ def build_user_service(
     return service
 
 
+def build_plot_attribute_field_service() -> MagicMock:
+    """构造没有活动自定义字段的项目字段服务。"""
+    service = MagicMock()
+    service.get_all_fields_by_project_id = AsyncMock(return_value=[])
+    service.get_active_fields_by_project_id = AsyncMock(return_value=[])
+    service.validate_custom_attributes.side_effect = (
+        lambda _fields, submitted, existing=None: {
+            **(existing or {}),
+            **(submitted or {}),
+        }
+    )
+    return service
+
+
 def test_polygon_geometry_rejects_unclosed_ring() -> None:
     """验证绘制几何必须闭合。"""
     with pytest.raises(ValidationError, match="必须闭合"):
@@ -204,6 +220,7 @@ def test_create_plot_generates_version_audit_and_task_progress() -> None:
     service = WorkbenchService(
         dao=dao,
         project_user_service=build_user_service(),
+        plot_attribute_field_service=build_plot_attribute_field_service(),
     )
     db = AsyncMock()
 
@@ -258,6 +275,7 @@ def test_update_plot_attributes_uses_stable_user_audit() -> None:
     service = WorkbenchService(
         dao=dao,
         project_user_service=user_service,
+        plot_attribute_field_service=build_plot_attribute_field_service(),
     )
     db = AsyncMock()
 
@@ -370,6 +388,7 @@ def test_update_plot_geometry_recalculates_area_and_creates_version() -> None:
     service = WorkbenchService(
         dao=dao,
         project_user_service=build_user_service(),
+        plot_attribute_field_service=build_plot_attribute_field_service(),
     )
     db = AsyncMock()
 
@@ -408,6 +427,7 @@ def test_delete_plot_is_soft_delete_with_audit_cleanup() -> None:
     service = WorkbenchService(
         dao=dao,
         project_user_service=build_user_service(),
+        plot_attribute_field_service=build_plot_attribute_field_service(),
     )
     db = AsyncMock()
 
@@ -439,19 +459,23 @@ def test_split_plot_creates_two_children_versions_and_operation_audit() -> None:
     """验证分割事务生成两个子图斑、三份版本和稳定用户操作日志。"""
     task = build_task("interpreting")
     source_plot = build_editable_plot(area_ha=Decimal("1.2500"))
+    source_plot.custom_attributes = {"soil_type": "黑土"}
     deleted_source = build_editable_plot(
         version=2,
         status="deleted",
         area_ha=Decimal("1.2500"),
     )
+    deleted_source.custom_attributes = {"soil_type": "黑土"}
     first_child = build_editable_plot(
         plot_code="SPL-HLJ-001",
         area_ha=Decimal("0.7000"),
     )
+    first_child.custom_attributes = {"soil_type": "黑土"}
     second_child = build_editable_plot(
         plot_code="SPL-HLJ-002",
         area_ha=Decimal("0.5500"),
     )
+    second_child.custom_attributes = {"soil_type": "黑土"}
     dao = AsyncMock()
     dao.get_task_by_code_for_update.return_value = task
     dao.get_plot_by_code_for_update.return_value = source_plot
@@ -471,6 +495,7 @@ def test_split_plot_creates_two_children_versions_and_operation_audit() -> None:
     service = WorkbenchService(
         dao=dao,
         project_user_service=build_user_service(),
+        plot_attribute_field_service=build_plot_attribute_field_service(),
     )
     db = AsyncMock()
 
@@ -501,6 +526,9 @@ def test_split_plot_creates_two_children_versions_and_operation_audit() -> None:
         "SPL-HLJ-001",
         "SPL-HLJ-002",
     }
+    assert all(
+        item.custom_attributes == {"soil_type": "黑土"} for item in versions
+    )
     operation = dao.add_plot_edit_operation.await_args.args[1]
     assert operation.operation_type == "split"
     assert operation.source_plot_codes == [source_plot.plot_code]
@@ -603,6 +631,7 @@ def test_merge_plots_creates_result_versions_and_operation_audit() -> None:
     service = WorkbenchService(
         dao=dao,
         project_user_service=build_user_service(),
+        plot_attribute_field_service=build_plot_attribute_field_service(),
     )
     db = AsyncMock()
 
@@ -649,6 +678,67 @@ def test_merge_plots_creates_result_versions_and_operation_audit() -> None:
     )
     assert dao.close_plot_issues.await_count == 2
     db.commit.assert_awaited_once()
+
+
+def test_merge_rejects_unresolved_custom_attribute_conflict() -> None:
+    """验证活动自定义字段冲突必须由用户显式确认最终值。"""
+    task = build_task("interpreting")
+    first = build_editable_plot(plot_code="USR-HLJ-001")
+    second = build_editable_plot(plot_code="USR-HLJ-002")
+    first.custom_attributes = {"soil_type": "黑土"}
+    second.custom_attributes = {"soil_type": "白浆土"}
+    dao = AsyncMock()
+    dao.get_task_by_code_for_update.return_value = task
+    dao.get_task_plots_by_codes_for_update.return_value = [first, second]
+    dao.analyze_plot_merge.return_value = MergeAnalysis(
+        source_count=2,
+        district_count=1,
+        geometry_type="ST_Polygon",
+        component_count=1,
+        geometry_valid=True,
+        source_area_ha=2.5,
+        result_area_ha=2.5,
+        overlap_area_ha=0,
+        geometry_json='{"type":"Polygon"}',
+    )
+    field_service = build_plot_attribute_field_service()
+    field_service.get_all_fields_by_project_id.return_value = [
+        SimpleNamespace(
+            field_code="soil_type",
+            label="土壤类型",
+            field_type="single_select",
+            required=False,
+            options=["黑土", "白浆土"],
+            display_order=10,
+            status="active",
+            version=1,
+        )
+    ]
+    service = WorkbenchService(
+        dao=dao,
+        project_user_service=build_user_service(),
+        plot_attribute_field_service=field_service,
+    )
+
+    with pytest.raises(ValidationException, match="人工确认自定义冲突字段.*土壤类型"):
+        asyncio.run(
+            service.merge_plots(
+                AsyncMock(),
+                "RS-2026-045",
+                PlotMergeRequest(
+                    plot_codes=[first.plot_code, second.plot_code],
+                    owner_village="合并确认村",
+                    land_class="耕地",
+                    crop_type="玉米",
+                    planting_mode="单季种植",
+                    irrigation_condition="良好",
+                    operator_code="interp-li-jing",
+                    comment="验证自定义属性冲突门禁",
+                ),
+            )
+        )
+
+    dao.create_merged_plot.assert_not_awaited()
 
 
 def test_merge_plots_rejects_disconnected_sources() -> None:
@@ -959,6 +1049,7 @@ def build_quality_plot(**overrides: object) -> SimpleNamespace:
         "crop_type": "玉米",
         "planting_mode": "单季种植",
         "irrigation_condition": "良好",
+        "custom_attributes": {},
         "interpretation_status": "interpreted",
         "source_name": "OpenStreetMap",
         "source_feature_id": "way/100",
@@ -1032,6 +1123,7 @@ def build_quality_service(dao: AsyncMock) -> WorkbenchService:
             display_name="王海峰",
             role_code="quality_inspector",
         ),
+        plot_attribute_field_service=build_plot_attribute_field_service(),
     )
 
 
@@ -1292,6 +1384,7 @@ def test_batch_plot_attributes_updates_versions_and_audit() -> None:
     service = WorkbenchService(
         dao=dao,
         project_user_service=build_user_service(),
+        plot_attribute_field_service=build_plot_attribute_field_service(),
     )
     db = AsyncMock()
 
@@ -1806,6 +1899,7 @@ def test_plot_rollback_creates_new_version_and_reopens_task() -> None:
         crop_type="玉米",
         planting_mode="轮作",
         irrigation_condition="一般",
+        custom_attributes={"soil_type": "白浆土"},
         interpretation_status="interpreted",
         geom="current-geometry",
         version=3,
@@ -1816,6 +1910,7 @@ def test_plot_rollback_creates_new_version_and_reopens_task() -> None:
         crop_type="大豆",
         planting_mode="单季种植",
         irrigation_condition="良好",
+        custom_attributes={"soil_type": "黑土", "legacy_code": "OLD-001"},
         geom="version-1-geometry",
     )
     review_dao = AsyncMock()
@@ -1854,11 +1949,16 @@ def test_plot_rollback_creates_new_version_and_reopens_task() -> None:
     assert response.version == 4
     assert response.crop_type == "大豆"
     assert response.interpretation_status == "interpreting"
+    assert response.custom_attributes == {
+        "soil_type": "黑土",
+        "legacy_code": "OLD-001",
+    }
     assert plot.geom == "version-1-geometry"
     assert task.status == "interpreting"
     saved_version = review_dao.add_version.await_args.args[1]
     assert saved_version.version == 4
     assert saved_version.change_summary == "恢复经确认的首版边界"
+    assert saved_version.custom_attributes == response.custom_attributes
     workbench_dao.add_review_record.assert_awaited_once()
     db.commit.assert_awaited_once()
 

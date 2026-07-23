@@ -193,6 +193,7 @@ class ProjectRuleConfigAudit(Base):
         nullable=False,
     )
 
+
 class MonitoringTask(Base):
     """遥感监测作业任务。"""
 
@@ -228,9 +229,7 @@ class TaskPlot(Base):
     """作业任务与纳入质检范围图斑的关联。"""
 
     __tablename__ = "task_plots"
-    __table_args__ = (
-        UniqueConstraint("task_id", "plot_code", name="uq_task_plot"),
-    )
+    __table_args__ = (UniqueConstraint("task_id", "plot_code", name="uq_task_plot"),)
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     task_id: Mapped[int] = mapped_column(
@@ -566,6 +565,7 @@ class PlotVersion(Base):
     crop_type: Mapped[str | None] = mapped_column(String(50), nullable=True)
     planting_mode: Mapped[str | None] = mapped_column(String(50), nullable=True)
     irrigation_condition: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    custom_attributes: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
     interpretation_status: Mapped[str] = mapped_column(String(30), nullable=False)
     geom: Mapped[object] = mapped_column(
         Geometry(geometry_type="POLYGON", srid=4326, spatial_index=False),

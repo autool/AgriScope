@@ -793,6 +793,9 @@ class FieldVerificationService:
                         crop_type=plot.crop_type,
                         planting_mode=plot.planting_mode,
                         irrigation_condition=plot.irrigation_condition,
+                        custom_attributes=dict(
+                            getattr(plot, "custom_attributes", {}) or {}
+                        ),
                         interpretation_status=plot.interpretation_status,
                         geom=plot.geom,
                         change_summary=(

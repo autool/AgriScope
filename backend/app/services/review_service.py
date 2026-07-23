@@ -261,6 +261,7 @@ class ReviewService:
         plot.crop_type = target.crop_type
         plot.planting_mode = target.planting_mode
         plot.irrigation_condition = target.irrigation_condition
+        plot.custom_attributes = dict(getattr(target, "custom_attributes", {}) or {})
         plot.interpretation_status = "interpreting"
         plot.geom = target.geom
         plot.version = new_version
@@ -275,6 +276,7 @@ class ReviewService:
                 crop_type=plot.crop_type,
                 planting_mode=plot.planting_mode,
                 irrigation_condition=plot.irrigation_condition,
+                custom_attributes=dict(getattr(plot, "custom_attributes", {}) or {}),
                 interpretation_status=plot.interpretation_status,
                 geom=plot.geom,
                 change_summary=(
@@ -308,6 +310,7 @@ class ReviewService:
             crop_type=plot.crop_type,
             planting_mode=plot.planting_mode,
             irrigation_condition=plot.irrigation_condition,
+            custom_attributes=dict(getattr(plot, "custom_attributes", {}) or {}),
             interpretation_status=plot.interpretation_status,
             version=plot.version,
             updated_at=plot.updated_at,

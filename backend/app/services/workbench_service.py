@@ -18,6 +18,7 @@ from app.dao.workbench_dao import (
     WorkbenchNavigationCounts,
 )
 from app.models.plot import FarmlandPlot
+from app.models.plot_attribute_field import ProjectPlotAttributeField
 from app.models.workbench import (
     MonitoringTask,
     PlotEditOperation,
@@ -64,6 +65,7 @@ from app.schemas.workbench import (
     WorkbenchWorkflowResponse,
     WorkflowStageResponse,
 )
+from app.services.plot_attribute_field_service import PlotAttributeFieldService
 from app.services.project_user_service import ProjectUserService
 from app.services.rule_config_service import RuleConfigService
 
@@ -74,6 +76,7 @@ QUALITY_RULE_LABELS = {
     "AREA_POSITIVE": "面积有效性",
     "AREA_CONSISTENCY": "面积计算一致性",
     "REQUIRED_ATTRIBUTES": "必填属性完整性",
+    "CUSTOM_REQUIRED_ATTRIBUTES": "自定义必填属性完整性",
     "LAND_CROP_LOGIC": "地类与作物逻辑",
     "TOPOLOGY_OVERLAP": "图斑重叠检查",
     "ADMIN_CONTAINMENT": "行政区归属检查",
@@ -93,6 +96,7 @@ class WorkbenchService:
         dao: WorkbenchDAO | None = None,
         rule_config_service: RuleConfigService | None = None,
         project_user_service: ProjectUserService | None = None,
+        plot_attribute_field_service: PlotAttributeFieldService | None = None,
     ) -> None:
         """初始化工作台服务。
 
@@ -100,6 +104,7 @@ class WorkbenchService:
             dao: 可选工作台 DAO，便于单元测试替换。
             rule_config_service: 项目规则配置服务。
             project_user_service: 项目用户与角色校验服务。
+            plot_attribute_field_service: 项目地块自定义属性服务。
 
         Returns:
             None: 无返回值。
@@ -107,6 +112,9 @@ class WorkbenchService:
         self.dao = dao or WorkbenchDAO()
         self.rule_config_service = rule_config_service or RuleConfigService()
         self.project_user_service = project_user_service or ProjectUserService()
+        self.plot_attribute_field_service = (
+            plot_attribute_field_service or PlotAttributeFieldService()
+        )
 
     @staticmethod
     def _geometry_json(request_geometry: PolygonGeometry) -> str:
@@ -198,6 +206,7 @@ class WorkbenchService:
             crop_type=plot.crop_type,
             planting_mode=plot.planting_mode,
             irrigation_condition=plot.irrigation_condition,
+            custom_attributes=dict(getattr(plot, "custom_attributes", {}) or {}),
             interpretation_status=plot.interpretation_status,
             geom=plot.geom,
             change_summary=change_summary,
@@ -254,6 +263,7 @@ class WorkbenchService:
         plot: FarmlandPlot,
         metrics: PlotQualityMetrics,
         positional_accuracy_pixels: float,
+        custom_fields: list[ProjectPlotAttributeField],
     ) -> list[QualityRuleResult]:
         """根据数据库指标和图斑属性生成可解释质量规则。
 
@@ -261,6 +271,7 @@ class WorkbenchService:
             plot: 当前图斑。
             metrics: PostGIS 计算的几何与空间指标。
             positional_accuracy_pixels: 当前项目允许的位置偏差像元数。
+            custom_fields: 当前项目活动自定义字段定义。
 
         Returns:
             list[QualityRuleResult]: 带阻断标记的规则结果。
@@ -273,6 +284,14 @@ class WorkbenchService:
         required_valid = (
             bool(plot.owner_village and plot.land_class) and stored_area > 0
         )
+        missing_custom_labels = [
+            field.label
+            for field in custom_fields
+            if field.required
+            and (getattr(plot, "custom_attributes", {}) or {}).get(field.field_code)
+            is None
+        ]
+        custom_required_valid = not missing_custom_labels
         crop_logic_valid = (plot.land_class == "耕地" and bool(plot.crop_type)) or (
             plot.land_class != "耕地" and not plot.crop_type
         )
@@ -349,6 +368,18 @@ class WorkbenchService:
                     "权属村、地类和面积字段完整"
                     if required_valid
                     else "权属村、地类或面积字段缺失"
+                ),
+                blocking=True,
+            ),
+            QualityRuleResult(
+                rule_code="CUSTOM_REQUIRED_ATTRIBUTES",
+                label="自定义必填属性完整性",
+                status="pass" if custom_required_valid else "fail",
+                severity="high",
+                detail=(
+                    "项目自定义必填字段完整"
+                    if custom_required_valid
+                    else "缺少自定义必填字段：" + "、".join(missing_custom_labels)
                 ),
                 blocking=True,
             ),
@@ -469,6 +500,7 @@ class WorkbenchService:
             crop_type=plot.crop_type,
             planting_mode=plot.planting_mode,
             irrigation_condition=plot.irrigation_condition,
+            custom_attributes=dict(getattr(plot, "custom_attributes", {}) or {}),
             source_name=getattr(plot, "source_name", None),
             source_feature_id=getattr(plot, "source_feature_id", None),
             source_uri=getattr(plot, "source_uri", None),
@@ -837,6 +869,18 @@ class WorkbenchService:
                 raise ValidationException(f"图斑编号 {request.plot_code} 已存在")
         geometry_json, area_ha = await self._validate_geometry(db, request.geometry)
         plot_code = request.plot_code or await self.dao.get_next_plot_code(db)
+        custom_field_definitions = (
+            await self.plot_attribute_field_service.get_all_fields_by_project_id(
+                db,
+                task.project_id,
+            )
+        )
+        custom_attributes = (
+            self.plot_attribute_field_service.validate_custom_attributes(
+                custom_field_definitions,
+                request.custom_attributes,
+            )
+        )
         try:
             plot = await self.dao.create_plot(
                 db,
@@ -848,6 +892,7 @@ class WorkbenchService:
                 crop_type=request.crop_type,
                 planting_mode=request.planting_mode,
                 irrigation_condition=request.irrigation_condition,
+                custom_attributes=custom_attributes,
             )
             if plot is None:
                 raise ValidationException("绘制范围不在已配置的黑龙江省行政区内")
@@ -1287,6 +1332,59 @@ class WorkbenchService:
             )
             if len(values) > 1
         ]
+        custom_field_definitions = (
+            await self.plot_attribute_field_service.get_all_fields_by_project_id(
+                db,
+                task.project_id,
+            )
+        )
+        common_custom_values: dict[str, object] = {}
+        custom_conflicts: list[ProjectPlotAttributeField] = []
+        for field in custom_field_definitions:
+            values = [
+                (getattr(plot, "custom_attributes", {}) or {}).get(field.field_code)
+                for plot in ordered_plots
+            ]
+            distinct_values = {
+                json.dumps(value, ensure_ascii=False, sort_keys=True)
+                for value in values
+            }
+            if len(distinct_values) > 1:
+                custom_conflicts.append(field)
+            else:
+                common_custom_values[field.field_code] = values[0]
+        inactive_conflicts = [
+            field.label for field in custom_conflicts if field.status == "inactive"
+        ]
+        if inactive_conflicts:
+            raise ValidationException(
+                "停用字段仍存在不同历史值，需先重新启用并整改："
+                + "、".join(inactive_conflicts)
+            )
+        active_conflicts = [
+            field.label for field in custom_conflicts if field.status == "active"
+        ]
+        if request.custom_attributes is None and active_conflicts:
+            raise ValidationException(
+                "合并前必须人工确认自定义冲突字段：" + "、".join(active_conflicts)
+            )
+        submitted_custom_attributes = (
+            request.custom_attributes
+            if request.custom_attributes is not None
+            else {
+                field.field_code: common_custom_values.get(field.field_code)
+                for field in custom_field_definitions
+                if field.status == "active"
+            }
+        )
+        merged_custom_attributes = (
+            self.plot_attribute_field_service.validate_custom_attributes(
+                custom_field_definitions,
+                submitted_custom_attributes,
+                existing=common_custom_values,
+            )
+        )
+        conflict_fields.extend(active_conflicts)
         operation_code = f"PEO-{uuid4().hex.upper()}"
         merged_plot_code = await self.dao.get_next_plot_code(
             db,
@@ -1304,6 +1402,7 @@ class WorkbenchService:
                 crop_type=request.crop_type,
                 planting_mode=request.planting_mode,
                 irrigation_condition=request.irrigation_condition,
+                custom_attributes=merged_custom_attributes,
             )
             if merged_plot is None:
                 raise ValidationException("合并结果图斑写入失败")
@@ -1752,6 +1851,19 @@ class WorkbenchService:
         plot.crop_type = request.crop_type
         plot.planting_mode = request.planting_mode
         plot.irrigation_condition = request.irrigation_condition
+        custom_field_definitions = (
+            await self.plot_attribute_field_service.get_all_fields_by_project_id(
+                db,
+                task.project_id,
+            )
+        )
+        plot.custom_attributes = (
+            self.plot_attribute_field_service.validate_custom_attributes(
+                custom_field_definitions,
+                request.custom_attributes,
+                existing=dict(getattr(plot, "custom_attributes", {}) or {}),
+            )
+        )
         plot.interpretation_status = "interpreted"
         plot.version += 1
         plot.updated_at = datetime.now(UTC)
@@ -1842,11 +1954,24 @@ class WorkbenchService:
             f"作物={request.attributes.crop_type or '不适用'}"
         )
         versions: list[PlotVersion] = []
+        custom_field_definitions = (
+            await self.plot_attribute_field_service.get_all_fields_by_project_id(
+                db,
+                task.project_id,
+            )
+        )
         for plot in plots:
             plot.land_class = request.attributes.land_class
             plot.crop_type = request.attributes.crop_type
             plot.planting_mode = request.attributes.planting_mode
             plot.irrigation_condition = request.attributes.irrigation_condition
+            plot.custom_attributes = (
+                self.plot_attribute_field_service.validate_custom_attributes(
+                    custom_field_definitions,
+                    request.attributes.custom_attributes,
+                    existing=dict(getattr(plot, "custom_attributes", {}) or {}),
+                )
+            )
             plot.interpretation_status = "interpreted"
             plot.version += 1
             plot.updated_at = updated_at
@@ -1947,6 +2072,10 @@ class WorkbenchService:
             plot,
             metrics,
             float(config.positional_accuracy_pixels),
+            await self.plot_attribute_field_service.get_active_fields_by_project_id(
+                db,
+                task.project_id,
+            ),
         )
         score = self._calculate_quality_score(rules)
         can_submit = all(rule.status == "pass" for rule in rules if rule.blocking)
@@ -2052,6 +2181,12 @@ class WorkbenchService:
             db,
             task.project_id,
         )
+        custom_fields = (
+            await self.plot_attribute_field_service.get_active_fields_by_project_id(
+                db,
+                task.project_id,
+            )
+        )
 
         checks: list[dict[str, object]] = []
         issues: list[QualityIssue] = []
@@ -2063,6 +2198,7 @@ class WorkbenchService:
                 plot,
                 metrics,
                 float(config.positional_accuracy_pixels),
+                custom_fields,
             )
             score = self._calculate_quality_score(rules)
             can_submit = all(rule.status == "pass" for rule in rules if rule.blocking)
