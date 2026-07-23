@@ -400,3 +400,111 @@ class ImagerySourceLevelAcceptRequest(BaseModel):
         if value is not True:
             raise ValueError("必须确认本动作不执行重复算法")
         return value
+
+
+class ImagerySourceLevelBatchItemRequest(BaseModel):
+    """源产品级别原子承认批次中的一个影像资产。"""
+
+    asset_code: str = Field(
+        min_length=1,
+        max_length=80,
+        pattern=r"^[A-Za-z0-9_-]+$",
+    )
+    expected_processing_level: Literal["L2A", "L2"]
+
+    model_config = ConfigDict(extra="forbid")
+
+    @field_validator("asset_code")
+    @classmethod
+    def normalize_asset_code(cls, value: str) -> str:
+        """清理批次成员资产编号。
+
+        Args:
+            value: 原始资产编号。
+
+        Returns:
+            str: 去除首尾空白的资产编号。
+        """
+        return value.strip()
+
+
+class ImagerySourceLevelBatchAcceptRequest(BaseModel):
+    """一次原子承认 1–10 景源产品的定标与大气校正要求。"""
+
+    operator_code: str = Field(min_length=1, max_length=50)
+    confirm_no_algorithm_execution: bool
+    justification: str = Field(min_length=10, max_length=500)
+    items: list[ImagerySourceLevelBatchItemRequest] = Field(
+        min_length=1,
+        max_length=10,
+    )
+
+    model_config = ConfigDict(extra="forbid")
+
+    @field_validator("operator_code", "justification")
+    @classmethod
+    def validate_required_text(cls, value: str) -> str:
+        """清理稳定操作人和批次承认依据。
+
+        Args:
+            value: 原始文本。
+
+        Returns:
+            str: 去除首尾空白的文本。
+        """
+        return value.strip()
+
+    @field_validator("confirm_no_algorithm_execution")
+    @classmethod
+    def validate_confirmation(cls, value: bool) -> bool:
+        """要求明确确认整个批次不会执行或伪造处理算法。
+
+        Args:
+            value: 客户端确认值。
+
+        Returns:
+            bool: 仅允许明确确认值。
+        """
+        if value is not True:
+            raise ValueError("必须确认批次承认不执行重复算法")
+        return value
+
+    @model_validator(mode="after")
+    def validate_unique_assets(self) -> Self:
+        """确保同一批次不重复承认同一影像资产。
+
+        Returns:
+            Self: 已通过资产唯一性校验的请求。
+        """
+        asset_codes = [item.asset_code for item in self.items]
+        if len(asset_codes) != len(set(asset_codes)):
+            raise ValueError("源产品承认批次不得包含重复影像资产")
+        return self
+
+
+class ImagerySourceLevelBatchItemResponse(BaseModel):
+    """一个完成双步骤源级承认的影像资产证据。"""
+
+    asset_code: str
+    asset_name: str
+    expected_processing_level: str
+    source_profile: str
+    processor_version: str
+    accepted_steps: list[str]
+    source_file_uri: str
+    source_file_size_bytes: int
+    source_checksum_sha256: str
+
+
+class ImagerySourceLevelBatchAcceptResponse(BaseModel):
+    """多景源产品级别原子承认结果。"""
+
+    acceptance_code: str
+    item_count: int
+    accepted_step_count: int
+    imported_by: str
+    imported_by_code: str
+    imported_by_role: str
+    justification: str
+    created_at: datetime
+    items: list[ImagerySourceLevelBatchItemResponse]

@@ -20,6 +20,7 @@ from app.core.exceptions import ValidationException
 from app.core.imagery_files import calculate_sha256
 from app.schemas.imagery import (
     ImagerySourceLevelAcceptRequest,
+    ImagerySourceLevelBatchAcceptRequest,
     ImageryStepExecuteRequest,
 )
 from app.services.imagery_processing_engine import ImageryProcessingEngine
@@ -1012,6 +1013,329 @@ def test_service_accepts_verified_landsat_collection2_l2_for_two_steps(
         for call in workbench_dao.add_review_record.await_args_list
     ]
     assert actions == ["source_level_accepted", "source_level_accepted"]
+
+
+def test_source_level_batch_request_requires_confirmation_and_unique_assets() -> None:
+    """源级批次必须明确确认未执行算法且资产不得重复。"""
+    with pytest.raises(ValidationError, match="不执行重复算法"):
+        ImagerySourceLevelBatchAcceptRequest(
+            operator_code="manager-zhao-zhiyuan",
+            confirm_no_algorithm_execution=False,
+            justification="统一复核公开源产品级别并保留实体证据",
+            items=[
+                {
+                    "asset_code": "LANDSAT_A",
+                    "expected_processing_level": "L2",
+                }
+            ],
+        )
+    with pytest.raises(ValidationError, match="不得包含重复影像资产"):
+        ImagerySourceLevelBatchAcceptRequest(
+            operator_code="manager-zhao-zhiyuan",
+            confirm_no_algorithm_execution=True,
+            justification="统一复核公开源产品级别并保留实体证据",
+            items=[
+                {
+                    "asset_code": "LANDSAT_A",
+                    "expected_processing_level": "L2",
+                },
+                {
+                    "asset_code": "LANDSAT_A",
+                    "expected_processing_level": "L2",
+                },
+            ],
+        )
+
+
+def test_service_atomically_accepts_two_landsat_assets_without_copying(
+    tmp_path: Path,
+) -> None:
+    """两景 Landsat 双步骤承认只提交一次事务并复用各自源实体。"""
+    assets: dict[str, SimpleNamespace] = {}
+    steps_by_asset: dict[int, list[SimpleNamespace]] = {}
+    for index, asset_code in enumerate(
+        ("LANDSAT5_19881128_HRB", "LANDSAT5_19890912_HRB"),
+        start=18,
+    ):
+        asset_dir = tmp_path / "assets" / asset_code
+        asset_dir.mkdir(parents=True)
+        source_path = asset_dir / "source.tif"
+        write_landsat_l2_reflectance_raster(source_path)
+        assets[asset_code] = SimpleNamespace(
+            id=index,
+            project_id=7,
+            asset_code=asset_code,
+            asset_name=f"{asset_code} 公开历史地表反射率",
+            sensor_type="landsat-5 TM",
+            acquired_at=datetime(1988 + index - 18, 11, 28, tzinfo=UTC),
+            cloud_cover=0,
+            resolution_m=30,
+            processing_level="L2",
+            calibration_status="pending",
+            correction_status="pending",
+            file_uri=f"storage://imagery/assets/{asset_code}/source.tif",
+            file_size_bytes=source_path.stat().st_size,
+            checksum_sha256=calculate_sha256(source_path),
+        )
+        steps_by_asset[index] = [
+            SimpleNamespace(
+                step_code="radiometric",
+                step_name="辐射定标",
+                sequence=1,
+                is_required=True,
+                status="pending",
+                progress=0,
+                parameters={},
+                output_uri=None,
+                started_at=None,
+                completed_at=None,
+                updated_at=None,
+            ),
+            SimpleNamespace(
+                step_code="atmospheric",
+                step_name="大气校正",
+                sequence=2,
+                is_required=True,
+                status="pending",
+                progress=0,
+                parameters={},
+                output_uri=None,
+                started_at=None,
+                completed_at=None,
+                updated_at=None,
+            ),
+        ]
+
+    dao = AsyncMock()
+
+    async def get_asset(_db, asset_code):
+        return assets.get(asset_code)
+
+    async def get_step(_db, asset_id, step_code):
+        return next(
+            (
+                step
+                for step in steps_by_asset[asset_id]
+                if step.step_code == step_code
+            ),
+            None,
+        )
+
+    async def get_steps(_db, asset_id):
+        return steps_by_asset[asset_id]
+
+    dao.get_asset_by_code_for_update.side_effect = get_asset
+    dao.get_step_for_update.side_effect = get_step
+    dao.get_steps.side_effect = get_steps
+    workbench_dao = AsyncMock()
+    workbench_dao.get_task_by_code.return_value = SimpleNamespace(
+        id=1,
+        project_id=7,
+    )
+    project_user_service = AsyncMock()
+    project_user_service.require_capability.return_value = SimpleNamespace(
+        user_code="manager-zhao-zhiyuan",
+        display_name="赵志远",
+        role_code="project_manager",
+    )
+    service = ImageryService(
+        dao=dao,
+        workbench_dao=workbench_dao,
+        project_user_service=project_user_service,
+        processing_engine=MagicMock(),
+    )
+    service.storage_dir = tmp_path
+    db = AsyncMock()
+
+    response = asyncio.run(service.accept_source_level_batch(
+        db,
+        "RS-2026-045",
+        ImagerySourceLevelBatchAcceptRequest(
+            operator_code="manager-zhao-zhiyuan",
+            confirm_no_algorithm_execution=True,
+            justification=(
+                "统一复核两景 USGS Landsat Collection 2 Level-2 "
+                "地表反射率和完整 STAC 标度"
+            ),
+            items=[
+                {
+                    "asset_code": "LANDSAT5_19881128_HRB",
+                    "expected_processing_level": "L2",
+                },
+                {
+                    "asset_code": "LANDSAT5_19890912_HRB",
+                    "expected_processing_level": "L2",
+                },
+            ],
+        ),
+    ))
+
+    assert response.item_count == 2
+    assert response.accepted_step_count == 4
+    assert [item.asset_code for item in response.items] == [
+        "LANDSAT5_19881128_HRB",
+        "LANDSAT5_19890912_HRB",
+    ]
+    assert all(
+        item.accepted_steps == ["radiometric", "atmospheric"]
+        for item in response.items
+    )
+    acceptance_codes = {
+        step.parameters["artifact_evidence"]["acceptance_code"]
+        for steps in steps_by_asset.values()
+        for step in steps
+    }
+    assert acceptance_codes == {response.acceptance_code}
+    assert all(
+        step.parameters["artifact_evidence"]["algorithm_executed"] is False
+        for steps in steps_by_asset.values()
+        for step in steps
+    )
+    assert all(asset.calibration_status == "completed" for asset in assets.values())
+    assert all(asset.correction_status == "in_progress" for asset in assets.values())
+    assert len(list(tmp_path.rglob("*.tif"))) == 2
+    db.commit.assert_awaited_once()
+    db.rollback.assert_not_awaited()
+    actions = [
+        call.args[1].action
+        for call in workbench_dao.add_review_record.await_args_list
+    ]
+    assert actions == [
+        "source_level_accepted",
+        "source_level_accepted",
+        "source_level_accepted",
+        "source_level_accepted",
+        "source_level_batch_accepted",
+    ]
+
+
+def test_source_level_batch_rolls_back_before_mutation_when_one_asset_is_invalid(
+    tmp_path: Path,
+) -> None:
+    """任一源实体证据无效时整批回滚且已预检资产不改变步骤状态。"""
+    valid_path = tmp_path / "assets" / "LANDSAT_VALID" / "source.tif"
+    invalid_path = tmp_path / "assets" / "LANDSAT_INVALID" / "source.tif"
+    valid_path.parent.mkdir(parents=True)
+    invalid_path.parent.mkdir(parents=True)
+    write_landsat_l2_reflectance_raster(valid_path)
+    write_landsat_l2_reflectance_raster(
+        invalid_path,
+        calibration=[
+            {"asset": "blue", "scale": 0.0000275, "offset": -0.2},
+        ],
+    )
+    assets = {
+        "LANDSAT_VALID": SimpleNamespace(
+            id=1,
+            project_id=7,
+            asset_code="LANDSAT_VALID",
+            asset_name="有效源实体",
+            processing_level="L2",
+            calibration_status="pending",
+            correction_status="pending",
+            file_uri="storage://imagery/assets/LANDSAT_VALID/source.tif",
+            file_size_bytes=valid_path.stat().st_size,
+            checksum_sha256=calculate_sha256(valid_path),
+        ),
+        "LANDSAT_INVALID": SimpleNamespace(
+            id=2,
+            project_id=7,
+            asset_code="LANDSAT_INVALID",
+            asset_name="无效源实体",
+            processing_level="L2",
+            calibration_status="pending",
+            correction_status="pending",
+            file_uri="storage://imagery/assets/LANDSAT_INVALID/source.tif",
+            file_size_bytes=invalid_path.stat().st_size,
+            checksum_sha256=calculate_sha256(invalid_path),
+        ),
+    }
+    steps_by_asset = {
+        asset_id: [
+            SimpleNamespace(
+                step_code=step_code,
+                step_name=step_name,
+                sequence=sequence,
+                is_required=True,
+                status="pending",
+                progress=0,
+                parameters={},
+                output_uri=None,
+                started_at=None,
+                completed_at=None,
+                updated_at=None,
+            )
+            for sequence, (step_code, step_name) in enumerate(
+                (("radiometric", "辐射定标"), ("atmospheric", "大气校正")),
+                start=1,
+            )
+        ]
+        for asset_id in (1, 2)
+    }
+    dao = AsyncMock()
+    dao.get_asset_by_code_for_update.side_effect = (
+        lambda _db, asset_code: assets.get(asset_code)
+    )
+    dao.get_step_for_update.side_effect = (
+        lambda _db, asset_id, step_code: next(
+            step
+            for step in steps_by_asset[asset_id]
+            if step.step_code == step_code
+        )
+    )
+    dao.get_steps.side_effect = (
+        lambda _db, asset_id: steps_by_asset[asset_id]
+    )
+    workbench_dao = AsyncMock()
+    workbench_dao.get_task_by_code.return_value = SimpleNamespace(
+        id=1,
+        project_id=7,
+    )
+    project_user_service = AsyncMock()
+    project_user_service.require_capability.return_value = SimpleNamespace(
+        user_code="manager-zhao-zhiyuan",
+        display_name="赵志远",
+        role_code="project_manager",
+    )
+    service = ImageryService(
+        dao=dao,
+        workbench_dao=workbench_dao,
+        project_user_service=project_user_service,
+        processing_engine=MagicMock(),
+    )
+    service.storage_dir = tmp_path
+    db = AsyncMock()
+    request = ImagerySourceLevelBatchAcceptRequest(
+        operator_code="manager-zhao-zhiyuan",
+        confirm_no_algorithm_execution=True,
+        justification="验证一个成员证据无效时整批不改变任何步骤",
+        items=[
+            {
+                "asset_code": "LANDSAT_VALID",
+                "expected_processing_level": "L2",
+            },
+            {
+                "asset_code": "LANDSAT_INVALID",
+                "expected_processing_level": "L2",
+            },
+        ],
+    )
+
+    with pytest.raises(ValidationException, match="完整覆盖四个波段"):
+        asyncio.run(service.accept_source_level_batch(
+            db,
+            "RS-2026-045",
+            request,
+        ))
+
+    assert all(
+        step.status == "pending" and step.parameters == {}
+        for steps in steps_by_asset.values()
+        for step in steps
+    )
+    workbench_dao.add_review_record.assert_not_awaited()
+    db.commit.assert_not_awaited()
+    db.rollback.assert_awaited_once()
 
 
 def test_service_rejects_landsat_l2_without_complete_stac_calibration(

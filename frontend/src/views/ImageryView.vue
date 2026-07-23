@@ -13,6 +13,7 @@ import ImageryMosaicPanel from '@/components/imagery/ImageryMosaicPanel.vue'
 import ImageryHistoryPanel from '@/components/imagery/ImageryHistoryPanel.vue'
 import ImageryFusionPanel from '@/components/imagery/ImageryFusionPanel.vue'
 import ImageryRegistrationPanel from '@/components/imagery/ImageryRegistrationPanel.vue'
+import ImagerySourceAcceptanceBatchModal from '@/components/imagery/ImagerySourceAcceptanceBatchModal.vue'
 import ImageryStepActionModal from '@/components/imagery/ImageryStepActionModal.vue'
 import { useAssetStore } from '@/store/assetStore'
 import { useImageryStore } from '@/store/imageryStore'
@@ -36,6 +37,7 @@ const fusionOpenRef = ref<boolean>(false)
 const historyOpenRef = ref<boolean>(false)
 const mosaicOpenRef = ref<boolean>(false)
 const registrationOpenRef = ref<boolean>(false)
+const sourceAcceptanceBatchOpenRef = ref<boolean>(false)
 const actionModeRef = ref<'execute' | 'register' | 'source-accept'>('execute')
 const selectedStepRef = ref<ImageryProcessingStep | null>(null)
 const selectedAssetCodeRef = ref<string>('')
@@ -283,6 +285,13 @@ onMounted(() => {
           </a-button>
           <a-button
             size="small"
+            :disabled="!canProcessComputed"
+            @click="sourceAcceptanceBatchOpenRef = true"
+          >
+            <SafetyCertificateOutlined /> 源级批量承认
+          </a-button>
+          <a-button
+            size="small"
             @click="fusionOpenRef = true"
           >
             全色融合
@@ -393,6 +402,10 @@ onMounted(() => {
     <ImageryFusionPanel v-model:open="fusionOpenRef" />
     <ImageryRegistrationPanel v-model:open="registrationOpenRef" />
     <ImageryMosaicPanel v-model:open="mosaicOpenRef" />
+    <ImagerySourceAcceptanceBatchModal
+      v-model:open="sourceAcceptanceBatchOpenRef"
+      @success="handleActionSuccess"
+    />
   </div>
 </template>
 

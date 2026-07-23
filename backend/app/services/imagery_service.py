@@ -3,6 +3,7 @@
 import asyncio
 import json
 import math
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from urllib.parse import urlparse
@@ -27,11 +28,29 @@ from app.schemas.imagery import (
     ImageryProcessingResponse,
     ImageryProcessingStepResponse,
     ImagerySourceLevelAcceptRequest,
+    ImagerySourceLevelBatchAcceptRequest,
+    ImagerySourceLevelBatchAcceptResponse,
+    ImagerySourceLevelBatchItemResponse,
     ImageryStepExecuteRequest,
     ImageryStepRunRequest,
 )
 from app.services.imagery_processing_engine import ImageryProcessingEngine
 from app.services.project_user_service import ProjectUserService
+
+
+@dataclass(frozen=True)
+class PreparedSourceLevelAcceptance:
+    """一个已完成实体证据预检且尚未写入步骤状态的影像。"""
+
+    asset: object
+    steps: list[object]
+    radiometric_step: object
+    atmospheric_step: object
+    source_path: Path
+    source_evidence: dict
+    source_profile: str
+    processor_version: str
+    expected_processing_level: str
 
 
 class ImageryService:
@@ -694,6 +713,7 @@ class ImageryService:
         comment: str | None,
         evidence_extra: dict | None = None,
         action: str = "processing_step_completed",
+        commit: bool = True,
     ) -> None:
         """保存处理产物证据、状态和不可变审核记录。
 
@@ -709,6 +729,7 @@ class ImageryService:
             comment: 处理说明。
             evidence_extra: 内置处理器输出的附加证据。
             action: 审核动作编码。
+            commit: 是否由当前方法立即提交事务。
 
         Returns:
             None: 完成数据库持久化后返回。
@@ -761,7 +782,8 @@ class ImageryService:
                 ),
             ),
         )
-        await db.commit()
+        if commit:
+            await db.commit()
 
     async def get_processing(
         self,
@@ -1086,3 +1108,216 @@ class ImageryService:
             action="source_level_accepted",
         )
         return await self.get_processing(db, asset_code)
+
+    async def accept_source_level_batch(
+        self,
+        db: AsyncSession,
+        task_code: str,
+        request: ImagerySourceLevelBatchAcceptRequest,
+    ) -> ImagerySourceLevelBatchAcceptResponse:
+        """原子承认 1–10 景源产品的辐射定标和大气校正要求。
+
+        所有实体、SHA-256、产品族和步骤状态先完成预检，再在一个数据库事务中
+        写入双步骤证据。任一成员失败时不会保留部分步骤或审核记录。
+
+        Args:
+            db: 异步数据库会话。
+            task_code: 作业任务编号。
+            request: 影像清单、稳定操作人、无算法确认和人工依据。
+
+        Returns:
+            ImagerySourceLevelBatchAcceptResponse: 统一批次和逐景实体证据。
+        """
+        task = await self.workbench_dao.get_task_by_code(db, task_code)
+        if task is None:
+            raise NotFoundException(f"未找到任务 {task_code}")
+        operator = await self.project_user_service.require_capability(
+            db,
+            task.project_id,
+            request.operator_code,
+            "process_imagery",
+        )
+        prepared_by_code: dict[str, PreparedSourceLevelAcceptance] = {}
+        try:
+            for request_item in sorted(
+                request.items,
+                key=lambda item: item.asset_code,
+            ):
+                asset = await self.dao.get_asset_by_code_for_update(
+                    db,
+                    request_item.asset_code,
+                )
+                if asset is None:
+                    raise NotFoundException(
+                        f"未找到影像资产 {request_item.asset_code}"
+                    )
+                if asset.project_id != task.project_id:
+                    raise ValidationException(
+                        f"影像资产 {asset.asset_code} 不属于当前任务项目"
+                    )
+                if str(asset.processing_level or "").upper() != (
+                    request_item.expected_processing_level
+                ):
+                    raise ValidationException(
+                        f"资产 {asset.asset_code} 处理级别与批次请求不一致"
+                    )
+                radiometric_step = await self.dao.get_step_for_update(
+                    db,
+                    asset.id,
+                    "radiometric",
+                )
+                atmospheric_step = await self.dao.get_step_for_update(
+                    db,
+                    asset.id,
+                    "atmospheric",
+                )
+                if radiometric_step is None or atmospheric_step is None:
+                    raise NotFoundException(
+                        f"资产 {asset.asset_code} 缺少定标或大气校正步骤"
+                    )
+                if self._inspect_step_artifact(radiometric_step)[0]:
+                    raise ValidationException(
+                        f"资产 {asset.asset_code} 的辐射定标步骤已完成"
+                    )
+                if self._inspect_step_artifact(atmospheric_step)[0]:
+                    raise ValidationException(
+                        f"资产 {asset.asset_code} 的大气校正步骤已完成"
+                    )
+                unlocked_steps = list(await self.dao.get_steps(db, asset.id))
+                locked_steps = {
+                    "radiometric": radiometric_step,
+                    "atmospheric": atmospheric_step,
+                }
+                steps = [
+                    locked_steps.get(step.step_code, step)
+                    for step in unlocked_steps
+                ]
+                source_path = self.resolve_verified_asset_source_path(asset)
+                source_evidence = await asyncio.to_thread(
+                    self._inspect_source_level_evidence,
+                    source_path,
+                    request_item.expected_processing_level,
+                )
+                source_profile = str(source_evidence["source_profile"])
+                prepared_by_code[asset.asset_code] = (
+                    PreparedSourceLevelAcceptance(
+                        asset=asset,
+                        steps=steps,
+                        radiometric_step=radiometric_step,
+                        atmospheric_step=atmospheric_step,
+                        source_path=source_path,
+                        source_evidence=source_evidence,
+                        source_profile=source_profile,
+                        processor_version=(
+                            self.SOURCE_LEVEL_PROCESSOR_VERSIONS[source_profile]
+                        ),
+                        expected_processing_level=(
+                            request_item.expected_processing_level
+                        ),
+                    )
+                )
+
+            acceptance_code = f"SLA-{uuid4().hex.upper()}"
+            created_at = datetime.now(UTC)
+            for request_item in request.items:
+                prepared = prepared_by_code[request_item.asset_code]
+                relative_path = prepared.source_path.relative_to(
+                    self.storage_dir
+                ).as_posix()
+                for step in (
+                    prepared.radiometric_step,
+                    prepared.atmospheric_step,
+                ):
+                    acceptance_basis = self.SOURCE_LEVEL_ACCEPTANCE_BASIS[
+                        prepared.source_profile
+                    ][step.step_code]
+                    invalidated_steps = self._invalidate_downstream_steps(
+                        prepared.asset,
+                        prepared.steps,
+                        step,
+                    )
+                    await self._persist_step_completion(
+                        db,
+                        task,
+                        prepared.asset,
+                        step,
+                        relative_path,
+                        "受控源产品级别承认",
+                        prepared.processor_version,
+                        operator,
+                        f"批次 {acceptance_code}；{request.justification}",
+                        evidence_extra={
+                            "execution_mode": "source_level_acceptance",
+                            "algorithm_executed": False,
+                            "acceptance_code": acceptance_code,
+                            "expected_processing_level": (
+                                prepared.expected_processing_level
+                            ),
+                            "source_profile": prepared.source_profile,
+                            "acceptance_basis": acceptance_basis,
+                            "source_evidence": prepared.source_evidence,
+                            "invalidated_downstream_steps": invalidated_steps,
+                        },
+                        action="source_level_accepted",
+                        commit=False,
+                    )
+            await self.workbench_dao.add_review_record(
+                db,
+                ReviewRecord(
+                    task_id=task.id,
+                    review_level="imagery_processing",
+                    action="source_level_batch_accepted",
+                    reviewer=operator.display_name,
+                    reviewer_code=operator.user_code,
+                    reviewer_role=operator.role_code,
+                    comment=(
+                        f"源级原子承认批次 {acceptance_code}，共 "
+                        f"{len(request.items)} 景、{len(request.items) * 2} 个步骤；"
+                        f"未执行重复算法；{request.justification}"
+                    ),
+                ),
+            )
+            await db.commit()
+        except BaseException:
+            await db.rollback()
+            raise
+
+        return ImagerySourceLevelBatchAcceptResponse(
+            acceptance_code=acceptance_code,
+            item_count=len(request.items),
+            accepted_step_count=len(request.items) * 2,
+            imported_by=operator.display_name,
+            imported_by_code=operator.user_code,
+            imported_by_role=operator.role_code,
+            justification=request.justification,
+            created_at=created_at,
+            items=[
+                ImagerySourceLevelBatchItemResponse(
+                    asset_code=prepared_by_code[item.asset_code].asset.asset_code,
+                    asset_name=prepared_by_code[item.asset_code].asset.asset_name,
+                    expected_processing_level=(
+                        prepared_by_code[
+                            item.asset_code
+                        ].expected_processing_level
+                    ),
+                    source_profile=(
+                        prepared_by_code[item.asset_code].source_profile
+                    ),
+                    processor_version=(
+                        prepared_by_code[item.asset_code].processor_version
+                    ),
+                    accepted_steps=["radiometric", "atmospheric"],
+                    source_file_uri=(
+                        f"storage://imagery/"
+                        f"{prepared_by_code[item.asset_code].source_path.relative_to(self.storage_dir).as_posix()}"
+                    ),
+                    source_file_size_bytes=(
+                        prepared_by_code[item.asset_code].source_path.stat().st_size
+                    ),
+                    source_checksum_sha256=str(
+                        prepared_by_code[item.asset_code].asset.checksum_sha256
+                    ),
+                )
+                for item in request.items
+            ],
+        )

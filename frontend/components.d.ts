@@ -90,6 +90,7 @@ declare module 'vue' {
     ImageryHistoryPanel: typeof import('./src/components/imagery/ImageryHistoryPanel.vue')['default']
     ImageryMosaicPanel: typeof import('./src/components/imagery/ImageryMosaicPanel.vue')['default']
     ImageryRegistrationPanel: typeof import('./src/components/imagery/ImageryRegistrationPanel.vue')['default']
+    ImagerySourceAcceptanceBatchModal: typeof import('./src/components/imagery/ImagerySourceAcceptanceBatchModal.vue')['default']
     ImageryStepActionModal: typeof import('./src/components/imagery/ImageryStepActionModal.vue')['default']
     InterpretationPanel: typeof import('./src/components/panels/InterpretationPanel.vue')['default']
     LayerHierarchyCatalog: typeof import('./src/components/LayerHierarchyCatalog.vue')['default']

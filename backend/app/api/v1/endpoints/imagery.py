@@ -17,6 +17,8 @@ from app.schemas.imagery import (
     ImageryProcessingResponse,
     ImageryQuicklookResponse,
     ImagerySourceLevelAcceptRequest,
+    ImagerySourceLevelBatchAcceptRequest,
+    ImagerySourceLevelBatchAcceptResponse,
     ImageryStepExecuteRequest,
     ImageryStepRunRequest,
 )
@@ -162,6 +164,28 @@ async def upload_imagery_asset_batch(
     finally:
         for file in files:
             await file.close()
+
+
+@router.post(
+    "/source-acceptance-batches",
+    response_model=ImagerySourceLevelBatchAcceptResponse,
+)
+async def accept_imagery_source_level_batch(
+    request: ImagerySourceLevelBatchAcceptRequest,
+    db: DatabaseSession,
+    task_code: Annotated[str, Query(min_length=1, max_length=50)] = "RS-2026-045",
+) -> ImagerySourceLevelBatchAcceptResponse:
+    """原子承认多景 L2A/L2 源产品的定标与大气校正要求。
+
+    Args:
+        request: 1–10 景资产、稳定操作人、无算法确认和承认依据。
+        db: FastAPI 注入的异步数据库会话。
+        task_code: 审计所属任务编号。
+
+    Returns:
+        ImagerySourceLevelBatchAcceptResponse: 批次编号和逐景源实体证据。
+    """
+    return await service.accept_source_level_batch(db, task_code, request)
 
 
 @router.get("/{asset_code}/processing", response_model=ImageryProcessingResponse)
