@@ -1,4 +1,5 @@
 import type { ImageryAssetItem } from '@/types/workbench'
+import type { ImageryBatchResponse } from '@/types/imageryBatch'
 
 export interface PublicImagerySearchRequest {
   bbox: [number, number, number, number]
@@ -56,4 +57,46 @@ export interface PublicImageryImportResponse {
   license_name: string
   non_statutory_notice: string
   asset: ImageryAssetItem
+}
+
+export interface PublicImageryBatchDraft {
+  asset_code: string
+  asset_name: string
+}
+
+export interface PublicImageryBatchImportItemRequest {
+  item_id: string
+  asset_code: string
+  asset_name: string
+}
+
+export interface PublicImageryBatchImportRequest {
+  project_code: string
+  task_code: string
+  operator_code: string
+  batch_code: string
+  comment: string
+  bbox: [number, number, number, number]
+  items: PublicImageryBatchImportItemRequest[]
+}
+
+export interface PublicImageryBatchSource {
+  item_id: string
+  asset_code: string
+  source_product_id: string
+  source_acquired_at: string
+  source_cloud_cover: number | null
+  source_wrs_path: number | null
+  source_wrs_row: number | null
+}
+
+export interface PublicImageryBatchImportResponse {
+  provider: string
+  collection: string
+  license_name: string
+  license_url: string
+  non_statutory_notice: string
+  query_bbox: [number, number, number, number]
+  sources: PublicImageryBatchSource[]
+  batch: ImageryBatchResponse
 }

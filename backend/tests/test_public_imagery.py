@@ -10,8 +10,9 @@ import pytest
 import rasterio
 from rasterio.transform import from_origin
 
-from app.schemas.imagery import ImageryAssetResponse
+from app.schemas.imagery import ImageryAssetBatchResponse, ImageryAssetResponse
 from app.schemas.public_imagery import (
+    PublicImageryBatchImportRequest,
     PublicImageryImportRequest,
     PublicImagerySearchRequest,
 )
@@ -55,11 +56,14 @@ def _stac_item(
     }
 
 
-def _asset_response() -> ImageryAssetResponse:
+def _asset_response(
+    asset_code: str = "LANDSAT_19861209_HRB",
+    asset_name: str = "1986 年 Landsat-5 哈尔滨历史影像",
+) -> ImageryAssetResponse:
     """构造统一影像资产入库响应。"""
     return ImageryAssetResponse(
-        asset_code="LANDSAT_19861209_HRB",
-        asset_name="1986 年 Landsat-5 哈尔滨历史影像",
+        asset_code=asset_code,
+        asset_name=asset_name,
         sensor_type="landsat-5 TM",
         acquired_at=datetime(1986, 12, 9, 1, 39, tzinfo=UTC),
         cloud_cover=2,
@@ -257,3 +261,240 @@ async def test_import_refetches_item_builds_entity_and_uses_atomic_asset_service
         "manager-zhao-zhiyuan",
         "manage_imagery",
     )
+
+
+def test_public_batch_request_rejects_duplicate_items_and_asset_codes() -> None:
+    """公开影像批次必须同时保持 STAC Item 和资产编号唯一。"""
+    common = {
+        "project_code": "RS-2026",
+        "task_code": "RS-2026-045",
+        "operator_code": "manager-zhao-zhiyuan",
+        "batch_code": "IMB-LANDSAT-HISTORY",
+        "comment": "导入两景公开 Landsat 历史地表反射率语料",
+        "bbox": (126.5, 45.7, 126.8, 45.9),
+    }
+    with pytest.raises(ValueError, match="不得重复选择 STAC Item"):
+        PublicImageryBatchImportRequest.model_validate({
+            **common,
+            "items": [
+                {
+                    "item_id": "LT05_SAME",
+                    "asset_code": "LANDSAT_A",
+                    "asset_name": "历史影像 A",
+                },
+                {
+                    "item_id": "LT05_SAME",
+                    "asset_code": "LANDSAT_B",
+                    "asset_name": "历史影像 B",
+                },
+            ],
+        })
+    with pytest.raises(ValueError, match="不得包含重复资产编号"):
+        PublicImageryBatchImportRequest.model_validate({
+            **common,
+            "items": [
+                {
+                    "item_id": "LT05_ITEM_A",
+                    "asset_code": "LANDSAT_SAME",
+                    "asset_name": "历史影像 A",
+                },
+                {
+                    "item_id": "LT05_ITEM_B",
+                    "asset_code": "LANDSAT_SAME",
+                    "asset_name": "历史影像 B",
+                },
+            ],
+        })
+
+
+@pytest.mark.asyncio
+async def test_batch_import_prepares_all_items_then_calls_atomic_service_once(
+    tmp_path: Path,
+) -> None:
+    """多景公开影像只调用一次统一批次服务并按请求顺序保存来源。"""
+    item_ids = [
+        "LT05_L2SP_118028_19881128_02_T1",
+        "LT05_L2SP_118028_19890912_02_T1",
+    ]
+    stac_items = {item_id: _stac_item(item_id=item_id) for item_id in item_ids}
+    client = SimpleNamespace(
+        COLLECTION="landsat-c2-l2",
+        get_item=lambda item_id: stac_items[item_id],
+        sign_asset_url=lambda href: f"{href}?temporary-signature=masked",
+    )
+    engine = PublicImageryEngine()
+
+    def build_subset(item, _bbox, signed_urls, output_path):
+        assert all("temporary-signature" in url for url in signed_urls.values())
+        with rasterio.open(
+            output_path,
+            "w",
+            driver="GTiff",
+            width=2,
+            height=2,
+            count=4,
+            dtype="float32",
+            crs="EPSG:4326",
+            transform=from_origin(126.5, 45.9, 0.15, 0.1),
+        ) as output:
+            output.write(np.ones((4, 2, 2), dtype="float32"))
+            output.update_tags(STAC_ITEM_ID=item.item_id)
+
+    engine.build_reflectance_subset = build_subset
+    prepared_paths = iter([
+        tmp_path / "first.tif",
+        tmp_path / "second.tif",
+    ])
+    captured: dict[str, object] = {}
+
+    async def upload_assets_batch(
+        _db,
+        project_code,
+        task_code,
+        request,
+        files,
+    ):
+        assert project_code == "RS-2026"
+        assert task_code == "RS-2026-045"
+        captured["request"] = request
+        captured["files"] = [item.filename for item in files]
+        for expected_id, upload in zip(item_ids, files, strict=True):
+            with rasterio.open(upload.file_handle.name) as dataset:
+                assert dataset.tags()["STAC_ITEM_ID"] == expected_id
+        return ImageryAssetBatchResponse(
+            batch_code=request.batch_code,
+            item_count=2,
+            total_size_bytes=2048,
+            manifest_sha256="b" * 64,
+            imported_by="赵志远",
+            imported_by_code="manager-zhao-zhiyuan",
+            imported_by_role="project_manager",
+            comment=request.comment,
+            created_at=datetime(2026, 7, 23, tzinfo=UTC),
+            items=[
+                _asset_response("LANDSAT5_19881128_HRB", "1988 历史影像"),
+                _asset_response("LANDSAT5_19890912_HRB", "1989 历史影像"),
+            ],
+        )
+
+    asset_service = SimpleNamespace(upload_assets_batch=upload_assets_batch)
+    workbench_dao = SimpleNamespace(
+        get_project_by_code=AsyncMock(return_value=SimpleNamespace(id=1)),
+        get_task_by_code=AsyncMock(return_value=SimpleNamespace(id=2, project_id=1)),
+    )
+    project_user_service = SimpleNamespace(
+        require_capability=AsyncMock(return_value=SimpleNamespace()),
+    )
+    service = PublicImageryService(
+        client=client,
+        engine=engine,
+        asset_service=asset_service,
+        workbench_dao=workbench_dao,
+        project_user_service=project_user_service,
+    )
+    service._temporary_output_path = lambda _item_id: next(prepared_paths)
+
+    response = await service.import_batch(
+        SimpleNamespace(),
+        PublicImageryBatchImportRequest(
+            project_code="RS-2026",
+            task_code="RS-2026-045",
+            operator_code="manager-zhao-zhiyuan",
+            batch_code="IMB-LANDSAT-HISTORY-1988-1989-HRB",
+            comment="导入两景公开 Landsat 历史地表反射率语料",
+            bbox=(126.5, 45.7, 126.8, 45.9),
+            items=[
+                {
+                    "item_id": item_ids[0],
+                    "asset_code": "LANDSAT5_19881128_HRB",
+                    "asset_name": "1988 历史影像",
+                },
+                {
+                    "item_id": item_ids[1],
+                    "asset_code": "LANDSAT5_19890912_HRB",
+                    "asset_name": "1989 历史影像",
+                },
+            ],
+        ),
+    )
+
+    assert response.batch.item_count == 2
+    assert [source.item_id for source in response.sources] == item_ids
+    assert captured["files"] == [
+        f"{item_ids[0]}_SR_SUBSET.tif",
+        f"{item_ids[1]}_SR_SUBSET.tif",
+    ]
+    assert captured["request"].batch_code == (
+        "IMB-LANDSAT-HISTORY-1988-1989-HRB"
+    )
+    assert not (tmp_path / "first.tif").exists()
+    assert not (tmp_path / "second.tif").exists()
+
+
+@pytest.mark.asyncio
+async def test_batch_import_cleans_all_subsets_when_later_item_fails(
+    tmp_path: Path,
+) -> None:
+    """任一景裁取失败时清除全部公开临时实体且不进入影像入库事务。"""
+    item_ids = ["LT05_ITEM_OK", "LT05_ITEM_FAILED"]
+    stac_items = {item_id: _stac_item(item_id=item_id) for item_id in item_ids}
+    client = SimpleNamespace(
+        COLLECTION="landsat-c2-l2",
+        get_item=lambda item_id: stac_items[item_id],
+        sign_asset_url=lambda href: f"{href}?temporary-signature=masked",
+    )
+    engine = PublicImageryEngine()
+
+    def build_subset(item, _bbox, _signed_urls, output_path):
+        output_path.write_bytes(b"partial")
+        if item.item_id == item_ids[1]:
+            raise RuntimeError("第二景裁取失败")
+
+    engine.build_reflectance_subset = build_subset
+    prepared_paths = iter([
+        tmp_path / "first.tif",
+        tmp_path / "failed.tif",
+    ])
+    asset_service = SimpleNamespace(upload_assets_batch=AsyncMock())
+    service = PublicImageryService(
+        client=client,
+        engine=engine,
+        asset_service=asset_service,
+        workbench_dao=SimpleNamespace(
+            get_project_by_code=AsyncMock(return_value=SimpleNamespace(id=1)),
+            get_task_by_code=AsyncMock(
+                return_value=SimpleNamespace(id=2, project_id=1)
+            ),
+        ),
+        project_user_service=SimpleNamespace(
+            require_capability=AsyncMock(return_value=SimpleNamespace()),
+        ),
+    )
+    service._temporary_output_path = lambda _item_id: next(prepared_paths)
+    request = PublicImageryBatchImportRequest(
+        project_code="RS-2026",
+        task_code="RS-2026-045",
+        operator_code="manager-zhao-zhiyuan",
+        batch_code="IMB-LANDSAT-ROLLBACK",
+        comment="验证任一公开影像失败时整批清理临时实体",
+        bbox=(126.5, 45.7, 126.8, 45.9),
+        items=[
+            {
+                "item_id": item_ids[0],
+                "asset_code": "LANDSAT_OK",
+                "asset_name": "成功候选",
+            },
+            {
+                "item_id": item_ids[1],
+                "asset_code": "LANDSAT_FAILED",
+                "asset_name": "失败候选",
+            },
+        ],
+    )
+
+    with pytest.raises(RuntimeError, match="第二景裁取失败"):
+        await service.import_batch(SimpleNamespace(), request)
+
+    asset_service.upload_assets_batch.assert_not_awaited()
+    assert not (tmp_path / "first.tif").exists()
+    assert not (tmp_path / "failed.tif").exists()

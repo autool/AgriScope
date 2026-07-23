@@ -2,27 +2,47 @@
 
 import asyncio
 import tempfile
+from contextlib import ExitStack
+from dataclasses import dataclass
 from pathlib import Path
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.exceptions import NotFoundException, ValidationException
 from app.dao.workbench_dao import WorkbenchDAO
-from app.schemas.imagery import ImageryAssetCreateRequest
+from app.schemas.imagery import (
+    ImageryAssetBatchCreateRequest,
+    ImageryAssetCreateRequest,
+)
 from app.schemas.public_imagery import (
+    PublicImageryBatchImportRequest,
+    PublicImageryBatchImportResponse,
+    PublicImageryBatchSourceResponse,
     PublicImageryCandidateResponse,
     PublicImageryImportRequest,
     PublicImageryImportResponse,
     PublicImagerySearchRequest,
     PublicImagerySearchResponse,
 )
-from app.services.imagery_asset_service import ImageryAssetService
+from app.services.imagery_asset_service import (
+    ImageryAssetService,
+    ImageryBatchUploadFile,
+)
 from app.services.project_user_service import ProjectUserService
 from app.services.public_imagery_client import PublicImageryClient
 from app.services.public_imagery_engine import (
     PublicImageryEngine,
     PublicLandsatItem,
 )
+
+
+@dataclass(frozen=True)
+class PreparedPublicImagerySubset:
+    """一个已由服务端重新获取并裁取完成的公开 Landsat 临时实体。"""
+
+    item: PublicLandsatItem
+    output_path: Path
+    original_filename: str
 
 
 class PublicImageryService:
@@ -116,29 +136,194 @@ class PublicImageryService:
         Returns:
             PublicImageryImportResponse: 公开来源和已校验资产结果。
         """
-        project = await self.workbench_dao.get_project_by_code(
+        await self._require_import_scope(
             db,
             request.project_code,
+            request.task_code,
+            request.operator_code,
         )
-        task = await self.workbench_dao.get_task_by_code(db, request.task_code)
+        prepared = await self._prepare_subset(request.item_id, request.bbox)
+        try:
+            with prepared.output_path.open("rb") as file_handle:
+                asset = await self.asset_service.upload_asset(
+                    db,
+                    request.project_code,
+                    request.task_code,
+                    ImageryAssetCreateRequest(
+                        asset_code=request.asset_code,
+                        asset_name=request.asset_name,
+                        sensor_type=None,
+                        acquired_at=None,
+                        cloud_cover=None,
+                        processing_level=None,
+                        data_status="operational",
+                        operator_code=request.operator_code,
+                    ),
+                    prepared.original_filename,
+                    file_handle,
+                )
+        finally:
+            prepared.output_path.unlink(missing_ok=True)
+        return PublicImageryImportResponse(
+            provider=self.engine.PROVIDER,
+            collection=self.client.COLLECTION,
+            item_id=prepared.item.item_id,
+            source_product_id=prepared.item.product_id,
+            source_acquired_at=prepared.item.acquired_at,
+            source_cloud_cover=prepared.item.cloud_cover,
+            source_wrs_path=prepared.item.wrs_path,
+            source_wrs_row=prepared.item.wrs_row,
+            license_name=self.engine.LICENSE_NAME,
+            non_statutory_notice=self.engine.NON_STATUTORY_NOTICE,
+            asset=asset,
+        )
+
+    async def import_batch(
+        self,
+        db: AsyncSession,
+        request: PublicImageryBatchImportRequest,
+    ) -> PublicImageryBatchImportResponse:
+        """裁取全部公开条目后复用统一影像批次服务一次原子入库。
+
+        Args:
+            db: 异步数据库会话。
+            request: 共同 WGS84 范围、1–10 个条目和批次审计信息。
+
+        Returns:
+            PublicImageryBatchImportResponse: 来源清单和原子批次结果。
+        """
+        await self._require_import_scope(
+            db,
+            request.project_code,
+            request.task_code,
+            request.operator_code,
+        )
+        prepared_subsets: list[PreparedPublicImagerySubset] = []
+        try:
+            for request_item in request.items:
+                prepared_subsets.append(await self._prepare_subset(
+                    request_item.item_id,
+                    request.bbox,
+                ))
+            batch_request = ImageryAssetBatchCreateRequest.model_validate({
+                "batch_code": request.batch_code,
+                "operator_code": request.operator_code,
+                "comment": request.comment,
+                "items": [
+                    {
+                        "filename": prepared.original_filename,
+                        "asset_code": request_item.asset_code,
+                        "asset_name": request_item.asset_name,
+                        "sensor_type": None,
+                        "acquired_at": None,
+                        "cloud_cover": None,
+                        "processing_level": None,
+                        "data_status": "operational",
+                    }
+                    for request_item, prepared in zip(
+                        request.items,
+                        prepared_subsets,
+                        strict=True,
+                    )
+                ],
+            })
+            with ExitStack() as stack:
+                upload_files = [
+                    ImageryBatchUploadFile(
+                        filename=prepared.original_filename,
+                        file_handle=stack.enter_context(
+                            prepared.output_path.open("rb")
+                        ),
+                    )
+                    for prepared in prepared_subsets
+                ]
+                batch = await self.asset_service.upload_assets_batch(
+                    db,
+                    request.project_code,
+                    request.task_code,
+                    batch_request,
+                    upload_files,
+                )
+            return PublicImageryBatchImportResponse(
+                provider=self.engine.PROVIDER,
+                collection=self.client.COLLECTION,
+                license_name=self.engine.LICENSE_NAME,
+                license_url=self.engine.LICENSE_URL,
+                non_statutory_notice=self.engine.NON_STATUTORY_NOTICE,
+                query_bbox=request.bbox,
+                sources=[
+                    PublicImageryBatchSourceResponse(
+                        item_id=prepared.item.item_id,
+                        asset_code=request_item.asset_code,
+                        source_product_id=prepared.item.product_id,
+                        source_acquired_at=prepared.item.acquired_at,
+                        source_cloud_cover=prepared.item.cloud_cover,
+                        source_wrs_path=prepared.item.wrs_path,
+                        source_wrs_row=prepared.item.wrs_row,
+                    )
+                    for request_item, prepared in zip(
+                        request.items,
+                        prepared_subsets,
+                        strict=True,
+                    )
+                ],
+                batch=batch,
+            )
+        finally:
+            for prepared in prepared_subsets:
+                prepared.output_path.unlink(missing_ok=True)
+
+    async def _require_import_scope(
+        self,
+        db: AsyncSession,
+        project_code: str,
+        task_code: str,
+        operator_code: str,
+    ) -> None:
+        """在访问外部影像前校验项目、任务和稳定用户能力。
+
+        Args:
+            db: 异步数据库会话。
+            project_code: 项目编号。
+            task_code: 作业任务编号。
+            operator_code: 稳定操作人编码。
+
+        Returns:
+            None: 校验通过后无返回值。
+        """
+        project = await self.workbench_dao.get_project_by_code(db, project_code)
+        task = await self.workbench_dao.get_task_by_code(db, task_code)
         if project is None:
-            raise NotFoundException(f"未找到项目 {request.project_code}")
+            raise NotFoundException(f"未找到项目 {project_code}")
         if task is None or task.project_id != project.id:
             raise ValidationException("作业任务不属于当前项目")
         await self.project_user_service.require_capability(
             db,
             project.id,
-            request.operator_code,
+            operator_code,
             "manage_imagery",
         )
 
-        feature = await asyncio.to_thread(self.client.get_item, request.item_id)
-        item = self.engine.parse_item(feature)
-        if item.item_id != request.item_id:
-            raise ValidationException("公开 STAC 返回的 Item ID 与请求不一致")
-        if not self.engine.fully_covers(item.bbox, request.bbox):
-            raise ValidationException("选中 Landsat 条目未完整覆盖目标 WGS84 范围")
+    async def _prepare_subset(
+        self,
+        item_id: str,
+        bbox: tuple[float, float, float, float],
+    ) -> PreparedPublicImagerySubset:
+        """服务端重取一个 Item、签名四波段并生成临时反射率实体。
 
+        Args:
+            item_id: 浏览器仅提交的稳定 STAC Item ID。
+            bbox: 本次批次共同使用的 WGS84 裁取范围。
+
+        Returns:
+            PreparedPublicImagerySubset: 已完成裁取的临时实体和来源证据。
+        """
+        feature = await asyncio.to_thread(self.client.get_item, item_id)
+        item = self.engine.parse_item(feature)
+        if item.item_id != item_id:
+            raise ValidationException("公开 STAC 返回的 Item ID 与请求不一致")
+        if not self.engine.fully_covers(item.bbox, bbox):
+            raise ValidationException("选中 Landsat 条目未完整覆盖目标 WGS84 范围")
         signed_pairs = await asyncio.gather(*[
             asyncio.to_thread(
                 self.client.sign_asset_url,
@@ -155,42 +340,17 @@ class PublicImageryService:
             await asyncio.to_thread(
                 self.engine.build_reflectance_subset,
                 item,
-                request.bbox,
+                bbox,
                 signed_urls,
                 temporary_path,
             )
-            with temporary_path.open("rb") as file_handle:
-                asset = await self.asset_service.upload_asset(
-                    db,
-                    request.project_code,
-                    request.task_code,
-                    ImageryAssetCreateRequest(
-                        asset_code=request.asset_code,
-                        asset_name=request.asset_name,
-                        sensor_type=None,
-                        acquired_at=None,
-                        cloud_cover=None,
-                        processing_level=None,
-                        data_status="operational",
-                        operator_code=request.operator_code,
-                    ),
-                    temporary_path.name,
-                    file_handle,
-                )
-        finally:
+        except BaseException:
             temporary_path.unlink(missing_ok=True)
-        return PublicImageryImportResponse(
-            provider=self.engine.PROVIDER,
-            collection=self.client.COLLECTION,
-            item_id=item.item_id,
-            source_product_id=item.product_id,
-            source_acquired_at=item.acquired_at,
-            source_cloud_cover=item.cloud_cover,
-            source_wrs_path=item.wrs_path,
-            source_wrs_row=item.wrs_row,
-            license_name=self.engine.LICENSE_NAME,
-            non_statutory_notice=self.engine.NON_STATUTORY_NOTICE,
-            asset=asset,
+            raise
+        return PreparedPublicImagerySubset(
+            item=item,
+            output_path=temporary_path,
+            original_filename=f"{item.item_id}_SR_SUBSET.tif",
         )
 
     @classmethod

@@ -1,5 +1,7 @@
 import request from '@/api/request'
 import type {
+  PublicImageryBatchImportRequest,
+  PublicImageryBatchImportResponse,
   PublicImageryImportRequest,
   PublicImageryImportResponse,
   PublicImagerySearchRequest,
@@ -22,4 +24,13 @@ export const importPublicImagery = (
   '/v1/public-imagery/import',
   payload,
   { timeout: 20 * 60 * 1000 },
+)
+
+/** 服务端裁取全部公开条目后，通过一次影像批次事务整批入库。 */
+export const importPublicImageryBatch = (
+  payload: PublicImageryBatchImportRequest,
+) => request.post<PublicImageryBatchImportResponse>(
+  '/v1/public-imagery/import-batch',
+  payload,
+  { timeout: 40 * 60 * 1000 },
 )

@@ -1,15 +1,14 @@
 <script setup lang="ts">
 import {
   AimOutlined,
-  CloudDownloadOutlined,
   FileSearchOutlined,
   LinkOutlined,
-  SafetyCertificateOutlined,
 } from '@ant-design/icons-vue'
 import { message } from 'ant-design-vue'
 import { storeToRefs } from 'pinia'
-import { computed, ref, watch } from 'vue'
+import { computed } from 'vue'
 
+import PublicImageryBatchImportForm from '@/components/imagery/PublicImageryBatchImportForm.vue'
 import { usePublicImageryStore } from '@/store/publicImageryStore'
 import type { PublicImageryCandidate } from '@/types/publicImagery'
 
@@ -17,16 +16,10 @@ const publicImageryStore = usePublicImageryStore()
 const {
   queryRef,
   resultRef,
-  selectedItemIdRef,
-  selectedCandidateComputed,
+  selectedItemIdsRef,
   searchingRef,
-  importingRef,
   errorRef,
-  lastImportRef,
-  canImportComputed,
 } = storeToRefs(publicImageryStore)
-const assetCodeRef = ref<string>('')
-const assetNameRef = ref<string>('')
 
 const completeCandidateCountComputed = computed<number>(() => (
   resultRef.value?.items.filter(item => item.fully_covers_query).length || 0
@@ -50,18 +43,6 @@ const wrsLabel = (candidate: PublicImageryCandidate): string => (
     : 'WRS 未登记'
 )
 
-const createAssetDefaults = (candidate: PublicImageryCandidate): void => {
-  const dateCode = candidate.acquired_at.slice(0, 10).replaceAll('-', '')
-  const pathCode = candidate.wrs_path === null
-    ? 'PXXX'
-    : `P${String(candidate.wrs_path).padStart(3, '0')}`
-  const rowCode = candidate.wrs_row === null
-    ? 'RXXX'
-    : `R${String(candidate.wrs_row).padStart(3, '0')}`
-  assetCodeRef.value = `LS_${dateCode}_${pathCode}_${rowCode}`
-  assetNameRef.value = `${candidate.acquired_at.slice(0, 10)} ${platformLabel(candidate.platform)} ${pathCode}/${rowCode} 公开历史地表反射率`
-}
-
 const runSearch = async (): Promise<void> => {
   try {
     await publicImageryStore.search()
@@ -70,25 +51,13 @@ const runSearch = async (): Promise<void> => {
   }
 }
 
-const runImport = async (): Promise<void> => {
-  if (!assetCodeRef.value.trim() || !assetNameRef.value.trim()) {
-    message.warning('请填写资产编号和资产名称')
-    return
-  }
+const toggleCandidate = (itemId: string): void => {
   try {
-    const response = await publicImageryStore.importSelected(
-      assetCodeRef.value.trim(),
-      assetNameRef.value.trim(),
-    )
-    message.success(`已导入 ${response.asset.asset_code}，历史覆盖矩阵已刷新`)
-  } catch {
-    return
+    publicImageryStore.toggleCandidate(itemId)
+  } catch (error) {
+    message.warning(error instanceof Error ? error.message : '无法选择当前候选')
   }
 }
-
-watch(selectedCandidateComputed, (candidate) => {
-  if (candidate) createAssetDefaults(candidate)
-})
 </script>
 
 <template>
@@ -97,7 +66,7 @@ watch(selectedCandidateComputed, (candidate) => {
       type="info"
       show-icon
       message="公开 Landsat Collection 2 Level-2 历史语料"
-      description="检索端点、collection 和四个反射率波段由服务端固定。导入时服务端重新读取 STAC Item，临时申请 SAS，应用 Raster Extension scale/offset 后生成 Blue/Green/Red/NIR 浮点 GeoTIFF；SAS 不进入浏览器、数据库或文件标签。"
+      description="检索端点、collection 和四个反射率波段由服务端固定。可选择 1–10 景候选；服务端逐景重新读取 STAC Item、临时申请 SAS、应用 Raster Extension scale/offset，并在全部裁取成功后通过一次影像批次事务入库。SAS 不进入浏览器、数据库或文件标签。"
     />
 
     <section class="search-form">
@@ -167,19 +136,18 @@ watch(selectedCandidateComputed, (candidate) => {
           v-for="candidate in resultRef.items"
           :key="candidate.item_id"
           :class="{
-            selected: selectedItemIdRef === candidate.item_id,
+            selected: selectedItemIdsRef.includes(candidate.item_id),
             partial: !candidate.fully_covers_query,
           }"
-          @click="selectedItemIdRef = candidate.item_id"
+          @click="candidate.fully_covers_query && toggleCandidate(candidate.item_id)"
         >
           <header>
             <span>
               <input
-                v-model="selectedItemIdRef"
-                type="radio"
-                :value="candidate.item_id"
+                type="checkbox"
+                :checked="selectedItemIdsRef.includes(candidate.item_id)"
                 :disabled="!candidate.fully_covers_query"
-                @click.stop
+                @click.stop="toggleCandidate(candidate.item_id)"
               >
               <strong>{{ platformLabel(candidate.platform) }} · {{ candidate.acquired_at.slice(0, 10) }}</strong>
             </span>
@@ -209,71 +177,26 @@ watch(selectedCandidateComputed, (candidate) => {
       </div>
     </section>
 
-    <section v-if="selectedCandidateComputed?.fully_covers_query" class="import-form">
-      <header>
-        <span><small>ATOMIC INGESTION</small><strong>实体裁取与原子入库</strong></span>
-        <a-tag :color="canImportComputed ? 'green' : 'red'">
-          {{ canImportComputed ? '具备影像管理权限' : '当前身份无导入权限' }}
-        </a-tag>
-      </header>
-      <div class="form-grid asset-grid">
-        <label>
-          <span>资产编号</span>
-          <a-input v-model:value="assetCodeRef" :maxlength="80" />
-        </label>
-        <label>
-          <span>资产名称</span>
-          <a-input v-model:value="assetNameRef" :maxlength="200" />
-        </label>
-      </div>
-      <a-alert
-        type="warning"
-        show-icon
-        :message="resultRef?.non_statutory_notice"
-        :description="`${resultRef?.license_name}。公开来源会写入实体标签和入库审计，但不会被描述为涉密、法定或已经验收的成果。`"
-      />
-      <footer>
-        <span>服务端将重新校验 Item、四波段网格、标度、像元上限、输出实体和 SHA-256。</span>
-        <a-button
-          type="primary"
-          :disabled="!canImportComputed"
-          :loading="importingRef"
-          @click="runImport"
-        >
-          <CloudDownloadOutlined /> 裁取并入库
-        </a-button>
-      </footer>
-    </section>
-
-    <a-alert
-      v-if="lastImportRef"
-      type="success"
-      show-icon
-      :message="`已入库 ${lastImportRef.asset.asset_code}`"
-      :description="`源产品 ${lastImportRef.source_product_id} · ${lastImportRef.asset.file_size_bytes || 0} bytes · SHA-256 ${lastImportRef.asset.checksum_sha256}`"
-    >
-      <template #icon><SafetyCertificateOutlined /></template>
-    </a-alert>
+    <PublicImageryBatchImportForm v-if="resultRef" />
   </div>
 </template>
 
 <style scoped>
 .public-archive-panel { display: grid; gap: 12px; }
-.search-form, .search-result, .import-form { padding: 13px; border: 1px solid #e0e7e3; border-radius: 7px; background: #fbfcfb; }
-.search-form > header, .search-result > header, .import-form > header, .search-form > footer, .import-form > footer { display: flex; gap: 12px; align-items: center; justify-content: space-between; }
-.search-form header span, .search-result header > span:first-child, .import-form header span { display: flex; flex-direction: column; }
-.search-form small, .search-result small, .import-form small { font-size: 9px; color: #839087; letter-spacing: .08em; }
-.search-form strong, .search-result strong, .import-form strong { font-size: 12px; color: #304d3d; }
+.search-form, .search-result { padding: 13px; border: 1px solid #e0e7e3; border-radius: 7px; background: #fbfcfb; }
+.search-form > header, .search-result > header, .search-form > footer { display: flex; gap: 12px; align-items: center; justify-content: space-between; }
+.search-form header span, .search-result header > span:first-child { display: flex; flex-direction: column; }
+.search-form small, .search-result small { font-size: 9px; color: #839087; letter-spacing: .08em; }
+.search-form strong, .search-result strong { font-size: 12px; color: #304d3d; }
 .form-grid, .bbox-grid { display: grid; gap: 10px; margin-top: 12px; }
 .date-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
 .bbox-grid { grid-template-columns: repeat(4, minmax(0, 1fr)); }
-.asset-grid { grid-template-columns: minmax(220px, .7fr) minmax(320px, 1.3fr); margin-bottom: 12px; }
 label { display: grid; gap: 5px; }
 label span { font-size: 10px; color: #63736a; }
 label > input { box-sizing: border-box; width: 100%; height: 32px; padding: 4px 10px; color: #31483b; background: #fff; border: 1px solid #d9d9d9; border-radius: 6px; outline: none; }
 label > input:focus { border-color: #4c8b68; box-shadow: 0 0 0 2px rgb(59 130 88 / 10%); }
-.search-form > footer, .import-form > footer { margin-top: 12px; }
-.search-form > footer span, .import-form > footer span, .source-ledger { font-size: 9px; color: #7c8982; }
+.search-form > footer { margin-top: 12px; }
+.search-form > footer span, .source-ledger { font-size: 9px; color: #7c8982; }
 .candidate-list { display: grid; max-height: 390px; gap: 8px; margin-top: 10px; overflow: auto; }
 .candidate-list article { padding: 10px 12px; cursor: pointer; background: #fff; border: 1px solid #e1e7e4; border-radius: 7px; transition: border-color .15s, background .15s; }
 .candidate-list article.selected { background: #f1f8f4; border-color: #569574; }
@@ -286,7 +209,7 @@ label > input:focus { border-color: #4c8b68; box-shadow: 0 0 0 2px rgb(59 130 88
 .candidate-list footer { margin-top: 7px; font-size: 9px; color: #829087; }
 .candidate-list footer a { color: #347352; }
 @media (max-width: 900px) {
-  .date-grid, .bbox-grid, .candidate-meta, .asset-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  .search-form > footer, .import-form > footer { align-items: stretch; flex-direction: column; }
+  .date-grid, .bbox-grid, .candidate-meta { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .search-form > footer { align-items: stretch; flex-direction: column; }
 }
 </style>
