@@ -33,6 +33,7 @@ from app.api.v1.endpoints import (
     plot_attribute_workbook,
     production,
     project_user,
+    public_imagery,
     review,
     rule_config,
     service_sharing,
@@ -205,6 +206,7 @@ app.include_router(disaster.router)
 app.include_router(imagery.router)
 app.include_router(imagery_fusion.router)
 app.include_router(imagery_history.router)
+app.include_router(public_imagery.router)
 app.include_router(imagery_mosaic.router)
 app.include_router(imagery_registration.router)
 app.include_router(delivery.router)

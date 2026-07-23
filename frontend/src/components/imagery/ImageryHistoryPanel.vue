@@ -8,6 +8,7 @@ import {
 import { storeToRefs } from 'pinia'
 import { computed, ref, watch } from 'vue'
 
+import PublicImageryArchivePanel from '@/components/imagery/PublicImageryArchivePanel.vue'
 import { useImageryHistoryStore } from '@/store/imageryHistoryStore'
 import type {
   ImageryCoverageCell,
@@ -30,7 +31,7 @@ type AssetStatusFilter = 'all' | ImageryHistoryDataStatus
 
 const historyStore = useImageryHistoryStore()
 const { overviewRef, loadingRef, errorRef } = storeToRefs(historyStore)
-const activeTabRef = ref<'coverage' | 'timeline'>('coverage')
+const activeTabRef = ref<'coverage' | 'timeline' | 'public-archive'>('coverage')
 const assetStatusFilterRef = ref<AssetStatusFilter>('operational')
 const selectedPrefectureRef = ref<string>('all')
 
@@ -173,11 +174,6 @@ watch(
         :message="errorRef"
       />
 
-      <a-empty
-        v-else-if="!loadingRef && !overviewRef?.assets.length"
-        description="当前项目尚无影像时相；行政区目录保留，但不会生成固定历史数据。"
-      />
-
       <template v-else-if="overviewRef">
         <section class="history-summary">
           <article>
@@ -314,6 +310,9 @@ watch(
                 </article>
               </a-timeline-item>
             </a-timeline>
+          </a-tab-pane>
+          <a-tab-pane key="public-archive" tab="公开历史语料">
+            <PublicImageryArchivePanel />
           </a-tab-pane>
         </a-tabs>
       </template>

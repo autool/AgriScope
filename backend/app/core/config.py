@@ -35,6 +35,11 @@ class Settings(BaseSettings):
     )
     change_preview_max_dimension: int = Field(default=1400, ge=256, le=4096)
     imagery_quicklook_max_dimension: int = Field(default=1400, ge=256, le=4096)
+    max_public_imagery_import_pixels: int = Field(
+        default=5_000_000,
+        ge=10_000,
+        le=25_000_000,
+    )
     max_imagery_mosaic_pixels: int = Field(
         default=10_000_000,
         ge=10_000,

@@ -114,6 +114,7 @@ declare module 'vue' {
     PlotMergeTray: typeof import('./src/components/editing/PlotMergeTray.vue')['default']
     PlotSplitModal: typeof import('./src/components/editing/PlotSplitModal.vue')['default']
     ProductionSchedulingPanel: typeof import('./src/components/production/ProductionSchedulingPanel.vue')['default']
+    PublicImageryArchivePanel: typeof import('./src/components/imagery/PublicImageryArchivePanel.vue')['default']
     QualityIssueQueue: typeof import('./src/components/quality/QualityIssueQueue.vue')['default']
     ResultTable: typeof import('./src/components/ResultTable.vue')['default']
     ReviewPanel: typeof import('./src/components/panels/ReviewPanel.vue')['default']

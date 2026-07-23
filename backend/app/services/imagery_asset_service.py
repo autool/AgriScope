@@ -691,7 +691,7 @@ class ImageryAssetService:
                 tag_namespaces: dict[str, dict[str, str]] = {}
                 business_tags = dict(safe_tags)
                 for namespace in list(dataset.tag_namespaces())[:20]:
-                    if not namespace:
+                    if not namespace or namespace.upper() == "DERIVED_SUBDATASETS":
                         continue
                     namespace_tags = self._safe_tags(dataset.tags(ns=namespace))
                     if not namespace_tags:
