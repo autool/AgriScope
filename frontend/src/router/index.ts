@@ -6,6 +6,15 @@ const router = createRouter({
   history: createWebHistory(),
   routes: [
     {
+      path: '/field-capture',
+      component: () => import('@/views/FieldCaptureView.vue'),
+      meta: {
+        title: '移动外业核查采集',
+        description: 'GPS、现场属性与照片实体直接采集',
+        standalone: true,
+      },
+    },
+    {
       path: '/',
       component: WorkbenchLayout,
       redirect: '/interpretation',

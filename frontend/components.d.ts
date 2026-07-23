@@ -90,6 +90,7 @@ declare module 'vue' {
     LayoutContent: typeof import('./src/components/layout/LayoutContent.vue')['default']
     LayoutPreferencesDrawer: typeof import('./src/components/layout/LayoutPreferencesDrawer.vue')['default']
     MapContainer: typeof import('./src/components/MapContainer.vue')['default']
+    MobileFieldCaptureForm: typeof import('./src/components/field/mobile/MobileFieldCaptureForm.vue')['default']
     ModuleSidebar: typeof import('./src/components/workbench/ModuleSidebar.vue')['default']
     MonitoringResourcePanel: typeof import('./src/components/monitoring/MonitoringResourcePanel.vue')['default']
     OlViewer: typeof import('./src/components/OlViewer.vue')['default']

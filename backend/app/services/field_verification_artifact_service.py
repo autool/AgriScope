@@ -590,9 +590,7 @@ class FieldVerificationArtifactService:
                 prepared.checksum_sha256,
             )
             if duplicate is not None:
-                raise ValidationException(
-                    f"该实体已作为证据 {duplicate.artifact_code} 上传"
-                )
+                return self.to_response(duplicate, verification_code)
             now = datetime.now(UTC)
             artifact_code = (
                 f"FIELD-EV-{now:%Y%m%dT%H%M%S}-{uuid4().hex[:10]}"

@@ -194,32 +194,42 @@ def test_upload_rejects_fake_image_signature_without_residue(tmp_path: Path) -> 
     assert not list(service.storage_root.rglob("FIELD-EV-*"))
 
 
-def test_upload_rejects_duplicate_checksum_without_publishing_file(
+def test_upload_duplicate_checksum_returns_existing_without_publishing_file(
     tmp_path: Path,
 ) -> None:
-    """验证同一记录重复上传同一实体时不会生成第二份文件。"""
+    """验证移动网络重试同一实体时幂等返回已有证据。"""
     service, dao, _, _, _ = build_service(tmp_path)
     dao.find_duplicate_for_update.return_value = SimpleNamespace(
-        artifact_code="FIELD-EV-EXISTING"
+        artifact_code="FIELD-EV-EXISTING",
+        artifact_type="photo",
+        original_filename="现场照片.jpg",
+        media_type="image/jpeg",
+        file_size_bytes=16,
+        checksum_sha256="a" * 64,
+        description="首次上传现场照片",
+        uploaded_by="张强",
+        uploaded_by_code="field-zhang-qiang",
+        uploaded_by_role="field_inspector",
+        created_at=datetime(2026, 7, 23, tzinfo=UTC),
     )
     db = AsyncMock()
 
-    with pytest.raises(ValidationException, match="已作为证据"):
-        asyncio.run(
-            service.upload_artifact(
-                db,
-                "FV-REAL-001",
-                "photo",
-                "field-zhang-qiang",
-                "重复照片",
-                "duplicate.jpg",
-                "image/jpeg",
-                BytesIO(b"\xff\xd8\xffverified-jpeg"),
-            )
+    response = asyncio.run(
+        service.upload_artifact(
+            db,
+            "FV-REAL-001",
+            "photo",
+            "field-zhang-qiang",
+            "重复照片",
+            "duplicate.jpg",
+            "image/jpeg",
+            BytesIO(b"\xff\xd8\xffverified-jpeg"),
         )
+    )
 
+    assert response.artifact_code == "FIELD-EV-EXISTING"
     dao.add_artifact.assert_not_awaited()
-    db.rollback.assert_awaited_once()
+    db.rollback.assert_not_awaited()
     assert not list(service.storage_root.rglob("FIELD-EV-*"))
 
 

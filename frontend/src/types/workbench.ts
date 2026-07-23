@@ -780,6 +780,7 @@ export interface FieldVerificationItem extends Record<string, unknown> {
   investigator_code: string | null
   lon: number
   lat: number
+  location_accuracy_m: number | null
   observed_land_class: string | null
   observed_crop_type: string | null
   photo_urls: string[]

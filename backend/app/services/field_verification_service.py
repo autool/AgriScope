@@ -117,6 +117,11 @@ class FieldVerificationService:
             investigator_code=record.investigator_code,
             lon=lon,
             lat=lat,
+            location_accuracy_m=(
+                float(record.location_accuracy_m)
+                if getattr(record, "location_accuracy_m", None) is not None
+                else None
+            ),
             observed_land_class=record.observed_land_class,
             observed_crop_type=record.observed_crop_type,
             photo_urls=record.photo_urls or [],
@@ -334,8 +339,6 @@ class FieldVerificationService:
             raise NotFoundException(f"未找到任务 {task_code}")
         if task.status == "completed":
             raise ValidationException("已完成任务不得新增外业核查记录")
-        if await self.dao.get_by_code(db, request.verification_code):
-            raise ValidationException(f"外业记录 {request.verification_code} 已存在")
         investigator = await self.project_user_service.require_capability(
             db,
             task.project_id,
@@ -358,6 +361,24 @@ class FieldVerificationService:
                 separators=(",", ":"),
             ).encode("utf-8")
         ).hexdigest()
+        existing = await self.dao.get_by_code(db, request.verification_code)
+        if existing is not None:
+            if (
+                existing.task_id != task.id
+                or existing.investigator_code != investigator.user_code
+                or existing.source_checksum_sha256 != source_checksum
+            ):
+                raise ValidationException(
+                    f"外业记录 {request.verification_code} 已存在且采集载荷不一致"
+                )
+            lon, lat = await self.dao.get_coordinates(db, existing.id)
+            artifacts = list(
+                await self.artifact_dao.list_by_verification_ids(
+                    db,
+                    [existing.id],
+                )
+            )
+            return self._to_response(existing, lon, lat, artifacts)
         imported_at = datetime.now(UTC)
         batch_code = (
             f"FIELD-{imported_at:%Y%m%dT%H%M%S}-"
@@ -368,6 +389,7 @@ class FieldVerificationService:
             verification_code=request.verification_code,
             investigator=investigator.display_name,
             investigator_code=investigator.user_code,
+            location_accuracy_m=request.location_accuracy_m,
             observed_land_class=request.observed_land_class,
             observed_crop_type=request.observed_crop_type,
             photo_urls=request.photo_urls,
@@ -495,6 +517,7 @@ class FieldVerificationService:
                     verification_code=item.verification_code,
                     investigator=uploader.display_name,
                     investigator_code=uploader.user_code,
+                    location_accuracy_m=item.location_accuracy_m,
                     observed_land_class=item.observed_land_class,
                     observed_crop_type=item.observed_crop_type,
                     photo_urls=item.photo_urls,

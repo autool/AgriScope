@@ -17,6 +17,7 @@ class FieldVerificationRecordInput(BaseModel):
     source_record_id: str = Field(min_length=1, max_length=100)
     lon: float
     lat: float
+    location_accuracy_m: float | None = Field(default=None, gt=0, le=10000)
     observed_land_class: str | None = Field(default=None, max_length=50)
     observed_crop_type: str | None = Field(default=None, max_length=50)
     photo_urls: list[str] = Field(default_factory=list, max_length=20)
@@ -332,6 +333,7 @@ class FieldVerificationResponse(BaseModel):
     investigator_code: str | None
     lon: float
     lat: float
+    location_accuracy_m: float | None
     observed_land_class: str | None
     observed_crop_type: str | None
     photo_urls: list[str]

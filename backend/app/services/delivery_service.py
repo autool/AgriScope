@@ -1709,6 +1709,11 @@ class DeliveryService:
                     "investigator": item.investigator,
                     "observed_land_class": item.observed_land_class,
                     "observed_crop_type": item.observed_crop_type,
+                    "location_accuracy_m": (
+                        float(item.location_accuracy_m)
+                        if getattr(item, "location_accuracy_m", None) is not None
+                        else None
+                    ),
                     "matched_plot_code": item.matched_plot_code,
                     "offset_distance_m": float(item.offset_distance_m)
                     if item.offset_distance_m is not None

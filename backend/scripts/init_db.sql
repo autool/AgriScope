@@ -325,6 +325,7 @@ CREATE TABLE IF NOT EXISTS field_verifications (
     investigator VARCHAR(100) NOT NULL,
     investigator_code VARCHAR(50),
     location GEOMETRY(POINT, 4326) NOT NULL,
+    location_accuracy_m NUMERIC(10, 2),
     observed_land_class VARCHAR(50),
     observed_crop_type VARCHAR(50),
     photo_urls JSONB NOT NULL DEFAULT '[]'::jsonb,
@@ -364,6 +365,8 @@ CREATE INDEX IF NOT EXISTS idx_field_verifications_task_status
 ALTER TABLE field_verifications
     ADD COLUMN IF NOT EXISTS investigator_code VARCHAR(50);
 ALTER TABLE field_verifications
+    ADD COLUMN IF NOT EXISTS location_accuracy_m NUMERIC(10, 2);
+ALTER TABLE field_verifications
     ADD COLUMN IF NOT EXISTS resolved_by VARCHAR(100);
 ALTER TABLE field_verifications
     ADD COLUMN IF NOT EXISTS resolved_by_code VARCHAR(50);
@@ -380,6 +383,22 @@ ALTER TABLE field_verifications ADD COLUMN IF NOT EXISTS import_batch_code VARCH
 ALTER TABLE field_verifications ADD COLUMN IF NOT EXISTS imported_by VARCHAR(100);
 ALTER TABLE field_verifications ADD COLUMN IF NOT EXISTS imported_by_code VARCHAR(50);
 ALTER TABLE field_verifications ADD COLUMN IF NOT EXISTS imported_by_role VARCHAR(40);
+
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conname = 'ck_field_verification_location_accuracy'
+    ) THEN
+        ALTER TABLE field_verifications
+            ADD CONSTRAINT ck_field_verification_location_accuracy
+            CHECK (
+                location_accuracy_m IS NULL
+                OR (location_accuracy_m > 0 AND location_accuracy_m <= 10000)
+            );
+    END IF;
+END
+$$;
 
 DO $$
 BEGIN

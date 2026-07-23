@@ -228,6 +228,7 @@ onMounted(() => { void fieldStore.load() })
         <div><dt>导入批次</dt><dd>{{ selectedRecordComputed.import_batch_code || '--' }}</dd></div>
         <div><dt>导入文件实体</dt><dd>{{ selectedRecordComputed.source_file_uri ? '已受控保存' : '未提供' }}</dd></div>
         <div><dt>采集时间</dt><dd>{{ selectedRecordComputed.captured_at }}</dd></div>
+        <div><dt>GPS 定位精度</dt><dd>{{ selectedRecordComputed.location_accuracy_m ? `± ${selectedRecordComputed.location_accuracy_m} 米` : '历史记录未提供' }}</dd></div>
         <div><dt>历史照片外链</dt><dd>{{ selectedRecordComputed.photo_urls.length }} 条</dd></div>
         <div><dt>已验证实体</dt><dd>{{ selectedRecordComputed.verified_artifact_count }} 份</dd></div>
       </dl>

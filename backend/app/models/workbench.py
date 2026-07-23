@@ -413,6 +413,10 @@ class FieldVerification(Base):
         Geometry(geometry_type="POINT", srid=4326, spatial_index=False),
         nullable=False,
     )
+    location_accuracy_m: Mapped[Decimal | None] = mapped_column(
+        Numeric(10, 2),
+        nullable=True,
+    )
     observed_land_class: Mapped[str | None] = mapped_column(String(50), nullable=True)
     observed_crop_type: Mapped[str | None] = mapped_column(String(50), nullable=True)
     photo_urls: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)

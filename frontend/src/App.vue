@@ -7,7 +7,7 @@ import {
 } from '@ant-design/icons-vue'
 import { storeToRefs } from 'pinia'
 import { computed, onMounted, onUnmounted } from 'vue'
-import { useRouter } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 
 import UserIdentitySwitcher from '@/components/layout/UserIdentitySwitcher.vue'
 import { useLayoutStore } from '@/store/layoutStore'
@@ -27,7 +27,9 @@ const layoutStore = useLayoutStore()
 const systemHealthStore = useSystemHealthStore()
 const workbenchStore = useWorkbenchStore()
 const router = useRouter()
+const route = useRoute()
 const { loadingRef, overviewRef } = storeToRefs(workbenchStore)
+const standaloneComputed = computed<boolean>(() => route.meta.standalone === true)
 
 const projectNameComputed = computed<string>(() => (
   overviewRef.value?.project.project_name || '加载项目上下文'
@@ -126,7 +128,8 @@ const navigateNotification = (item: TaskNotification): void => {
 </script>
 
 <template>
-  <a-layout class="application-shell">
+  <router-view v-if="standaloneComputed" />
+  <a-layout v-else class="application-shell">
     <a-layout-header v-if="!layoutStore.contentMaximizedRef" class="application-header">
       <div class="brand-lockup">
         <div class="brand-mark"><RadarChartOutlined /></div>
