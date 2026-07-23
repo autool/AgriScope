@@ -216,6 +216,28 @@ class ImageryDAO:
         )
         return result.scalars().all()
 
+    async def get_steps_for_update(
+        self,
+        db: AsyncSession,
+        asset_id: int,
+    ) -> Sequence[ImageryProcessingStep]:
+        """按顺序锁定影像资产的全部处理步骤。
+
+        Args:
+            db: 异步数据库会话。
+            asset_id: 影像资产主键。
+
+        Returns:
+            Sequence[ImageryProcessingStep]: 已按顺序锁定的全部处理步骤。
+        """
+        result = await db.execute(
+            select(ImageryProcessingStep)
+            .where(ImageryProcessingStep.asset_id == asset_id)
+            .order_by(ImageryProcessingStep.sequence)
+            .with_for_update()
+        )
+        return result.scalars().all()
+
     async def get_step(
         self,
         db: AsyncSession,

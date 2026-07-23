@@ -23,8 +23,15 @@ from app.core.imagery_files import (
 )
 from app.dao.imagery_dao import ImageryDAO
 from app.dao.workbench_dao import WorkbenchDAO
-from app.models.workbench import ReviewRecord
+from app.models.workbench import (
+    ImageryAsset,
+    ImageryProcessingStep,
+    ReviewRecord,
+)
 from app.schemas.imagery import (
+    ImageryProcessingBatchExecuteRequest,
+    ImageryProcessingBatchExecuteResponse,
+    ImageryProcessingBatchItemResponse,
     ImageryProcessingResponse,
     ImageryProcessingStepResponse,
     ImagerySourceLevelAcceptRequest,
@@ -34,7 +41,10 @@ from app.schemas.imagery import (
     ImageryStepExecuteRequest,
     ImageryStepRunRequest,
 )
-from app.services.imagery_processing_engine import ImageryProcessingEngine
+from app.services.imagery_processing_engine import (
+    ImageryProcessingEngine,
+    ProcessingExecutionResult,
+)
 from app.services.project_user_service import ProjectUserService
 
 
@@ -51,6 +61,31 @@ class PreparedSourceLevelAcceptance:
     source_profile: str
     processor_version: str
     expected_processing_level: str
+
+
+@dataclass(frozen=True)
+class PreparedImageryBatchExecution:
+    """一个已锁定并完成上游实体预检的批次处理成员。"""
+
+    asset: ImageryAsset
+    steps: list[ImageryProcessingStep]
+    step: ImageryProcessingStep
+    source_path: Path
+    source_checksum_sha256: str
+    output_path: Path
+    output_relative_path: str
+    parameters: dict
+    boundary_geometry: dict | None
+
+
+@dataclass(frozen=True)
+class ExecutedImageryBatchItem:
+    """一个已生成物理产物但尚未提交数据库状态的批次成员。"""
+
+    prepared: PreparedImageryBatchExecution
+    result: ProcessingExecutionResult
+    output_file_size_bytes: int
+    output_checksum_sha256: str
 
 
 class ImageryService:
@@ -1028,6 +1063,278 @@ class ImageryService:
             output_path.unlink(missing_ok=True)
             raise
         return await self.get_processing(db, asset_code)
+
+    async def execute_step_batch(
+        self,
+        db: AsyncSession,
+        task_code: str,
+        request: ImageryProcessingBatchExecuteRequest,
+    ) -> ImageryProcessingBatchExecuteResponse:
+        """原子执行 1–10 景影像的同一个内置预处理步骤。
+
+        服务先锁定全部资产及其步骤，完成项目、业务状态、上游实体、参数所需
+        行政区或 DEM 证据校验，再生成全部物理 GeoTIFF。只有全部输出成功后才
+        写入步骤状态与审核记录并提交一次事务；任一失败会删除本批新产物。
+
+        Args:
+            db: 异步数据库会话。
+            task_code: 作业任务编号。
+            request: 同一步骤、逐景参数、稳定操作人和处理依据。
+
+        Returns:
+            ImageryProcessingBatchExecuteResponse: 批次编号和逐景实体证据。
+        """
+        task = await self.workbench_dao.get_task_by_code(db, task_code)
+        if task is None:
+            raise NotFoundException(f"未找到任务 {task_code}")
+        operator = await self.project_user_service.require_capability(
+            db,
+            task.project_id,
+            request.operator_code,
+            "process_imagery",
+        )
+        prepared_by_code: dict[str, PreparedImageryBatchExecution] = {}
+        executed_by_code: dict[str, ExecutedImageryBatchItem] = {}
+        generated_paths: list[Path] = []
+        batch_code = f"IPB-{uuid4().hex.upper()}"
+        created_at = datetime.now(UTC)
+        try:
+            for request_item in sorted(
+                request.items,
+                key=lambda item: item.asset_code,
+            ):
+                asset = await self.dao.get_asset_by_code_for_update(
+                    db,
+                    request_item.asset_code,
+                )
+                if asset is None:
+                    raise NotFoundException(
+                        f"未找到影像资产 {request_item.asset_code}"
+                    )
+                if asset.project_id != task.project_id:
+                    raise ValidationException(
+                        f"影像资产 {asset.asset_code} 不属于当前任务项目"
+                    )
+                if asset.data_status != "operational":
+                    raise ValidationException(
+                        f"影像资产 {asset.asset_code} 不是可处理的业务数据"
+                    )
+                steps = list(
+                    await self.dao.get_steps_for_update(db, asset.id)
+                )
+                step = next(
+                    (
+                        item
+                        for item in steps
+                        if item.step_code == request.step_code
+                    ),
+                    None,
+                )
+                if step is None:
+                    raise NotFoundException(
+                        f"资产 {asset.asset_code} 缺少步骤 {request.step_code}"
+                    )
+                if self._inspect_step_artifact(step)[0]:
+                    raise ValidationException(
+                        f"资产 {asset.asset_code} 的{step.step_name}已完成；"
+                        "批量执行仅处理待办步骤，重跑请使用单景流程"
+                    )
+                source_path = self._resolve_step_source_path(
+                    asset,
+                    steps,
+                    step,
+                )
+                boundary_geometry = None
+                if request.step_code == "clip":
+                    boundary_code = str(
+                        request_item.parameters.get("boundary_code") or ""
+                    )
+                    geometry_text = await self.dao.get_boundary_geometry(
+                        db,
+                        asset.project_id,
+                        boundary_code,
+                    )
+                    if geometry_text is None:
+                        raise ValidationException(
+                            f"资产 {asset.asset_code} 未找到当前项目的行政区裁剪边界"
+                        )
+                    boundary_geometry = json.loads(geometry_text)
+                relative_path = (
+                    Path("processed")
+                    / asset.asset_code
+                    / (
+                        f"{step.sequence:02d}_{step.step_code}_"
+                        f"{uuid4().hex[:12]}.tif"
+                    )
+                ).as_posix()
+                prepared_by_code[asset.asset_code] = (
+                    PreparedImageryBatchExecution(
+                        asset=asset,
+                        steps=steps,
+                        step=step,
+                        source_path=source_path,
+                        source_checksum_sha256=await asyncio.to_thread(
+                            calculate_sha256,
+                            source_path,
+                        ),
+                        output_path=self._resolve_artifact_path(relative_path),
+                        output_relative_path=relative_path,
+                        parameters=dict(request_item.parameters),
+                        boundary_geometry=boundary_geometry,
+                    )
+                )
+
+            for request_item in sorted(
+                request.items,
+                key=lambda item: item.asset_code,
+            ):
+                prepared = prepared_by_code[request_item.asset_code]
+                await asyncio.to_thread(
+                    self.processing_engine.validate_batch_parameters,
+                    request.step_code,
+                    prepared.source_path,
+                    prepared.parameters,
+                    prepared.boundary_geometry,
+                )
+
+            for request_item in sorted(
+                request.items,
+                key=lambda item: item.asset_code,
+            ):
+                prepared = prepared_by_code[request_item.asset_code]
+                result = await asyncio.to_thread(
+                    self.processing_engine.execute,
+                    request.step_code,
+                    prepared.source_path,
+                    prepared.output_path,
+                    prepared.parameters,
+                    prepared.boundary_geometry,
+                    None,
+                    None,
+                )
+                generated_paths.append(prepared.output_path)
+                executed_by_code[prepared.asset.asset_code] = (
+                    ExecutedImageryBatchItem(
+                        prepared=prepared,
+                        result=result,
+                        output_file_size_bytes=(
+                            prepared.output_path.stat().st_size
+                        ),
+                        output_checksum_sha256=await asyncio.to_thread(
+                            calculate_sha256,
+                            prepared.output_path,
+                        ),
+                    )
+                )
+
+            response_items: list[ImageryProcessingBatchItemResponse] = []
+            for request_item in request.items:
+                executed = executed_by_code[request_item.asset_code]
+                prepared = executed.prepared
+                invalidated_steps = self._invalidate_downstream_steps(
+                    prepared.asset,
+                    prepared.steps,
+                    prepared.step,
+                )
+                await self._persist_step_completion(
+                    db,
+                    task,
+                    prepared.asset,
+                    prepared.step,
+                    prepared.output_relative_path,
+                    self.processing_engine.processor_name,
+                    self.processing_engine.processor_version,
+                    operator,
+                    f"批次 {batch_code}；{request.comment}",
+                    evidence_extra={
+                        "execution_mode": "built_in_batch",
+                        "batch_code": batch_code,
+                        "source_relative_path": prepared.source_path.relative_to(
+                            self.storage_dir
+                        ).as_posix(),
+                        "source_checksum_sha256": (
+                            prepared.source_checksum_sha256
+                        ),
+                        "execution_parameters": executed.result.parameters,
+                        "output_width": executed.result.width,
+                        "output_height": executed.result.height,
+                        "output_band_count": executed.result.band_count,
+                        "output_dtype": executed.result.dtype,
+                        "output_crs": executed.result.crs,
+                        "invalidated_downstream_steps": invalidated_steps,
+                    },
+                    action="processing_step_batch_executed",
+                    commit=False,
+                )
+                response_items.append(
+                    ImageryProcessingBatchItemResponse(
+                        asset_code=prepared.asset.asset_code,
+                        asset_name=prepared.asset.asset_name,
+                        step_code=prepared.step.step_code,
+                        step_name=prepared.step.step_name,
+                        source_file_uri=(
+                            "storage://imagery/"
+                            f"{prepared.source_path.relative_to(self.storage_dir).as_posix()}"
+                        ),
+                        source_checksum_sha256=(
+                            prepared.source_checksum_sha256
+                        ),
+                        output_file_uri=(
+                            "storage://imagery/"
+                            f"{prepared.output_relative_path}"
+                        ),
+                        output_file_size_bytes=(
+                            executed.output_file_size_bytes
+                        ),
+                        output_checksum_sha256=(
+                            executed.output_checksum_sha256
+                        ),
+                        output_width=executed.result.width,
+                        output_height=executed.result.height,
+                        output_band_count=executed.result.band_count,
+                        output_dtype=executed.result.dtype,
+                        output_crs=executed.result.crs,
+                        execution_parameters=executed.result.parameters,
+                        invalidated_downstream_steps=invalidated_steps,
+                    )
+                )
+            step_name = response_items[0].step_name
+            await self.workbench_dao.add_review_record(
+                db,
+                ReviewRecord(
+                    task_id=task.id,
+                    review_level="imagery_processing",
+                    action="processing_batch_executed",
+                    reviewer=operator.display_name,
+                    reviewer_code=operator.user_code,
+                    reviewer_role=operator.role_code,
+                    comment=(
+                        f"影像处理批次 {batch_code} 原子执行"
+                        f"{len(response_items)} 景{step_name}；{request.comment}"
+                    ),
+                ),
+            )
+            await db.commit()
+        except BaseException:
+            for output_path in generated_paths:
+                output_path.unlink(missing_ok=True)
+            await db.rollback()
+            raise
+
+        return ImageryProcessingBatchExecuteResponse(
+            batch_code=batch_code,
+            step_code=request.step_code,
+            step_name=response_items[0].step_name,
+            item_count=len(response_items),
+            processor_name=self.processing_engine.processor_name,
+            processor_version=self.processing_engine.processor_version,
+            executed_by=operator.display_name,
+            executed_by_code=operator.user_code,
+            executed_by_role=operator.role_code,
+            comment=request.comment,
+            created_at=created_at,
+            items=response_items,
+        )
 
     async def accept_source_level_step(
         self,

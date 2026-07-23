@@ -19,11 +19,15 @@ from rasterio.transform import from_origin
 from app.core.exceptions import ValidationException
 from app.core.imagery_files import calculate_sha256
 from app.schemas.imagery import (
+    ImageryProcessingBatchExecuteRequest,
     ImagerySourceLevelAcceptRequest,
     ImagerySourceLevelBatchAcceptRequest,
     ImageryStepExecuteRequest,
 )
-from app.services.imagery_processing_engine import ImageryProcessingEngine
+from app.services.imagery_processing_engine import (
+    ImageryProcessingEngine,
+    ProcessingExecutionResult,
+)
 from app.services.imagery_service import ImageryService
 
 
@@ -294,6 +298,7 @@ def test_engine_executes_complete_parameterized_raster_chain(
     assert enhanced.parameters["method"] == "percentile_stretch"
     assert len(enhanced.parameters["bands"]) == 4
     assert products.band_count == 7
+    assert not list(tmp_path.glob(".*.tmp.tif.aux.xml"))
     with rasterio.open(products_path) as dataset:
         assert dataset.descriptions[-1] == "ndvi"
         ndvi = dataset.read(7, masked=True)
@@ -1013,6 +1018,428 @@ def test_service_accepts_verified_landsat_collection2_l2_for_two_steps(
         for call in workbench_dao.add_review_record.await_args_list
     ]
     assert actions == ["source_level_accepted", "source_level_accepted"]
+
+
+def build_batch_processing_steps(
+    source_relative_path: str,
+    source_path: Path,
+) -> list[SimpleNamespace]:
+    """构造已完成双前置步骤且几何校正待处理的测试流水线。
+
+    Args:
+        source_relative_path: 相对于测试影像存储根目录的源路径。
+        source_path: 真实测试 GeoTIFF 路径。
+
+    Returns:
+        list[SimpleNamespace]: 可用于多景几何批处理的步骤列表。
+    """
+    source_evidence = {
+        "relative_path": source_relative_path,
+        "file_size_bytes": source_path.stat().st_size,
+        "checksum_sha256": calculate_sha256(source_path),
+        "processor_name": "受控源产品级别承认",
+        "processor_version": "landsat-c2-l2-source-acceptance-v1",
+    }
+    return [
+        SimpleNamespace(
+            step_code="radiometric",
+            step_name="辐射定标",
+            sequence=1,
+            is_required=True,
+            status="completed",
+            progress=100,
+            parameters={"artifact_evidence": dict(source_evidence)},
+            output_uri=f"storage://imagery/{source_relative_path}",
+            started_at=datetime.now(UTC),
+            completed_at=datetime.now(UTC),
+            updated_at=datetime.now(UTC),
+        ),
+        SimpleNamespace(
+            step_code="atmospheric",
+            step_name="大气校正",
+            sequence=2,
+            is_required=True,
+            status="completed",
+            progress=100,
+            parameters={"artifact_evidence": dict(source_evidence)},
+            output_uri=f"storage://imagery/{source_relative_path}",
+            started_at=datetime.now(UTC),
+            completed_at=datetime.now(UTC),
+            updated_at=datetime.now(UTC),
+        ),
+        SimpleNamespace(
+            step_code="geometric",
+            step_name="几何校正",
+            sequence=3,
+            is_required=True,
+            status="pending",
+            progress=0,
+            parameters={},
+            output_uri=None,
+            started_at=None,
+            completed_at=None,
+            updated_at=None,
+        ),
+        SimpleNamespace(
+            step_code="clip",
+            step_name="行政区裁剪",
+            sequence=4,
+            is_required=True,
+            status="pending",
+            progress=0,
+            parameters={},
+            output_uri=None,
+            started_at=None,
+            completed_at=None,
+            updated_at=None,
+        ),
+    ]
+
+
+def test_processing_batch_request_rejects_duplicate_assets() -> None:
+    """多景内置处理请求必须使用唯一影像资产。"""
+    with pytest.raises(ValidationError, match="不得包含重复资产"):
+        ImageryProcessingBatchExecuteRequest(
+            operator_code="manager-zhao-zhiyuan",
+            step_code="geometric",
+            comment="统一执行历史影像坐标系重投影并保存实体证据",
+            items=[
+                {"asset_code": "LANDSAT_A", "parameters": {}},
+                {"asset_code": "LANDSAT_A", "parameters": {}},
+            ],
+        )
+
+
+def test_service_atomically_executes_one_step_for_two_imagery_assets(
+    tmp_path: Path,
+) -> None:
+    """两景同步骤必须先生成全部实体并只提交一次数据库事务。"""
+    assets: dict[str, SimpleNamespace] = {}
+    steps_by_asset: dict[int, list[SimpleNamespace]] = {}
+    for index, asset_code in enumerate(("LANDSAT_A", "LANDSAT_B"), start=31):
+        source_path = tmp_path / "assets" / asset_code / "source.tif"
+        source_path.parent.mkdir(parents=True)
+        write_four_band_raster(source_path)
+        assets[asset_code] = SimpleNamespace(
+            id=index,
+            project_id=7,
+            asset_code=asset_code,
+            asset_name=f"{asset_code} 公开历史影像",
+            data_status="operational",
+            calibration_status="completed",
+            correction_status="in_progress",
+            file_uri=f"storage://imagery/assets/{asset_code}/source.tif",
+            file_size_bytes=source_path.stat().st_size,
+            checksum_sha256=calculate_sha256(source_path),
+        )
+        steps_by_asset[index] = build_batch_processing_steps(
+            f"assets/{asset_code}/source.tif",
+            source_path,
+        )
+
+    dao = AsyncMock()
+
+    async def get_asset(_db, asset_code):
+        return assets.get(asset_code)
+
+    async def get_steps(_db, asset_id):
+        return steps_by_asset[asset_id]
+
+    dao.get_asset_by_code_for_update.side_effect = get_asset
+    dao.get_steps_for_update.side_effect = get_steps
+    workbench_dao = AsyncMock()
+    workbench_dao.get_task_by_code.return_value = SimpleNamespace(
+        id=1,
+        project_id=7,
+    )
+    project_user_service = AsyncMock()
+    project_user_service.require_capability.return_value = SimpleNamespace(
+        user_code="manager-zhao-zhiyuan",
+        display_name="赵志远",
+        role_code="project_manager",
+    )
+    processing_engine = MagicMock()
+    processing_engine.processor_name = "AgriScope Rasterio Engine"
+    processing_engine.processor_version = "1.0.0"
+
+    def execute(_step_code, _source_path, output_path, parameters, *_args):
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        write_four_band_raster(output_path)
+        return ProcessingExecutionResult(
+            parameters={**parameters, "method": "reproject"},
+            width=10,
+            height=8,
+            band_count=4,
+            dtype="uint16",
+            crs="EPSG:4490",
+        )
+
+    processing_engine.execute.side_effect = execute
+    service = ImageryService(
+        dao=dao,
+        workbench_dao=workbench_dao,
+        project_user_service=project_user_service,
+        processing_engine=processing_engine,
+    )
+    service.storage_dir = tmp_path
+    db = AsyncMock()
+
+    response = asyncio.run(service.execute_step_batch(
+        db,
+        "RS-2026-045",
+        ImageryProcessingBatchExecuteRequest(
+            operator_code="manager-zhao-zhiyuan",
+            step_code="geometric",
+            comment="统一执行两景历史影像 EPSG:4490 重投影并保存真实实体证据",
+            items=[
+                {
+                    "asset_code": "LANDSAT_B",
+                    "parameters": {
+                        "method": "reproject",
+                        "target_crs": "EPSG:4490",
+                        "resampling": "bilinear",
+                    },
+                },
+                {
+                    "asset_code": "LANDSAT_A",
+                    "parameters": {
+                        "method": "reproject",
+                        "target_crs": "EPSG:4490",
+                        "resampling": "bilinear",
+                    },
+                },
+            ],
+        ),
+    ))
+
+    assert response.item_count == 2
+    assert response.step_code == "geometric"
+    assert [item.asset_code for item in response.items] == [
+        "LANDSAT_B",
+        "LANDSAT_A",
+    ]
+    assert all(item.output_file_size_bytes > 0 for item in response.items)
+    assert all(len(item.output_checksum_sha256) == 64 for item in response.items)
+    assert all(item.invalidated_downstream_steps == ["clip"] for item in response.items)
+    assert [
+        call.args[1]
+        for call in dao.get_asset_by_code_for_update.await_args_list
+    ] == ["LANDSAT_A", "LANDSAT_B"]
+    assert all(
+        steps_by_asset[asset.id][2].parameters["artifact_evidence"]["batch_code"]
+        == response.batch_code
+        for asset in assets.values()
+    )
+    assert all(asset.correction_status == "completed" for asset in assets.values())
+    assert len(list((tmp_path / "processed").rglob("*.tif"))) == 2
+    assert processing_engine.validate_batch_parameters.call_count == 2
+    db.commit.assert_awaited_once()
+    db.rollback.assert_not_awaited()
+    actions = [
+        call.args[1].action
+        for call in workbench_dao.add_review_record.await_args_list
+    ]
+    assert actions == [
+        "processing_step_batch_executed",
+        "processing_step_batch_executed",
+        "processing_batch_executed",
+    ]
+
+
+def test_processing_batch_failure_deletes_outputs_and_keeps_steps_pending(
+    tmp_path: Path,
+) -> None:
+    """任一景处理失败时必须删除先前输出且不写部分步骤或审核记录。"""
+    assets: dict[str, SimpleNamespace] = {}
+    steps_by_asset: dict[int, list[SimpleNamespace]] = {}
+    source_paths: list[Path] = []
+    for index, asset_code in enumerate(("LANDSAT_A", "LANDSAT_B"), start=41):
+        source_path = tmp_path / "assets" / asset_code / "source.tif"
+        source_path.parent.mkdir(parents=True)
+        write_four_band_raster(source_path)
+        source_paths.append(source_path)
+        assets[asset_code] = SimpleNamespace(
+            id=index,
+            project_id=7,
+            asset_code=asset_code,
+            asset_name=asset_code,
+            data_status="operational",
+            calibration_status="completed",
+            correction_status="in_progress",
+            file_uri=f"storage://imagery/assets/{asset_code}/source.tif",
+            file_size_bytes=source_path.stat().st_size,
+            checksum_sha256=calculate_sha256(source_path),
+        )
+        steps_by_asset[index] = build_batch_processing_steps(
+            f"assets/{asset_code}/source.tif",
+            source_path,
+        )
+
+    dao = AsyncMock()
+    dao.get_asset_by_code_for_update.side_effect = (
+        lambda _db, asset_code: assets.get(asset_code)
+    )
+    dao.get_steps_for_update.side_effect = (
+        lambda _db, asset_id: steps_by_asset[asset_id]
+    )
+    workbench_dao = AsyncMock()
+    workbench_dao.get_task_by_code.return_value = SimpleNamespace(
+        id=1,
+        project_id=7,
+    )
+    project_user_service = AsyncMock()
+    project_user_service.require_capability.return_value = SimpleNamespace(
+        user_code="manager-zhao-zhiyuan",
+        display_name="赵志远",
+        role_code="project_manager",
+    )
+    processing_engine = MagicMock()
+    processing_engine.processor_name = "AgriScope Rasterio Engine"
+    processing_engine.processor_version = "1.0.0"
+    execution_count = 0
+
+    def execute(_step_code, _source_path, output_path, parameters, *_args):
+        nonlocal execution_count
+        execution_count += 1
+        if execution_count == 2:
+            raise ValidationException("第二景真实处理失败")
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        write_four_band_raster(output_path)
+        return ProcessingExecutionResult(
+            parameters=parameters,
+            width=10,
+            height=8,
+            band_count=4,
+            dtype="uint16",
+            crs="EPSG:4490",
+        )
+
+    processing_engine.execute.side_effect = execute
+    service = ImageryService(
+        dao=dao,
+        workbench_dao=workbench_dao,
+        project_user_service=project_user_service,
+        processing_engine=processing_engine,
+    )
+    service.storage_dir = tmp_path
+    db = AsyncMock()
+
+    with pytest.raises(ValidationException, match="第二景真实处理失败"):
+        asyncio.run(service.execute_step_batch(
+            db,
+            "RS-2026-045",
+            ImageryProcessingBatchExecuteRequest(
+                operator_code="manager-zhao-zhiyuan",
+                step_code="geometric",
+                comment="验证多景同步骤任一成员失败时清理全部新产物",
+                items=[
+                    {
+                        "asset_code": asset_code,
+                        "parameters": {
+                            "method": "reproject",
+                            "target_crs": "EPSG:4490",
+                        },
+                    }
+                    for asset_code in assets
+                ],
+            ),
+        ))
+
+    assert sorted(tmp_path.rglob("*.tif")) == sorted(source_paths)
+    assert all(
+        steps[2].status == "pending" and steps[2].parameters == {}
+        for steps in steps_by_asset.values()
+    )
+    workbench_dao.add_review_record.assert_not_awaited()
+    db.commit.assert_not_awaited()
+    db.rollback.assert_awaited_once()
+
+
+def test_processing_batch_prevalidates_all_parameters_before_execution(
+    tmp_path: Path,
+) -> None:
+    """任一成员参数预检失败时不得开始生成任何批次产物。"""
+    assets: dict[str, SimpleNamespace] = {}
+    steps_by_asset: dict[int, list[SimpleNamespace]] = {}
+    for index, asset_code in enumerate(("LANDSAT_A", "LANDSAT_B"), start=51):
+        source_path = tmp_path / "assets" / asset_code / "source.tif"
+        source_path.parent.mkdir(parents=True)
+        write_four_band_raster(source_path)
+        assets[asset_code] = SimpleNamespace(
+            id=index,
+            project_id=7,
+            asset_code=asset_code,
+            asset_name=asset_code,
+            data_status="operational",
+            calibration_status="completed",
+            correction_status="in_progress",
+            file_uri=f"storage://imagery/assets/{asset_code}/source.tif",
+            file_size_bytes=source_path.stat().st_size,
+            checksum_sha256=calculate_sha256(source_path),
+        )
+        steps_by_asset[index] = build_batch_processing_steps(
+            f"assets/{asset_code}/source.tif",
+            source_path,
+        )
+
+    dao = AsyncMock()
+    dao.get_asset_by_code_for_update.side_effect = (
+        lambda _db, asset_code: assets.get(asset_code)
+    )
+    dao.get_steps_for_update.side_effect = (
+        lambda _db, asset_id: steps_by_asset[asset_id]
+    )
+    workbench_dao = AsyncMock()
+    workbench_dao.get_task_by_code.return_value = SimpleNamespace(
+        id=1,
+        project_id=7,
+    )
+    project_user_service = AsyncMock()
+    project_user_service.require_capability.return_value = SimpleNamespace(
+        user_code="manager-zhao-zhiyuan",
+        display_name="赵志远",
+        role_code="project_manager",
+    )
+    processing_engine = MagicMock()
+    processing_engine.validate_batch_parameters.side_effect = [
+        None,
+        ValidationException("第二景目标坐标系参数无效"),
+    ]
+    service = ImageryService(
+        dao=dao,
+        workbench_dao=workbench_dao,
+        project_user_service=project_user_service,
+        processing_engine=processing_engine,
+    )
+    service.storage_dir = tmp_path
+    db = AsyncMock()
+
+    with pytest.raises(ValidationException, match="第二景目标坐标系参数无效"):
+        asyncio.run(service.execute_step_batch(
+            db,
+            "RS-2026-045",
+            ImageryProcessingBatchExecuteRequest(
+                operator_code="manager-zhao-zhiyuan",
+                step_code="geometric",
+                comment="验证全部成员参数预检通过前不得开始生成任何实体产物",
+                items=[
+                    {
+                        "asset_code": asset_code,
+                        "parameters": {
+                            "method": "reproject",
+                            "target_crs": "EPSG:4490",
+                        },
+                    }
+                    for asset_code in assets
+                ],
+            ),
+        ))
+
+    assert processing_engine.validate_batch_parameters.call_count == 2
+    processing_engine.execute.assert_not_called()
+    workbench_dao.add_review_record.assert_not_awaited()
+    db.commit.assert_not_awaited()
+    db.rollback.assert_awaited_once()
 
 
 def test_source_level_batch_request_requires_confirmation_and_unique_assets() -> None:

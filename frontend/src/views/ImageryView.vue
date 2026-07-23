@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import {
   CheckCircleOutlined,
+  ClusterOutlined,
   CloudUploadOutlined,
   PlayCircleOutlined,
   SafetyCertificateOutlined,
@@ -10,6 +11,7 @@ import { storeToRefs } from 'pinia'
 import { computed, onMounted, ref } from 'vue'
 
 import ImageryMosaicPanel from '@/components/imagery/ImageryMosaicPanel.vue'
+import ImageryProcessingBatchModal from '@/components/imagery/ImageryProcessingBatchModal.vue'
 import ImageryHistoryPanel from '@/components/imagery/ImageryHistoryPanel.vue'
 import ImageryFusionPanel from '@/components/imagery/ImageryFusionPanel.vue'
 import ImageryRegistrationPanel from '@/components/imagery/ImageryRegistrationPanel.vue'
@@ -36,6 +38,7 @@ const actionVisibleRef = ref<boolean>(false)
 const fusionOpenRef = ref<boolean>(false)
 const historyOpenRef = ref<boolean>(false)
 const mosaicOpenRef = ref<boolean>(false)
+const processingBatchOpenRef = ref<boolean>(false)
 const registrationOpenRef = ref<boolean>(false)
 const sourceAcceptanceBatchOpenRef = ref<boolean>(false)
 const actionModeRef = ref<'execute' | 'register' | 'source-accept'>('execute')
@@ -292,6 +295,13 @@ onMounted(() => {
           </a-button>
           <a-button
             size="small"
+            :disabled="!canProcessComputed"
+            @click="processingBatchOpenRef = true"
+          >
+            <ClusterOutlined /> 多景同步骤
+          </a-button>
+          <a-button
+            size="small"
             @click="fusionOpenRef = true"
           >
             全色融合
@@ -402,6 +412,10 @@ onMounted(() => {
     <ImageryFusionPanel v-model:open="fusionOpenRef" />
     <ImageryRegistrationPanel v-model:open="registrationOpenRef" />
     <ImageryMosaicPanel v-model:open="mosaicOpenRef" />
+    <ImageryProcessingBatchModal
+      v-model:open="processingBatchOpenRef"
+      @success="handleActionSuccess"
+    />
     <ImagerySourceAcceptanceBatchModal
       v-model:open="sourceAcceptanceBatchOpenRef"
       @success="handleActionSuccess"

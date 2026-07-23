@@ -89,6 +89,7 @@ declare module 'vue' {
     ImageryGcpEditor: typeof import('./src/components/imagery/ImageryGcpEditor.vue')['default']
     ImageryHistoryPanel: typeof import('./src/components/imagery/ImageryHistoryPanel.vue')['default']
     ImageryMosaicPanel: typeof import('./src/components/imagery/ImageryMosaicPanel.vue')['default']
+    ImageryProcessingBatchModal: typeof import('./src/components/imagery/ImageryProcessingBatchModal.vue')['default']
     ImageryRegistrationPanel: typeof import('./src/components/imagery/ImageryRegistrationPanel.vue')['default']
     ImagerySourceAcceptanceBatchModal: typeof import('./src/components/imagery/ImagerySourceAcceptanceBatchModal.vue')['default']
     ImageryStepActionModal: typeof import('./src/components/imagery/ImageryStepActionModal.vue')['default']

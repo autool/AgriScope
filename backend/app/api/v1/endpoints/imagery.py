@@ -14,6 +14,8 @@ from app.schemas.imagery import (
     ImageryAssetCreateRequest,
     ImageryAssetListResponse,
     ImageryAssetResponse,
+    ImageryProcessingBatchExecuteRequest,
+    ImageryProcessingBatchExecuteResponse,
     ImageryProcessingResponse,
     ImageryQuicklookResponse,
     ImagerySourceLevelAcceptRequest,
@@ -186,6 +188,28 @@ async def accept_imagery_source_level_batch(
         ImagerySourceLevelBatchAcceptResponse: 批次编号和逐景源实体证据。
     """
     return await service.accept_source_level_batch(db, task_code, request)
+
+
+@router.post(
+    "/processing-batches/execute",
+    response_model=ImageryProcessingBatchExecuteResponse,
+)
+async def execute_imagery_processing_batch(
+    request: ImageryProcessingBatchExecuteRequest,
+    db: DatabaseSession,
+    task_code: Annotated[str, Query(min_length=1, max_length=50)] = "RS-2026-045",
+) -> ImageryProcessingBatchExecuteResponse:
+    """原子执行 1–10 景影像的同一内置预处理步骤。
+
+    Args:
+        request: 同一步骤、逐景参数、稳定操作人和处理依据。
+        db: FastAPI 注入的异步数据库会话。
+        task_code: 审计所属任务编号。
+
+    Returns:
+        ImageryProcessingBatchExecuteResponse: 批次和逐景实体产物证据。
+    """
+    return await service.execute_step_batch(db, task_code, request)
 
 
 @router.get("/{asset_code}/processing", response_model=ImageryProcessingResponse)

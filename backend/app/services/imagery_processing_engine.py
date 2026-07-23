@@ -15,7 +15,8 @@ import rasterio
 from rasterio.control import GroundControlPoint
 from rasterio.crs import CRS
 from rasterio.enums import Resampling
-from rasterio.errors import RasterioIOError
+from rasterio.errors import RasterioIOError, WindowError
+from rasterio.features import geometry_window
 from rasterio.mask import mask
 from rasterio.transform import from_gcps
 from rasterio.warp import (
@@ -1008,6 +1009,188 @@ class ImageryProcessingEngine:
             "output_band_descriptions": list(descriptions),
         }
 
+    def validate_batch_parameters(
+        self,
+        step_code: str,
+        source_path: Path,
+        parameters: dict[str, Any],
+        boundary_geometry: dict[str, Any] | None = None,
+    ) -> None:
+        """在多景批次写出任何产物前校验当前成员参数。
+
+        批量几何处理只允许统一坐标系重投影；每景独立 GCP 控制网和 RPC/DEM
+        正射继续使用单景流程，避免把不同模型隐藏在一个公共批次参数中。
+
+        Args:
+            step_code: 标准处理步骤编码。
+            source_path: 已通过业务层实体校验的上游栅格。
+            parameters: 当前成员明确提交的算法参数。
+            boundary_geometry: 裁剪使用的 WGS84 行政区几何。
+
+        Returns:
+            None: 参数与源栅格结构均可执行时返回。
+        """
+        try:
+            with rasterio.open(source_path) as source:
+                if step_code == "radiometric":
+                    self._number(parameters, "scale_factor", 0.0001, 1e-12, 10)
+                    self._number(parameters, "add_offset", 0, -1000, 1000)
+                    return
+                if step_code == "atmospheric":
+                    self._number(parameters, "dark_percentile", 1, 0, 10)
+                    return
+                if step_code == "geometric":
+                    method = str(
+                        parameters.get("method") or "reproject"
+                    ).strip().lower()
+                    if method != "reproject":
+                        raise ValidationException(
+                            "多景几何批处理只支持统一坐标系重投影；"
+                            "GCP 或 RPC/DEM 请使用单景流程"
+                        )
+                    if source.crs is None:
+                        raise ValidationException("普通重投影要求上游影像具有 CRS")
+                    target_crs = str(
+                        parameters.get("target_crs") or "EPSG:4490"
+                    ).strip()
+                    if not target_crs:
+                        raise ValidationException("几何校正必须指定目标坐标系")
+                    try:
+                        target_crs_value = CRS.from_string(target_crs)
+                    except rasterio.errors.CRSError as exc:
+                        raise ValidationException(
+                            "几何校正目标坐标系不合法"
+                        ) from exc
+                    resampling_code = str(
+                        parameters.get("resampling") or "bilinear"
+                    ).strip().lower()
+                    if resampling_code not in self.resampling_methods:
+                        raise ValidationException(
+                            "重采样方法仅支持 nearest、bilinear 或 cubic"
+                        )
+                    raw_resolution = parameters.get("target_resolution")
+                    resolution = None
+                    if raw_resolution is not None:
+                        resolution = self._number(
+                            parameters,
+                            "target_resolution",
+                            0,
+                            1e-12,
+                            1_000_000,
+                        )
+                    try:
+                        calculate_default_transform(
+                            source.crs,
+                            target_crs_value,
+                            source.width,
+                            source.height,
+                            *source.bounds,
+                            resolution=resolution,
+                        )
+                    except (ValueError, RasterioIOError) as exc:
+                        raise ValidationException(
+                            "目标坐标系或分辨率无法用于重投影"
+                        ) from exc
+                    return
+                if step_code == "clip":
+                    boundary_code = str(
+                        parameters.get("boundary_code") or ""
+                    ).strip()
+                    if not boundary_code or boundary_geometry is None:
+                        raise ValidationException(
+                            "行政区裁剪必须选择真实边界编码"
+                        )
+                    if source.crs is None:
+                        raise ValidationException("上游影像缺少 CRS，无法执行处理")
+                    projected_geometry = transform_geom(
+                        "EPSG:4326",
+                        source.crs,
+                        boundary_geometry,
+                        precision=12,
+                    )
+                    try:
+                        geometry_window(source, [projected_geometry])
+                    except (ValueError, WindowError) as exc:
+                        raise ValidationException(
+                            "行政区边界与当前影像没有可裁剪交集"
+                        ) from exc
+                    return
+                if step_code == "enhancement":
+                    method = str(
+                        parameters.get("method") or "percentile_stretch"
+                    ).strip().lower()
+                    if method not in {
+                        "percentile_stretch",
+                        "histogram_equalization",
+                    }:
+                        raise ValidationException(
+                            "影像增强仅支持 percentile_stretch 或 "
+                            "histogram_equalization"
+                        )
+                    lower = self._number(
+                        parameters,
+                        "lower_percentile",
+                        2,
+                        0,
+                        49.999,
+                    )
+                    upper = self._number(
+                        parameters,
+                        "upper_percentile",
+                        98,
+                        50.001,
+                        100,
+                    )
+                    if lower >= upper:
+                        raise ValidationException(
+                            "拉伸下限百分位必须小于上限百分位"
+                        )
+                    bins = parameters.get("histogram_bins", 256)
+                    if isinstance(bins, bool) or not isinstance(bins, int):
+                        raise ValidationException("直方图分箱数必须为整数")
+                    if not 32 <= bins <= 4096:
+                        raise ValidationException(
+                            "直方图分箱数必须位于 32 到 4096 之间"
+                        )
+                    return
+                if step_code == "band_products":
+                    if source.count < 4:
+                        raise ValidationException("波段产品至少需要四波段影像")
+                    indexes = {
+                        self._band_index(
+                            parameters,
+                            "red_band",
+                            1,
+                            source.count,
+                        ),
+                        self._band_index(
+                            parameters,
+                            "green_band",
+                            2,
+                            source.count,
+                        ),
+                        self._band_index(
+                            parameters,
+                            "blue_band",
+                            3,
+                            source.count,
+                        ),
+                        self._band_index(
+                            parameters,
+                            "nir_band",
+                            4,
+                            source.count,
+                        ),
+                    }
+                    if len(indexes) != 4:
+                        raise ValidationException(
+                            "红、绿、蓝和近红外必须选择四个不同波段"
+                        )
+                    return
+                raise ValidationException(f"平台不支持执行步骤 {step_code}")
+        except RasterioIOError as exc:
+            raise ValidationException("上游影像无法由 Rasterio 读取") from exc
+
     def execute(
         self,
         step_code: str,
@@ -1093,3 +1276,7 @@ class ImageryProcessingEngine:
             raise ValidationException("上游影像或处理输出无法由 Rasterio 读取") from exc
         finally:
             temporary_path.unlink(missing_ok=True)
+            for sidecar_suffix in (".aux.xml", ".msk", ".ovr"):
+                Path(f"{temporary_path}{sidecar_suffix}").unlink(
+                    missing_ok=True
+                )

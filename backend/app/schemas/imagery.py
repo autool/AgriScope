@@ -360,6 +360,119 @@ class ImageryStepExecuteRequest(BaseModel):
         return normalized
 
 
+ImageryBuiltInStepCode = Literal[
+    "radiometric",
+    "atmospheric",
+    "geometric",
+    "clip",
+    "enhancement",
+    "band_products",
+]
+
+
+class ImageryProcessingBatchItemRequest(BaseModel):
+    """多景同步骤原子执行中的一个影像资产。"""
+
+    asset_code: str = Field(
+        min_length=1,
+        max_length=80,
+        pattern=r"^[A-Za-z0-9_-]+$",
+    )
+    parameters: dict = Field(default_factory=dict)
+
+    model_config = ConfigDict(extra="forbid")
+
+    @field_validator("asset_code")
+    @classmethod
+    def normalize_asset_code(cls, value: str) -> str:
+        """清理批次成员资产编号。
+
+        Args:
+            value: 原始影像资产编号。
+
+        Returns:
+            str: 去除首尾空白的资产编号。
+        """
+        return value.strip()
+
+
+class ImageryProcessingBatchExecuteRequest(BaseModel):
+    """一次原子执行 1–10 景的同一内置处理步骤。"""
+
+    operator_code: str = Field(min_length=1, max_length=50)
+    step_code: ImageryBuiltInStepCode
+    comment: str = Field(min_length=10, max_length=500)
+    items: list[ImageryProcessingBatchItemRequest] = Field(
+        min_length=1,
+        max_length=10,
+    )
+
+    model_config = ConfigDict(extra="forbid")
+
+    @field_validator("operator_code", "comment")
+    @classmethod
+    def normalize_required_text(cls, value: str) -> str:
+        """清理稳定操作人和批次处理依据。
+
+        Args:
+            value: 原始文本。
+
+        Returns:
+            str: 去除首尾空白的文本。
+        """
+        return value.strip()
+
+    @model_validator(mode="after")
+    def validate_unique_assets(self) -> Self:
+        """确保批次不重复处理同一影像资产。
+
+        Returns:
+            Self: 已通过资产唯一性校验的请求。
+        """
+        asset_codes = [item.asset_code for item in self.items]
+        if len(asset_codes) != len(set(asset_codes)):
+            raise ValueError("影像处理批次不得包含重复资产")
+        return self
+
+
+class ImageryProcessingBatchItemResponse(BaseModel):
+    """一个完成内置步骤执行的影像实体证据。"""
+
+    asset_code: str
+    asset_name: str
+    step_code: str
+    step_name: str
+    source_file_uri: str
+    source_checksum_sha256: str
+    output_file_uri: str
+    output_file_size_bytes: int
+    output_checksum_sha256: str
+    output_width: int
+    output_height: int
+    output_band_count: int
+    output_dtype: str
+    output_crs: str
+    execution_parameters: dict
+    invalidated_downstream_steps: list[str]
+
+
+class ImageryProcessingBatchExecuteResponse(BaseModel):
+    """多景同步骤原子执行结果。"""
+
+    batch_code: str
+    step_code: str
+    step_name: str
+    item_count: int
+    processor_name: str
+    processor_version: str
+    executed_by: str
+    executed_by_code: str
+    executed_by_role: str
+    comment: str
+    created_at: datetime
+    items: list[ImageryProcessingBatchItemResponse]
+
+
 class ImagerySourceLevelAcceptRequest(BaseModel):
     """使用已验证源产品级别满足处理步骤的受控承认请求。"""
 
