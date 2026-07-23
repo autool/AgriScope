@@ -32,3 +32,4 @@ backend/storage/vector-exports/
 backend/storage/acceptance-reports/
 backend/storage/plot-attribute-imports/
 backend/storage/growth-monitoring/
+backend/storage/offline-archives/

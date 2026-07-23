@@ -156,8 +156,20 @@ the platform has persisted evidence and executable workflows.
   every embedded member except the self-describing manifest. Changes to thematic maps,
   supervision reports, dataset catalogs, or current imagery-processing artifacts make
   older packages stale; a new package explicitly supersedes prior completed versions.
-  This is controlled online delivery evidence, not proof of complete offline-media
-  preservation of every large source raster or a long-term archival retention program.
+  This remains the controlled online delivery package; large physical rasters are handled
+  by the separate task-level offline-media archive described below.
+- The implemented offline-media contract requires a current checksum-verified delivery
+  package and revalidates every operational source raster, every completed processing step
+  with a distinct physical output, and every verified project/task dataset entity. It
+  writes complete files into independently extractable capacity-bounded ZIP64 volumes,
+  rejects over-capacity single files without truncation, stores a manifest inside every
+  volume, and publishes a canonical top-level manifest containing ordered volume and
+  complete source snapshots. Generation uses same-filesystem temporary storage, reopens
+  and hashes every embedded member, publishes atomically, cleans all files on database
+  failure, preserves stable-user generation/supersession/download events, supersedes the
+  prior current version, and blocks download after delivery or source evidence changes.
+  This is executable task-level physical-media preservation, not evidence of a supplied
+  1980–2024 corpus or a long-term institutional retention program.
 - Provide a thematic-map composer with title, neatline, north arrow, scale bar, legend,
   producer, date, map number, layout templates, bulk generation, and physical checksums.
 - The implemented thematic-map contract reads a checksum-verified `band_products`
@@ -173,8 +185,8 @@ the platform has persisted evidence and executable workflows.
   It revalidates the current source set and every ZIP/PDF/member checksum before download
   or delivery, supersedes prior versions, and makes delivery stale when atlas state changes.
   This is executable task-level atlas composition; it is not evidence that regional block
-  adjustment, advanced seamline mosaicking, a supplied 1980–2024 historical corpus, or
-  complete offline-media archival delivery is finished.
+  adjustment, advanced seamline mosaicking, or a 1980–2024 historical corpus has been
+  supplied.
 - Publish approved map/data services only through registered endpoints with application,
   approval, credentials, documentation, health state, usage audit, and revocation.
 - The implemented service-sharing contract uses persisted registrations, independent

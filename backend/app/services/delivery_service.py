@@ -593,9 +593,32 @@ class DeliveryService:
         stale_reason = self._get_stale_reason(package, task, archive_state)
         if stale_reason is not None:
             raise ValidationException(f"成果包已失效：{stale_reason}")
-        if not Path(package.file_uri).is_file():
+        self.resolve_verified_package_path(package)
+        return package
+
+    def resolve_verified_package_path(self, package: DeliveryPackage) -> Path:
+        """重新校验成果包受控实体的路径、大小、签名和 SHA-256。
+
+        Args:
+            package: 已通过当前性判断的成果交付包。
+
+        Returns:
+            Path: 已通过完整性复核的 ZIP 实体路径。
+        """
+        if package.status not in {"completed", "superseded"} or not package.file_uri:
+            raise ValidationException("成果包尚未生成完成")
+        package_path = Path(package.file_uri).resolve()
+        if not package_path.is_file():
             raise NotFoundException("成果包文件不存在，请重新生成")
-        package_path = Path(package.file_uri)
+        storage_root = self.storage_dir.resolve()
+        if not package_path.is_relative_to(storage_root):
+            raise ValidationException("成果包不在受控交付目录中")
+        if package_path.suffix.lower() != ".zip":
+            raise ValidationException("成果包文件格式不是 ZIP")
+        with package_path.open("rb") as package_file:
+            signature = package_file.read(4)
+        if signature != b"PK\x03\x04":
+            raise ValidationException("成果包 ZIP 文件签名无效")
         if (
             package.file_size_bytes is None
             or package_path.stat().st_size != package.file_size_bytes
@@ -606,7 +629,7 @@ class DeliveryService:
             or self._calculate_sha256(package_path) != package.checksum_sha256
         ):
             raise ValidationException("成果包完整性校验失败，请重新生成")
-        return package
+        return package_path
 
     async def _load_source_data(
         self,

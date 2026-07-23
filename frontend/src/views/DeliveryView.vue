@@ -4,15 +4,18 @@ import {
   ExportOutlined,
   FileDoneOutlined,
   FileProtectOutlined,
+  HddOutlined,
 } from '@ant-design/icons-vue'
 import { message } from 'ant-design-vue'
 import { storeToRefs } from 'pinia'
 import { computed, onMounted, ref } from 'vue'
 
 import AcceptanceReportModal from '@/components/delivery/AcceptanceReportModal.vue'
+import OfflineArchiveModal from '@/components/delivery/OfflineArchiveModal.vue'
 import VectorExportModal from '@/components/delivery/VectorExportModal.vue'
 import { useAcceptanceReportStore } from '@/store/acceptanceReportStore'
 import { useDeliveryStore } from '@/store/deliveryStore'
+import { useOfflineArchiveStore } from '@/store/offlineArchiveStore'
 import { useUserStore } from '@/store/userStore'
 import { useVectorExportStore } from '@/store/vectorExportStore'
 import { useWorkbenchStore } from '@/store/workbenchStore'
@@ -21,12 +24,17 @@ import type {
   VectorExportPackage,
 } from '@/types/vectorExport'
 import type { AcceptanceReport } from '@/types/acceptanceReport'
+import type {
+  OfflineArchive,
+  OfflineArchiveVolume,
+} from '@/types/offlineArchive'
 
 const workbenchStore = useWorkbenchStore()
 const deliveryStore = useDeliveryStore()
 const userStore = useUserStore()
 const vectorExportStore = useVectorExportStore()
 const acceptanceReportStore = useAcceptanceReportStore()
+const offlineArchiveStore = useOfflineArchiveStore()
 const { deliveriesRef } = storeToRefs(deliveryStore)
 const {
   canDownloadComputed: canDownloadVectorComputed,
@@ -46,10 +54,19 @@ const {
   listRef: acceptanceReportListRef,
   loadingRef: acceptanceLoadingRef,
 } = storeToRefs(acceptanceReportStore)
+const {
+  canDownloadComputed: canDownloadOfflineArchiveComputed,
+  canGenerateComputed: canGenerateOfflineArchiveComputed,
+  downloadingKeyRef: offlineArchiveDownloadingKeyRef,
+  generatingRef: offlineArchiveGeneratingRef,
+  loadingRef: offlineArchiveLoadingRef,
+  overviewRef: offlineArchiveOverviewRef,
+} = storeToRefs(offlineArchiveStore)
 const selectedPackageCodeRef = ref<string | null>(null)
 const generatingRef = ref(false)
 const vectorExportOpenRef = ref<boolean>(false)
 const acceptanceReportOpenRef = ref<boolean>(false)
+const offlineArchiveOpenRef = ref<boolean>(false)
 const selectedPackageComputed = computed(() => deliveriesRef.value?.packages?.find(
   (item) => item.package_code === selectedPackageCodeRef.value,
 ) || deliveriesRef.value?.packages?.[0] || null)
@@ -214,11 +231,75 @@ const handleDownloadAcceptance = async (
   }
 }
 
+/**
+ * 生成服务端 ZIP64 离线介质分卷。
+ * Args:
+ *   payload: 封存名称、单卷容量和生成依据。
+ * Returns:
+ *   Promise<void>: 生成和列表刷新完成后结束。
+ */
+const handleGenerateOfflineArchive = async (payload: {
+  archive_name: string | null
+  volume_capacity_bytes: number
+  comment: string
+}): Promise<void> => {
+  try {
+    const archive = await offlineArchiveStore.generate(payload)
+    message.success(`离线封存 V${archive.version} 已生成，共 ${archive.volume_count} 卷`)
+  } catch {
+    // 请求拦截器已显示安全错误，保留弹窗便于查看生成门禁。
+  }
+}
+
+/**
+ * 下载离线封存顶层规范清单。
+ * Args:
+ *   archive: 当前有效封存版本。
+ * Returns:
+ *   Promise<void>: 下载触发后结束。
+ */
+const handleDownloadOfflineManifest = async (
+  archive: OfflineArchive,
+): Promise<void> => {
+  try {
+    const { blob, filename } = await offlineArchiveStore.downloadManifest(archive)
+    downloadBlob(blob, filename)
+    message.success('顶层规范清单已通过完整性校验并开始下载')
+  } catch {
+    // 请求拦截器已显示安全错误。
+  }
+}
+
+/**
+ * 下载并保存一个通过逐成员复核的 ZIP64 分卷。
+ * Args:
+ *   archive: 当前有效封存版本。
+ *   volume: 待下载分卷。
+ * Returns:
+ *   Promise<void>: 下载触发后结束。
+ */
+const handleDownloadOfflineVolume = async (
+  archive: OfflineArchive,
+  volume: OfflineArchiveVolume,
+): Promise<void> => {
+  try {
+    const { blob, filename } = await offlineArchiveStore.downloadVolume(
+      archive,
+      volume,
+    )
+    downloadBlob(blob, filename)
+    message.success(`离线封存第 ${volume.sequence} 卷已校验并开始下载`)
+  } catch {
+    // 请求拦截器已显示安全错误。
+  }
+}
+
 onMounted(() => {
   void Promise.all([
     deliveryStore.load(),
     vectorExportStore.load(),
     acceptanceReportStore.load(),
+    offlineArchiveStore.load(),
   ])
 })
 </script>
@@ -233,6 +314,9 @@ onMounted(() => {
         </a-button>
         <a-button @click="acceptanceReportOpenRef = true">
           <FileProtectOutlined />验收报告
+        </a-button>
+        <a-button @click="offlineArchiveOpenRef = true">
+          <HddOutlined />离线介质
         </a-button>
         <a-button
           type="primary"
@@ -349,6 +433,21 @@ onMounted(() => {
       @refresh="acceptanceReportStore.load"
       @generate="handleGenerateAcceptance"
       @download="handleDownloadAcceptance"
+    />
+    <OfflineArchiveModal
+      :open="offlineArchiveOpenRef"
+      :task-code="overviewRef?.task.task_code || '--'"
+      :overview="offlineArchiveOverviewRef"
+      :loading="offlineArchiveLoadingRef"
+      :generating="offlineArchiveGeneratingRef"
+      :downloading-key="offlineArchiveDownloadingKeyRef"
+      :can-generate="canGenerateOfflineArchiveComputed"
+      :can-download="canDownloadOfflineArchiveComputed"
+      @cancel="offlineArchiveOpenRef = false"
+      @refresh="offlineArchiveStore.load"
+      @generate="handleGenerateOfflineArchive"
+      @download-manifest="handleDownloadOfflineManifest"
+      @download-volume="handleDownloadOfflineVolume"
     />
   </div>
 </template>

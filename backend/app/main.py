@@ -27,6 +27,7 @@ from app.api.v1.endpoints import (
     imagery_mosaic,
     imagery_registration,
     monitoring_network,
+    offline_archive,
     plot,
     plot_attribute_field,
     plot_attribute_workbook,
@@ -217,4 +218,5 @@ app.include_router(supervision.router)
 app.include_router(thematic_map.router)
 app.include_router(monitoring_network.router)
 app.include_router(uav.router)
+app.include_router(offline_archive.router)
 configure_openapi_envelopes(app)

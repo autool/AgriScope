@@ -101,6 +101,7 @@ declare module 'vue' {
     MobileUavCaptureForm: typeof import('./src/components/uav/mobile/MobileUavCaptureForm.vue')['default']
     ModuleSidebar: typeof import('./src/components/workbench/ModuleSidebar.vue')['default']
     MonitoringResourcePanel: typeof import('./src/components/monitoring/MonitoringResourcePanel.vue')['default']
+    OfflineArchiveModal: typeof import('./src/components/delivery/OfflineArchiveModal.vue')['default']
     OlViewer: typeof import('./src/components/OlViewer.vue')['default']
     PestIntelligencePanel: typeof import('./src/components/monitoring/PestIntelligencePanel.vue')['default']
     PestReportLedgerPanel: typeof import('./src/components/monitoring/PestReportLedgerPanel.vue')['default']

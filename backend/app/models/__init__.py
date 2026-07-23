@@ -36,6 +36,12 @@ from app.models.monitoring_network import (
     PestReport,
     PestReportItem,
 )
+from app.models.offline_archive import (
+    OfflineArchive,
+    OfflineArchiveEvent,
+    OfflineArchiveSource,
+    OfflineArchiveVolume,
+)
 from app.models.plot import Base, FarmlandPlot
 from app.models.plot_attribute_field import (
     ProjectPlotAttributeField,
@@ -125,6 +131,10 @@ __all__ = [
     "MonitoringEvent",
     "MonitoringStation",
     "MonitoringTask",
+    "OfflineArchive",
+    "OfflineArchiveEvent",
+    "OfflineArchiveSource",
+    "OfflineArchiveVolume",
     "PestAlert",
     "PestAssessment",
     "PestModelVersion",
