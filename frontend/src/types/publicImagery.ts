@@ -20,6 +20,7 @@ export interface PublicImageryCandidate {
   wrs_row: number | null
   resolution_m: number
   bbox: [number, number, number, number]
+  query_coverage_ratio: number
   fully_covers_query: boolean
   stac_item_url: string
 }
@@ -31,6 +32,7 @@ export interface PublicImagerySearchResponse {
   license_url: string
   non_statutory_notice: string
   query_bbox: [number, number, number, number]
+  coverage_basis: string
   total: number
   items: PublicImageryCandidate[]
 }
@@ -54,6 +56,8 @@ export interface PublicImageryImportResponse {
   source_cloud_cover: number | null
   source_wrs_path: number | null
   source_wrs_row: number | null
+  query_coverage_ratio: number
+  coverage_basis: string
   license_name: string
   non_statutory_notice: string
   asset: ImageryAssetItem
@@ -88,6 +92,8 @@ export interface PublicImageryBatchSource {
   source_cloud_cover: number | null
   source_wrs_path: number | null
   source_wrs_row: number | null
+  subset_bbox: [number, number, number, number]
+  query_coverage_ratio: number
 }
 
 export interface PublicImageryBatchImportResponse {
@@ -97,6 +103,10 @@ export interface PublicImageryBatchImportResponse {
   license_url: string
   non_statutory_notice: string
   query_bbox: [number, number, number, number]
+  coverage_basis: string
+  coverage_mode: 'single_scene_complete' | 'multi_scene_union'
+  union_coverage_ratio: number
+  union_covers_query: boolean
   sources: PublicImageryBatchSource[]
   batch: ImageryBatchResponse
 }

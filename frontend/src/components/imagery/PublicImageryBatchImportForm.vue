@@ -13,6 +13,7 @@ const publicImageryStore = usePublicImageryStore()
 const {
   resultRef,
   selectedCandidatesComputed,
+  selectedCoverageRatioComputed,
   assetDraftsRef,
   batchCodeRef,
   batchCommentRef,
@@ -35,7 +36,7 @@ const runImport = async (): Promise<void> => {
   try {
     const response = await publicImageryStore.importSelectedBatch()
     message.success(
-      `批次 ${response.batch.batch_code} 已原子入库 ${response.batch.item_count} 景`,
+      `批次 ${response.batch.batch_code} 已按真实足迹 ${(response.union_coverage_ratio * 100).toFixed(2)}% 联合覆盖原子入库 ${response.batch.item_count} 景`,
     )
     if (response.batch.quality_recheck_required) {
       message.warning(
@@ -63,7 +64,7 @@ const runImport = async (): Promise<void> => {
     <a-empty
       v-if="!selectedCandidatesComputed.length"
       :image="null"
-      description="勾选 1–10 景完整覆盖候选后，可在此维护逐景资产清单"
+      description="勾选一景完整覆盖，或选择 2–10 景跨轨候选联合覆盖后，可维护逐景资产清单"
     />
 
     <template v-else>
@@ -133,7 +134,7 @@ const runImport = async (): Promise<void> => {
         type="warning"
         show-icon
         :message="resultRef?.non_statutory_notice"
-        :description="`${resultRef?.license_name}。服务端会先完成全部条目重取、覆盖校验、临时签名和四波段裁取，再通过一次数据库事务发布；任一景失败时整批不入库。`"
+        :description="`${resultRef?.license_name}。当前 bbox 联合覆盖预估 ${(selectedCoverageRatioComputed * 100).toFixed(2)}%；服务端会以真实 STAC Polygon 足迹重新执行 PostGIS 联合覆盖校验，再完成临时签名、逐景交集裁取和一次数据库事务发布；任一景失败时整批不入库。`"
       />
 
       <a-alert
@@ -146,7 +147,7 @@ const runImport = async (): Promise<void> => {
       <footer>
         <span>
           已选择 {{ selectedCandidatesComputed.length }}/{{ publicImageryStore.maxSelectedItems }} 景；
-          浏览器不会接收或保存 COG/SAS URL。
+          bbox 联合覆盖约 {{ (selectedCoverageRatioComputed * 100).toFixed(2) }}%；浏览器不会接收或保存 COG/SAS URL。
         </span>
         <a-button
           type="primary"
@@ -166,8 +167,8 @@ const runImport = async (): Promise<void> => {
       show-icon
       :message="`批次 ${lastImportRef.batch.batch_code} 已入库 ${lastImportRef.batch.item_count} 景`"
       :description="lastImportRef.batch.quality_recheck_required
-        ? `质量判定影像由 ${lastImportRef.batch.previous_quality_imagery_code || '无'} 切换为 ${lastImportRef.batch.current_quality_imagery_code || '--'}，已重开 ${lastImportRef.batch.invalidated_task_count} 个任务；请重新运行全量质检。`
-        : `清单 SHA-256 ${lastImportRef.batch.manifest_sha256} · ${lastImportRef.batch.total_size_bytes} bytes`"
+        ? `真实 STAC 足迹联合覆盖 ${(lastImportRef.union_coverage_ratio * 100).toFixed(2)}%；质量判定影像由 ${lastImportRef.batch.previous_quality_imagery_code || '无'} 切换为 ${lastImportRef.batch.current_quality_imagery_code || '--'}，已重开 ${lastImportRef.batch.invalidated_task_count} 个任务；请重新运行全量质检。`
+        : `真实 STAC 足迹联合覆盖 ${(lastImportRef.union_coverage_ratio * 100).toFixed(2)}% · 清单 SHA-256 ${lastImportRef.batch.manifest_sha256} · ${lastImportRef.batch.total_size_bytes} bytes`"
     >
       <template #icon><SafetyCertificateOutlined /></template>
     </a-alert>

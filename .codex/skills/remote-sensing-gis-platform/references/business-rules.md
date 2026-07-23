@@ -2,6 +2,8 @@
 
 ## Imagery
 
+- Public Landsat history import may use one complete scene or 2–10 intersecting cross-track scenes. Refetch every controlled STAC Item, validate its actual Polygon/MultiPolygon footprint with PostGIS, and require `ST_UnaryUnion` coverage of the entire query geometry before requesting temporary SAS URLs or reading COGs; bbox union is frontend guidance only. Crop each scene to its non-empty query intersection and persist query/subset bounds, per-scene and union geography-area ratios, scene count, the coverage algorithm basis, unsigned STAC/product/WRS/licence lineage and the non-statutory label in physical GeoTIFF evidence. Reject the whole batch and clean all temporary subsets on any footprint gap, invalid geometry, signing, raster, persistence or transaction failure.
+
 - Support metadata, acquisition time, cloud cover, footprint, resolution, sensor, and processing level.
 - Processing steps include radiometric calibration, atmospheric correction, geometric correction, clipping, and band/index products.
 - Preserve step parameters, operator, timestamps, output URI, status, and progress.

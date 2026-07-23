@@ -47,6 +47,7 @@ class PublicImageryCandidateResponse(BaseModel):
     wrs_row: int | None
     resolution_m: float
     bbox: tuple[float, float, float, float]
+    query_coverage_ratio: float = Field(ge=0, le=1)
     fully_covers_query: bool
     stac_item_url: str
 
@@ -60,6 +61,7 @@ class PublicImagerySearchResponse(BaseModel):
     license_url: str
     non_statutory_notice: str
     query_bbox: tuple[float, float, float, float]
+    coverage_basis: str
     total: int
     items: list[PublicImageryCandidateResponse]
 
@@ -127,6 +129,8 @@ class PublicImageryImportResponse(BaseModel):
     source_cloud_cover: float | None
     source_wrs_path: int | None
     source_wrs_row: int | None
+    query_coverage_ratio: float = Field(ge=0, le=1)
+    coverage_basis: str
     license_name: str
     non_statutory_notice: str
     asset: ImageryAssetResponse
@@ -226,6 +230,8 @@ class PublicImageryBatchSourceResponse(BaseModel):
     source_cloud_cover: float | None
     source_wrs_path: int | None
     source_wrs_row: int | None
+    subset_bbox: tuple[float, float, float, float]
+    query_coverage_ratio: float = Field(ge=0, le=1)
 
 
 class PublicImageryBatchImportResponse(BaseModel):
@@ -237,6 +243,10 @@ class PublicImageryBatchImportResponse(BaseModel):
     license_url: str
     non_statutory_notice: str
     query_bbox: tuple[float, float, float, float]
+    coverage_basis: str
+    coverage_mode: str
+    union_coverage_ratio: float = Field(ge=0, le=1)
+    union_covers_query: bool
     sources: list[PublicImageryBatchSourceResponse]
     batch: ImageryAssetBatchResponse
 

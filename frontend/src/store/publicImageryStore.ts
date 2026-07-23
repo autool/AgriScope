@@ -15,6 +15,62 @@ import type {
   PublicImagerySearchResponse,
 } from '@/types/publicImagery'
 
+type Wgs84Bbox = [number, number, number, number]
+
+/** 计算候选 bbox 并集对查询矩形的前端引导比例；服务端仍以真实足迹为准。 */
+const calculateBboxUnionCoverage = (
+  queryBbox: Wgs84Bbox,
+  itemBboxes: Wgs84Bbox[],
+): number => {
+  const clipped = itemBboxes.map((bbox) => ([
+    Math.max(queryBbox[0], bbox[0]),
+    Math.max(queryBbox[1], bbox[1]),
+    Math.min(queryBbox[2], bbox[2]),
+    Math.min(queryBbox[3], bbox[3]),
+  ] as Wgs84Bbox)).filter(
+    bbox => bbox[0] < bbox[2] && bbox[1] < bbox[3],
+  )
+  if (!clipped.length) return 0
+  const xCoordinates = [...new Set([
+    queryBbox[0],
+    queryBbox[2],
+    ...clipped.flatMap(bbox => [bbox[0], bbox[2]]),
+  ])].sort((first, second) => first - second)
+  let unionArea = 0
+  for (let index = 0; index < xCoordinates.length - 1; index += 1) {
+    const left = xCoordinates[index]
+    const right = xCoordinates[index + 1]
+    if (right <= left) continue
+    const intervals = clipped
+      .filter(bbox => bbox[0] < right && bbox[2] > left)
+      .map(bbox => [bbox[1], bbox[3]] as [number, number])
+      .sort((first, second) => first[0] - second[0])
+    let coveredHeight = 0
+    let currentStart: number | null = null
+    let currentEnd: number | null = null
+    intervals.forEach(([start, end]) => {
+      if (currentStart === null || currentEnd === null) {
+        currentStart = start
+        currentEnd = end
+      } else if (start > currentEnd) {
+        coveredHeight += currentEnd - currentStart
+        currentStart = start
+        currentEnd = end
+      } else {
+        currentEnd = Math.max(currentEnd, end)
+      }
+    })
+    if (currentStart !== null && currentEnd !== null) {
+      coveredHeight += currentEnd - currentStart
+    }
+    unionArea += (right - left) * coveredHeight
+  }
+  const queryArea = (
+    (queryBbox[2] - queryBbox[0]) * (queryBbox[3] - queryBbox[1])
+  )
+  return queryArea > 0 ? Math.min(1, unionArea / queryArea) : 0
+}
+
 export const usePublicImageryStore = defineStore('publicImagery', () => {
   const MAX_SELECTED_ITEMS = 10
   const assetStore = useAssetStore()
@@ -45,14 +101,28 @@ export const usePublicImageryStore = defineStore('publicImagery', () => {
       item => selectedItemIdsRef.value.includes(item.item_id),
     ) || []
   ))
+  const selectedCoverageRatioComputed = computed<number>(() => (
+    calculateBboxUnionCoverage(
+      queryRef.value.bbox,
+      selectedCandidatesComputed.value.map(candidate => candidate.bbox),
+    )
+  ))
   const validationMessagesComputed = computed<string[]>(() => {
     const messages: string[] = []
     if (!canImportComputed.value) messages.push('当前项目身份无权导入公开影像')
     if (selectedCandidatesComputed.value.length === 0) {
-      messages.push('请至少选择一景完整覆盖当前范围的候选')
+      messages.push('请至少选择一景与当前范围相交的候选')
     }
     if (selectedCandidatesComputed.value.length > MAX_SELECTED_ITEMS) {
       messages.push(`单批最多选择 ${MAX_SELECTED_ITEMS} 景公开影像`)
+    }
+    if (
+      selectedCandidatesComputed.value.length > 0
+      && selectedCoverageRatioComputed.value < 0.999999
+    ) {
+      messages.push(
+        `所选候选 bbox 联合覆盖约 ${(selectedCoverageRatioComputed.value * 100).toFixed(2)}%，请继续补选；提交时服务端还会校验真实 STAC 足迹`,
+      )
     }
     if (!/^[A-Za-z0-9_-]{1,90}$/.test(batchCodeRef.value.trim())) {
       messages.push('批次编号仅允许字母、数字、下划线和连字符')
@@ -134,7 +204,7 @@ export const usePublicImageryStore = defineStore('publicImagery', () => {
     ]
   }
 
-  /** 检索公开 Landsat 历史候选并优先选择完整覆盖条目。 */
+  /** 检索候选并自动选择一景完整覆盖或最多十景的 bbox 贪心联合覆盖。 */
   const search = async (): Promise<void> => {
     searchingRef.value = true
     errorRef.value = null
@@ -147,8 +217,36 @@ export const usePublicImageryStore = defineStore('publicImagery', () => {
       const firstComplete = resultRef.value.items.find(
         item => item.fully_covers_query,
       )
-      selectedItemIdsRef.value = firstComplete ? [firstComplete.item_id] : []
-      if (firstComplete) ensureAssetDraft(firstComplete)
+      if (firstComplete) {
+        selectedItemIdsRef.value = [firstComplete.item_id]
+        ensureAssetDraft(firstComplete)
+      } else {
+        const selected: PublicImageryCandidate[] = []
+        let coverageRatio = 0
+        while (
+          selected.length < MAX_SELECTED_ITEMS
+          && coverageRatio < 0.999999
+        ) {
+          const remaining = resultRef.value.items.filter(
+            item => !selected.some(selectedItem => (
+              selectedItem.item_id === item.item_id
+            )),
+          )
+          const ranked = remaining.map(candidate => ({
+            candidate,
+            ratio: calculateBboxUnionCoverage(
+              queryRef.value.bbox,
+              [...selected, candidate].map(item => item.bbox),
+            ),
+          })).sort((first, second) => second.ratio - first.ratio)
+          const best = ranked[0]
+          if (!best || best.ratio <= coverageRatio + 1e-12) break
+          selected.push(best.candidate)
+          coverageRatio = best.ratio
+        }
+        selectedItemIdsRef.value = selected.map(item => item.item_id)
+        selected.forEach(ensureAssetDraft)
+      }
     } catch (error) {
       errorRef.value = error instanceof Error
         ? error.message
@@ -159,11 +257,11 @@ export const usePublicImageryStore = defineStore('publicImagery', () => {
     }
   }
 
-  /** 切换一个完整覆盖候选，严格限制公开批次最多十景。 */
+  /** 切换一个真实足迹相交候选，严格限制公开批次最多十景。 */
   const toggleCandidate = (itemId: string): void => {
     const candidate = resultRef.value?.items.find(item => item.item_id === itemId)
-    if (!candidate?.fully_covers_query) {
-      throw new Error('仅可选择完整覆盖当前 WGS84 范围的候选')
+    if (!candidate || candidate.query_coverage_ratio <= 0) {
+      throw new Error('仅可选择真实 STAC 足迹与当前范围相交的候选')
     }
     if (selectedItemIdsRef.value.includes(itemId)) {
       selectedItemIdsRef.value = selectedItemIdsRef.value.filter(
@@ -228,6 +326,7 @@ export const usePublicImageryStore = defineStore('publicImagery', () => {
     resultRef,
     selectedItemIdsRef,
     selectedCandidatesComputed,
+    selectedCoverageRatioComputed,
     assetDraftsRef,
     batchCodeRef,
     batchCommentRef,

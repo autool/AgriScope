@@ -20,16 +20,18 @@ service = PublicImageryService()
 @router.post("/search", response_model=PublicImagerySearchResponse)
 async def search_public_imagery(
     request: PublicImagerySearchRequest,
+    db: DatabaseSession,
 ) -> PublicImagerySearchResponse:
     """从固定 Planetary Computer collection 检索真实 Landsat 候选。
 
     Args:
         request: 日期、云量和 WGS84 检索范围。
+        db: 用于 PostGIS 足迹覆盖分析的异步会话。
 
     Returns:
         PublicImagerySearchResponse: 不含任何 SAS Token 的候选列表。
     """
-    return await service.search(request)
+    return await service.search(db, request)
 
 
 @router.post(

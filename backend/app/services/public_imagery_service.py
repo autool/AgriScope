@@ -6,9 +6,15 @@ from contextlib import ExitStack
 from dataclasses import dataclass
 from pathlib import Path
 
+from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.exceptions import NotFoundException, ValidationException
+from app.dao.public_imagery_dao import (
+    PublicImageryCoverageAnalysis,
+    PublicImageryDAO,
+    PublicImageryItemCoverage,
+)
 from app.dao.workbench_dao import WorkbenchDAO
 from app.schemas.imagery import (
     ImageryAssetBatchCreateRequest,
@@ -43,16 +49,21 @@ class PreparedPublicImagerySubset:
     item: PublicLandsatItem
     output_path: Path
     original_filename: str
+    subset_bbox: tuple[float, float, float, float]
+    query_coverage_ratio: float
 
 
 class PublicImageryService:
     """编排固定公开 STAC 搜索、服务端 SAS 读取和原子影像入库。"""
+
+    COVERAGE_BASIS = "STAC_GEOMETRY_POSTGIS_GEOGRAPHY"
 
     def __init__(
         self,
         client: PublicImageryClient | None = None,
         engine: PublicImageryEngine | None = None,
         asset_service: ImageryAssetService | None = None,
+        dao: PublicImageryDAO | None = None,
         workbench_dao: WorkbenchDAO | None = None,
         project_user_service: ProjectUserService | None = None,
     ) -> None:
@@ -62,6 +73,7 @@ class PublicImageryService:
             client: 固定 Planetary Computer 客户端。
             engine: Landsat 反射率裁取引擎。
             asset_service: 统一影像实体原子入库服务。
+            dao: STAC 足迹联合覆盖分析 DAO。
             workbench_dao: 项目任务 DAO。
             project_user_service: 稳定用户能力服务。
 
@@ -71,16 +83,19 @@ class PublicImageryService:
         self.client = client or PublicImageryClient()
         self.engine = engine or PublicImageryEngine()
         self.asset_service = asset_service or ImageryAssetService()
+        self.dao = dao or PublicImageryDAO()
         self.workbench_dao = workbench_dao or WorkbenchDAO()
         self.project_user_service = project_user_service or ProjectUserService()
 
     async def search(
         self,
+        db: AsyncSession,
         request: PublicImagerySearchRequest,
     ) -> PublicImagerySearchResponse:
         """检索并筛选具备四个反射率波段的真实 Landsat 候选。
 
         Args:
+            db: 用于 PostGIS STAC 足迹覆盖分析的异步会话。
             request: 日期、云量和 WGS84 检索窗口。
 
         Returns:
@@ -99,17 +114,33 @@ class PublicImageryService:
                 parsed_items.append(self.engine.parse_item(feature))
             except ValidationException:
                 continue
-        parsed_items.sort(
-            key=lambda item: (
-                self.engine.fully_covers(item.bbox, request.bbox),
-                -(item.cloud_cover if item.cloud_cover is not None else 101),
-                item.acquired_at,
+        coverage = await self._analyze_coverage(db, request.bbox, parsed_items)
+        covered_items = [
+            (item, item_coverage)
+            for item, item_coverage in zip(
+                parsed_items,
+                coverage.items,
+                strict=True,
+            )
+            if item_coverage.geometry_valid
+            and item_coverage.coverage_ratio > 0
+        ]
+        covered_items.sort(
+            key=lambda pair: (
+                pair[1].fully_covers_query,
+                pair[1].coverage_ratio,
+                -(
+                    pair[0].cloud_cover
+                    if pair[0].cloud_cover is not None
+                    else 101
+                ),
+                pair[0].acquired_at,
             ),
             reverse=True,
         )
         candidates = [
-            self._candidate_response(item, request.bbox)
-            for item in parsed_items[:20]
+            self._candidate_response(item, item_coverage)
+            for item, item_coverage in covered_items[:20]
         ]
         return PublicImagerySearchResponse(
             provider=self.engine.PROVIDER,
@@ -118,6 +149,7 @@ class PublicImageryService:
             license_url=self.engine.LICENSE_URL,
             non_statutory_notice=self.engine.NON_STATUTORY_NOTICE,
             query_bbox=request.bbox,
+            coverage_basis=self.COVERAGE_BASIS,
             total=len(candidates),
             items=candidates,
         )
@@ -142,7 +174,23 @@ class PublicImageryService:
             request.task_code,
             request.operator_code,
         )
-        prepared = await self._prepare_subset(request.item_id, request.bbox)
+        item = await self._fetch_item(request.item_id)
+        coverage = await self._analyze_coverage(db, request.bbox, [item])
+        self._validate_coverage_geometries(coverage)
+        item_coverage = coverage.items[0]
+        if not item_coverage.fully_covers_query:
+            raise ValidationException(
+                "选中 Landsat 条目真实 STAC 足迹未完整覆盖目标范围，"
+                "请改用多景联合覆盖批次"
+            )
+        prepared = await self._prepare_item_subset(
+            item,
+            request.bbox,
+            request.bbox,
+            item_coverage=item_coverage,
+            union_coverage_ratio=coverage.union_coverage_ratio,
+            union_scene_count=1,
+        )
         try:
             with prepared.output_path.open("rb") as file_handle:
                 asset = await self.asset_service.upload_asset(
@@ -173,6 +221,8 @@ class PublicImageryService:
             source_cloud_cover=prepared.item.cloud_cover,
             source_wrs_path=prepared.item.wrs_path,
             source_wrs_row=prepared.item.wrs_row,
+            query_coverage_ratio=prepared.query_coverage_ratio,
+            coverage_basis=self.COVERAGE_BASIS,
             license_name=self.engine.LICENSE_NAME,
             non_statutory_notice=self.engine.NON_STATUTORY_NOTICE,
             asset=asset,
@@ -200,10 +250,34 @@ class PublicImageryService:
         )
         prepared_subsets: list[PreparedPublicImagerySubset] = []
         try:
-            for request_item in request.items:
-                prepared_subsets.append(await self._prepare_subset(
-                    request_item.item_id,
+            items = [
+                await self._fetch_item(request_item.item_id)
+                for request_item in request.items
+            ]
+            coverage = await self._analyze_coverage(db, request.bbox, items)
+            self._validate_coverage_geometries(coverage)
+            if not coverage.union_covers_query:
+                raise ValidationException(
+                    "所选 Landsat STAC 足迹联合覆盖不足，当前真实覆盖率 "
+                    f"{coverage.union_coverage_ratio * 100:.2f}%"
+                )
+            for item, item_coverage in zip(
+                items,
+                coverage.items,
+                strict=True,
+            ):
+                if item_coverage.coverage_ratio <= 0:
+                    raise ValidationException(
+                        f"Landsat 条目 {item.item_id} 未实际覆盖目标范围"
+                    )
+                subset_bbox = self._intersection_bbox(item.bbox, request.bbox)
+                prepared_subsets.append(await self._prepare_item_subset(
+                    item,
+                    subset_bbox,
                     request.bbox,
+                    item_coverage=item_coverage,
+                    union_coverage_ratio=coverage.union_coverage_ratio,
+                    union_scene_count=len(items),
                 ))
             batch_request = ImageryAssetBatchCreateRequest.model_validate({
                 "batch_code": request.batch_code,
@@ -251,6 +325,14 @@ class PublicImageryService:
                 license_url=self.engine.LICENSE_URL,
                 non_statutory_notice=self.engine.NON_STATUTORY_NOTICE,
                 query_bbox=request.bbox,
+                coverage_basis=self.COVERAGE_BASIS,
+                coverage_mode=(
+                    "single_scene_complete"
+                    if len(prepared_subsets) == 1
+                    else "multi_scene_union"
+                ),
+                union_coverage_ratio=coverage.union_coverage_ratio,
+                union_covers_query=coverage.union_covers_query,
                 sources=[
                     PublicImageryBatchSourceResponse(
                         item_id=prepared.item.item_id,
@@ -260,6 +342,8 @@ class PublicImageryService:
                         source_cloud_cover=prepared.item.cloud_cover,
                         source_wrs_path=prepared.item.wrs_path,
                         source_wrs_row=prepared.item.wrs_row,
+                        subset_bbox=prepared.subset_bbox,
+                        query_coverage_ratio=prepared.query_coverage_ratio,
                     )
                     for request_item, prepared in zip(
                         request.items,
@@ -304,26 +388,47 @@ class PublicImageryService:
             "manage_imagery",
         )
 
-    async def _prepare_subset(
+    async def _fetch_item(
         self,
         item_id: str,
-        bbox: tuple[float, float, float, float],
-    ) -> PreparedPublicImagerySubset:
-        """服务端重取一个 Item、签名四波段并生成临时反射率实体。
+    ) -> PublicLandsatItem:
+        """按稳定 Item ID 从固定 collection 重取并校验 STAC 条目。
 
         Args:
             item_id: 浏览器仅提交的稳定 STAC Item ID。
-            bbox: 本次批次共同使用的 WGS84 裁取范围。
 
         Returns:
-            PreparedPublicImagerySubset: 已完成裁取的临时实体和来源证据。
+            PublicLandsatItem: 已校验且不含临时 SAS 的 STAC 条目。
         """
         feature = await asyncio.to_thread(self.client.get_item, item_id)
         item = self.engine.parse_item(feature)
         if item.item_id != item_id:
             raise ValidationException("公开 STAC 返回的 Item ID 与请求不一致")
-        if not self.engine.fully_covers(item.bbox, bbox):
-            raise ValidationException("选中 Landsat 条目未完整覆盖目标 WGS84 范围")
+        return item
+
+    async def _prepare_item_subset(
+        self,
+        item: PublicLandsatItem,
+        subset_bbox: tuple[float, float, float, float],
+        query_bbox: tuple[float, float, float, float],
+        *,
+        item_coverage: PublicImageryItemCoverage,
+        union_coverage_ratio: float,
+        union_scene_count: int,
+    ) -> PreparedPublicImagerySubset:
+        """签名一个已重取条目的四波段并生成交集范围反射率实体。
+
+        Args:
+            item: 已从固定 collection 重取并校验的 STAC 条目。
+            subset_bbox: 本景 bbox 与共同目标范围的相交裁取矩形。
+            query_bbox: 本批次共同目标 WGS84 范围。
+            item_coverage: 本景真实 STAC 足迹覆盖分析。
+            union_coverage_ratio: 所选全部景的真实联合覆盖比例。
+            union_scene_count: 参与联合覆盖校核的景数。
+
+        Returns:
+            PreparedPublicImagerySubset: 已完成裁取的临时实体和来源证据。
+        """
         signed_pairs = await asyncio.gather(*[
             asyncio.to_thread(
                 self.client.sign_asset_url,
@@ -340,9 +445,18 @@ class PublicImageryService:
             await asyncio.to_thread(
                 self.engine.build_reflectance_subset,
                 item,
-                bbox,
+                subset_bbox,
                 signed_urls,
                 temporary_path,
+            )
+            await asyncio.to_thread(
+                self.engine.annotate_coverage_evidence,
+                temporary_path,
+                query_bbox=query_bbox,
+                subset_bbox=subset_bbox,
+                item_coverage_ratio=item_coverage.coverage_ratio,
+                union_coverage_ratio=union_coverage_ratio,
+                union_scene_count=union_scene_count,
             )
         except BaseException:
             temporary_path.unlink(missing_ok=True)
@@ -351,19 +465,100 @@ class PublicImageryService:
             item=item,
             output_path=temporary_path,
             original_filename=f"{item.item_id}_SR_SUBSET.tif",
+            subset_bbox=subset_bbox,
+            query_coverage_ratio=item_coverage.coverage_ratio,
         )
+
+    async def _analyze_coverage(
+        self,
+        db: AsyncSession,
+        query_bbox: tuple[float, float, float, float],
+        items: list[PublicLandsatItem],
+    ) -> PublicImageryCoverageAnalysis:
+        """使用 PostGIS 对真实 STAC 足迹执行逐景和联合覆盖分析。
+
+        Args:
+            db: 异步数据库会话。
+            query_bbox: 共同目标 WGS84 范围。
+            items: 已通过 STAC 结构和来源校验的候选。
+
+        Returns:
+            PublicImageryCoverageAnalysis: 与候选顺序一致的覆盖结果。
+        """
+        if not items:
+            return PublicImageryCoverageAnalysis(
+                items=(),
+                union_coverage_ratio=0,
+                union_covers_query=False,
+            )
+        try:
+            analysis = await self.dao.analyze_query_coverage(
+                db,
+                query_bbox,
+                [item.geometry for item in items],
+            )
+        except DBAPIError as exc:
+            raise ValidationException("公开 STAC 足迹无法完成空间覆盖校核") from exc
+        if len(analysis.items) != len(items):
+            raise ValidationException("公开 STAC 足迹覆盖结果数量不完整")
+        return analysis
+
+    @staticmethod
+    def _validate_coverage_geometries(
+        analysis: PublicImageryCoverageAnalysis,
+    ) -> None:
+        """拒绝拓扑无效的公开 STAC 来源足迹。
+
+        Args:
+            analysis: PostGIS 返回的逐景和联合覆盖结果。
+
+        Returns:
+            None: 全部来源足迹有效时无返回值。
+        """
+        invalid_indexes = [
+            item.index for item in analysis.items if not item.geometry_valid
+        ]
+        if invalid_indexes:
+            raise ValidationException(
+                "公开 STAC 来源足迹拓扑无效，条目序号："
+                + ", ".join(str(index + 1) for index in invalid_indexes)
+            )
+
+    @staticmethod
+    def _intersection_bbox(
+        item_bbox: tuple[float, float, float, float],
+        query_bbox: tuple[float, float, float, float],
+    ) -> tuple[float, float, float, float]:
+        """计算单景 bbox 与共同目标范围的非空矩形交集。
+
+        Args:
+            item_bbox: 当前 STAC 条目 WGS84 bbox。
+            query_bbox: 本批次共同目标 WGS84 bbox。
+
+        Returns:
+            tuple[float, float, float, float]: 实际裁取交集。
+        """
+        intersection = (
+            max(item_bbox[0], query_bbox[0]),
+            max(item_bbox[1], query_bbox[1]),
+            min(item_bbox[2], query_bbox[2]),
+            min(item_bbox[3], query_bbox[3]),
+        )
+        if intersection[0] >= intersection[2] or intersection[1] >= intersection[3]:
+            raise ValidationException("选中 Landsat 条目与目标范围没有有效交集")
+        return intersection
 
     @classmethod
     def _candidate_response(
         cls,
         item: PublicLandsatItem,
-        query_bbox: tuple[float, float, float, float],
+        coverage: PublicImageryItemCoverage,
     ) -> PublicImageryCandidateResponse:
         """组装不含临时 SAS 的公开影像候选响应。
 
         Args:
             item: 已校验 Landsat 条目。
-            query_bbox: 本次检索 WGS84 范围。
+            coverage: PostGIS 计算的真实 STAC 足迹覆盖结果。
 
         Returns:
             PublicImageryCandidateResponse: 前端安全候选信息。
@@ -380,10 +575,8 @@ class PublicImageryService:
             wrs_row=item.wrs_row,
             resolution_m=item.resolution_m,
             bbox=item.bbox,
-            fully_covers_query=PublicImageryEngine.fully_covers(
-                item.bbox,
-                query_bbox,
-            ),
+            query_coverage_ratio=coverage.coverage_ratio,
+            fully_covers_query=coverage.fully_covers_query,
             stac_item_url=item.item_url,
         )
 

@@ -10,6 +10,7 @@ from typing import Any
 import numpy as np
 import rasterio
 from rasterio.errors import RasterioIOError
+from rasterio.features import is_valid_geom
 from rasterio.warp import transform_bounds
 from rasterio.windows import Window, from_bounds
 
@@ -46,6 +47,7 @@ class PublicLandsatItem:
     product_id: str
     resolution_m: float
     bbox: tuple[float, float, float, float]
+    geometry: dict[str, object]
     item_url: str
     bands: tuple[PublicLandsatBand, ...]
 
@@ -79,6 +81,7 @@ class PublicImageryEngine:
         properties = item.get("properties")
         assets = item.get("assets")
         bbox = item.get("bbox")
+        geometry = item.get("geometry")
         if not isinstance(item_id, str) or not item_id:
             raise ValidationException("公开 STAC 条目缺少 Item ID")
         if collection != PublicImageryClient.COLLECTION:
@@ -95,6 +98,12 @@ class PublicImageryEngine:
         left, bottom, right, top = normalized_bbox
         if not (-180 <= left < right <= 180 and -90 <= bottom < top <= 90):
             raise ValidationException("公开 STAC 条目的 WGS84 bbox 不合法")
+        if (
+            not isinstance(geometry, dict)
+            or geometry.get("type") not in {"Polygon", "MultiPolygon"}
+            or not is_valid_geom(geometry)
+        ):
+            raise ValidationException("公开 STAC 条目缺少合法 Polygon 足迹")
 
         acquired_at = cls._datetime_property(properties, "datetime")
         cloud_cover = cls._optional_float(properties.get("eo:cloud_cover"))
@@ -135,9 +144,53 @@ class PublicImageryEngine:
             product_id=product_id,
             resolution_m=resolution_m,
             bbox=normalized_bbox,
+            geometry=geometry,
             item_url=PublicImageryClient.item_url(item_id),
             bands=bands,
         )
+
+    @staticmethod
+    def annotate_coverage_evidence(
+        output_path: Path,
+        *,
+        query_bbox: tuple[float, float, float, float],
+        subset_bbox: tuple[float, float, float, float],
+        item_coverage_ratio: float,
+        union_coverage_ratio: float,
+        union_scene_count: int,
+    ) -> None:
+        """把多景联合覆盖校核证据写入已生成的 GeoTIFF。
+
+        Args:
+            output_path: 已生成且仍处于临时区的公开影像实体。
+            query_bbox: 本批次共同目标 WGS84 范围。
+            subset_bbox: 本景与目标范围相交后的实际裁取矩形。
+            item_coverage_ratio: 本景真实 STAC 足迹覆盖比例。
+            union_coverage_ratio: 全部所选 STAC 足迹联合覆盖比例。
+            union_scene_count: 参与联合覆盖的景数。
+
+        Returns:
+            None: 标签写入完成后无返回值。
+        """
+        with rasterio.open(output_path, "r+") as dataset:
+            dataset.update_tags(
+                PUBLIC_COVERAGE_BASIS="STAC_GEOMETRY_POSTGIS_GEOGRAPHY",
+                PUBLIC_QUERY_BBOX_WGS84=json.dumps(
+                    query_bbox,
+                    separators=(",", ":"),
+                ),
+                PUBLIC_SUBSET_BBOX_WGS84=json.dumps(
+                    subset_bbox,
+                    separators=(",", ":"),
+                ),
+                PUBLIC_ITEM_QUERY_COVERAGE_RATIO=(
+                    f"{item_coverage_ratio:.12f}"
+                ),
+                PUBLIC_UNION_QUERY_COVERAGE_RATIO=(
+                    f"{union_coverage_ratio:.12f}"
+                ),
+                PUBLIC_UNION_SCENE_COUNT=str(union_scene_count),
+            )
 
     def build_reflectance_subset(
         self,
