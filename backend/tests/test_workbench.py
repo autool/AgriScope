@@ -1,7 +1,7 @@
 """遥感监测工作台业务单元测试。"""
 
 import asyncio
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
 from types import SimpleNamespace
@@ -1261,6 +1261,8 @@ def test_task_quality_check_batches_all_scoped_plots() -> None:
     assert quality_run.issue_count == 3
     assert quality_run.operator_code == "quality-wang-haifeng"
     assert len(quality_run.custom_field_schema_digest) == 64
+    assert quality_run.task_updated_at_snapshot == task.updated_at
+    assert quality_run.created_at == task.updated_at
     dao.add_review_record.assert_awaited_once()
     record = dao.add_review_record.await_args.args[1]
     assert record.reviewer_code == "quality-wang-haifeng"
@@ -1284,7 +1286,11 @@ def test_task_quality_run_history_returns_immutable_snapshots() -> None:
     """验证任务质检历史返回规则、自定义字段和稳定用户快照。"""
     created_at = datetime.now(UTC)
     dao = AsyncMock()
-    dao.get_task_by_code.return_value = SimpleNamespace(id=1)
+    dao.get_task_by_code.return_value = SimpleNamespace(
+        id=1,
+        status="interpreting",
+        updated_at=created_at,
+    )
     dao.list_task_quality_runs.return_value = (
         [
             SimpleNamespace(
@@ -1331,6 +1337,12 @@ def test_task_quality_run_history_returns_immutable_snapshots() -> None:
         ],
         4,
     )
+    dao.get_quality_gate_summary.return_value = QualityGateSummary(
+        total_count=35020,
+        checked_count=35020,
+        passing_count=0,
+        average_score=58.8,
+    )
 
     db = AsyncMock()
     response = asyncio.run(
@@ -1342,11 +1354,67 @@ def test_task_quality_run_history_returns_immutable_snapshots() -> None:
     )
 
     assert response.total_count == 4
+    assert response.latest_run_code == "QCR-TEST-001"
+    assert response.submission_eligible is False
+    assert "阻断问题" in response.submission_blockers[-1]
     assert response.items[0].run_code == "QCR-TEST-001"
     assert response.items[0].rule_config_version == 3
     assert response.items[0].average_score == 58.8
     assert response.items[0].rule_summaries[0].fail_count == 34559
     dao.list_task_quality_runs.assert_awaited_once_with(db, 1, 10)
+
+
+def test_task_quality_run_history_marks_current_passing_run_eligible() -> None:
+    """验证最近全量批次与当前任务、检查和得分一致时可提交。"""
+    completed_at = datetime.now(UTC)
+    task = SimpleNamespace(
+        id=1,
+        status="interpreting",
+        updated_at=completed_at,
+    )
+    run = SimpleNamespace(
+        run_code="QCR-CURRENT-001",
+        task_plot_count=809,
+        task_updated_at_snapshot=completed_at,
+        rule_config_version=2,
+        rule_config_snapshot={"version": 2},
+        custom_field_schema_digest="b" * 64,
+        custom_field_snapshot=[],
+        checked_plot_count=809,
+        passing_plot_count=809,
+        failed_plot_count=0,
+        average_score=Decimal("96.50"),
+        issue_count=0,
+        can_submit=True,
+        duration_ms=1250,
+        rule_summaries=[],
+        operator="王海峰",
+        operator_code="quality-wang-haifeng",
+        operator_role="quality_inspector",
+        comment="当前提交证据",
+        created_at=completed_at,
+    )
+    dao = AsyncMock()
+    dao.get_task_by_code.return_value = task
+    dao.list_task_quality_runs.return_value = ([run], 1)
+    dao.get_quality_gate_summary.return_value = QualityGateSummary(
+        total_count=809,
+        checked_count=809,
+        passing_count=809,
+        average_score=96.5,
+    )
+
+    response = asyncio.run(
+        WorkbenchService(dao=dao).list_task_quality_runs(
+            AsyncMock(),
+            "RS-2026-045",
+            10,
+        )
+    )
+
+    assert response.latest_run_code == "QCR-CURRENT-001"
+    assert response.submission_eligible is True
+    assert response.submission_blockers == []
 
 
 def test_task_quality_check_rejects_submitted_task() -> None:
@@ -1611,6 +1679,7 @@ def test_task_submit_rejects_incomplete_quality_coverage() -> None:
         passing_count=808,
         average_score=96.0,
     )
+    dao.get_latest_task_quality_run_for_update.return_value = None
 
     user_service = AsyncMock()
     user_service.require_capability.return_value = build_project_user()
@@ -1638,6 +1707,7 @@ def test_task_submit_rejects_non_passing_plots() -> None:
         passing_count=808,
         average_score=96.0,
     )
+    dao.get_latest_task_quality_run_for_update.return_value = None
 
     user_service = AsyncMock()
     user_service.require_capability.return_value = build_project_user()
@@ -1666,6 +1736,17 @@ def test_task_submit_succeeds_only_after_all_plots_pass() -> None:
         passing_count=809,
         average_score=96.5,
     )
+    quality_run = SimpleNamespace(
+        run_code="QCR-PASS-001",
+        can_submit=True,
+        task_updated_at_snapshot=task.updated_at,
+        created_at=task.updated_at,
+        task_plot_count=809,
+        checked_plot_count=809,
+        passing_plot_count=809,
+        average_score=Decimal("96.50"),
+    )
+    dao.get_latest_task_quality_run_for_update.return_value = quality_run
     db = AsyncMock()
     user_service = AsyncMock()
     user_service.require_capability.return_value = build_project_user()
@@ -1687,7 +1768,75 @@ def test_task_submit_succeeds_only_after_all_plots_pass() -> None:
     assert response.status == "self_check"
     assert response.quality_score == 96.5
     dao.add_review_record.assert_awaited_once()
+    record = dao.add_review_record.await_args.args[1]
+    assert record.quality_run_code == "QCR-PASS-001"
     db.commit.assert_awaited_once()
+
+
+def test_task_submit_rejects_missing_task_quality_run() -> None:
+    """验证逐图结果全绿但没有全量批次账本时仍不能提交。"""
+    task = build_task("interpreting")
+    dao = AsyncMock()
+    dao.get_task_by_code_for_update.return_value = task
+    dao.get_quality_gate_summary.return_value = QualityGateSummary(
+        total_count=809,
+        checked_count=809,
+        passing_count=809,
+        average_score=96.5,
+    )
+    dao.get_latest_task_quality_run_for_update.return_value = None
+    user_service = AsyncMock()
+    user_service.require_capability.return_value = build_project_user()
+
+    with pytest.raises(ValidationException, match="尚未执行任务全量质量检查"):
+        asyncio.run(
+            WorkbenchService(
+                dao=dao,
+                project_user_service=user_service,
+            ).submit_task_for_self_check(
+                AsyncMock(),
+                "RS-2026-045",
+                TaskSubmitRequest(reviewer_code="interp-li-jing"),
+            )
+        )
+
+
+def test_task_submit_rejects_stale_task_quality_run() -> None:
+    """验证任务更新时间变化后旧全量批次不能继续作为提交证据。"""
+    task = build_task("interpreting")
+    dao = AsyncMock()
+    dao.get_task_by_code_for_update.return_value = task
+    dao.get_quality_gate_summary.return_value = QualityGateSummary(
+        total_count=809,
+        checked_count=809,
+        passing_count=809,
+        average_score=96.5,
+    )
+    run_created_at = task.updated_at - timedelta(minutes=5)
+    dao.get_latest_task_quality_run_for_update.return_value = SimpleNamespace(
+        run_code="QCR-STALE-001",
+        can_submit=True,
+        task_updated_at_snapshot=run_created_at,
+        created_at=run_created_at,
+        task_plot_count=809,
+        checked_plot_count=809,
+        passing_plot_count=809,
+        average_score=Decimal("96.50"),
+    )
+    user_service = AsyncMock()
+    user_service.require_capability.return_value = build_project_user()
+
+    with pytest.raises(ValidationException, match="任务数据在最近全量质检后"):
+        asyncio.run(
+            WorkbenchService(
+                dao=dao,
+                project_user_service=user_service,
+            ).submit_task_for_self_check(
+                AsyncMock(),
+                "RS-2026-045",
+                TaskSubmitRequest(reviewer_code="interp-li-jing"),
+            )
+        )
 
 
 def test_field_verification_rejects_invalid_coordinate() -> None:

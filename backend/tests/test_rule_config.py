@@ -158,6 +158,7 @@ def test_rule_config_update_persists_values_and_audit() -> None:
     assert audit.new_values["field_offset_threshold_m"] == 8
     assert audit.operator == "赵志远"
     assert audit.operator_code == "manager-zhao-zhiyuan"
+    dao.invalidate_project_quality_evidence.assert_awaited_once_with(db, 7)
     db.commit.assert_awaited_once()
 
 

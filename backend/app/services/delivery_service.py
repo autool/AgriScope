@@ -1386,6 +1386,7 @@ class DeliveryService:
                 "reviewer": item.reviewer,
                 "reviewer_code": item.reviewer_code,
                 "reviewer_role": item.reviewer_role,
+                "quality_run_code": getattr(item, "quality_run_code", None),
                 "comment": item.comment,
                 "created_at": item.created_at,
             }

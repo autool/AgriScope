@@ -19,6 +19,9 @@ const {
   canRunTaskQualityComputed,
   taskQualityCheckingRef,
   taskQualityResultRef,
+  taskQualityRunsRef,
+  taskQualityRunsErrorRef,
+  taskQualityRunsLoadingRef,
   taskSubmittingRef,
 } = storeToRefs(workbenchStore)
 
@@ -33,6 +36,16 @@ const canRunComputed = computed<boolean>(() => (
 ))
 const canSubmitIdentityComputed = computed<boolean>(() => (
   userStore.hasCapability('submit_self_check')
+))
+const canSubmitQualityRunComputed = computed<boolean>(() => (
+  !taskQualityRunsErrorRef.value
+  && !taskQualityRunsLoadingRef.value
+  && taskQualityRunsRef.value?.submission_eligible === true
+))
+const submissionBlockerComputed = computed<string>(() => (
+  taskQualityRunsErrorRef.value
+  || taskQualityRunsRef.value?.submission_blockers[0]
+  || '正在核验最近全量质检批次与当前任务数据'
 ))
 const coveragePercentComputed = computed<number>(() => {
   const result = taskQualityResultRef.value
@@ -71,6 +84,10 @@ const submitForSelfCheck = async (): Promise<void> => {
     message.warning('只有内业解译员可以提交内业自检')
     return
   }
+  if (!canSubmitQualityRunComputed.value) {
+    message.warning(submissionBlockerComputed.value)
+    return
+  }
   try {
     await workbenchStore.submitTaskForSelfCheck(
       currentUser.user_code,
@@ -97,8 +114,16 @@ const submitForSelfCheck = async (): Promise<void> => {
     </header>
 
     <p class="description">
-      按任务作用域一次检查 {{ overviewRef?.task.total_plots || 0 }} 个图斑，结果统一写入质量问题和审核记录。
+      按任务作用域一次检查 {{ overviewRef?.task.total_plots || 0 }} 个图斑；提交必须绑定最近一次仍与当前任务数据一致的全量质检批次。
     </p>
+
+    <a-alert
+      v-if="taskStatusComputed === 'interpreting' && !canSubmitQualityRunComputed"
+      :message="submissionBlockerComputed"
+      :type="taskQualityRunsErrorRef ? 'error' : taskQualityRunsLoadingRef ? 'info' : 'warning'"
+      show-icon
+      class="submission-alert"
+    />
 
     <div class="operator-row">
       <span class="operator-identity">
@@ -119,7 +144,7 @@ const submitForSelfCheck = async (): Promise<void> => {
       </a-button>
       <a-button
         :loading="taskSubmittingRef"
-        :disabled="taskStatusComputed !== 'interpreting' || taskQualityCheckingRef || !canSubmitIdentityComputed"
+        :disabled="taskStatusComputed !== 'interpreting' || taskQualityCheckingRef || taskQualityRunsLoadingRef || !canSubmitIdentityComputed || !canSubmitQualityRunComputed"
         @click="submitForSelfCheck"
       >
         提交内业自检
@@ -243,6 +268,11 @@ header strong {
   font-size: 8px;
   line-height: 15px;
   color: #65736b;
+}
+
+.submission-alert {
+  margin-bottom: 8px;
+  font-size: 9px;
 }
 
 .operator-row {

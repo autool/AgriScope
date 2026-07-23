@@ -256,6 +256,7 @@ class RuleConfigService:
                 new_values=new_values,
             ),
         )
+        await self.dao.invalidate_project_quality_evidence(db, project.id)
         await db.commit()
         await db.refresh(config)
         return self._to_response(project_code, config)

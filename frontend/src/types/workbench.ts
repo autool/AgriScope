@@ -90,6 +90,7 @@ export interface WorkbenchOverview {
     reviewer: string
     reviewer_code: string | null
     reviewer_role: string | null
+    quality_run_code: string | null
     comment: string | null
     created_at: string
   }>
@@ -674,6 +675,9 @@ export interface TaskQualityRun {
 export interface TaskQualityRunList {
   task_code: string
   total_count: number
+  latest_run_code: string | null
+  submission_eligible: boolean
+  submission_blockers: string[]
   items: TaskQualityRun[]
 }
 

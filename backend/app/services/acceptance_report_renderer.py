@@ -316,7 +316,12 @@ class AcceptanceReportRenderer:
                 item.get("action", "--"),
                 f"{item.get('reviewer', '--')} / {item.get('reviewer_role', '--')}",
                 item.get("created_at", "--"),
-                item.get("comment", ""),
+                (
+                    f"{item.get('comment', '')}；绑定质检批次 "
+                    f"{item['quality_run_code']}"
+                    if item.get("quality_run_code")
+                    else item.get("comment", "")
+                ),
             ]
             for item in data["reviews"]
         ]
@@ -435,7 +440,12 @@ class AcceptanceReportRenderer:
                     f"{item.get('review_level', '--')} / {item.get('action', '--')} / "
                     f"{item.get('reviewer', '--')}"
                     f"（{item.get('reviewer_role', '--')}）/ "
-                    f"{item.get('created_at', '--')}：{item.get('comment', '')}",
+                    f"{item.get('created_at', '--')}：{item.get('comment', '')}"
+                    + (
+                        f"；绑定质检批次 {item['quality_run_code']}"
+                        if item.get("quality_run_code")
+                        else ""
+                    ),
                 )
                 for item in data["reviews"]
             )

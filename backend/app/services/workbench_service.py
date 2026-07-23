@@ -222,6 +222,72 @@ class WorkbenchService:
             created_at=run.created_at,
         )
 
+    @staticmethod
+    def _quality_submission_blockers(
+        task: MonitoringTask,
+        gate_summary: QualityGateSummary,
+        latest_run: TaskQualityRun | None,
+    ) -> list[str]:
+        """判断当前任务是否仍可使用最近全量质检批次提交自检。
+
+        Args:
+            task: 当前已锁定或已读取的作业任务。
+            gate_summary: 当前任务逐图质量证据汇总。
+            latest_run: 最近一次不可变全量质检批次。
+
+        Returns:
+            list[str]: 阻断原因；空列表表示最近批次仍是当前提交证据。
+        """
+        if task.status != "interpreting":
+            return ["当前任务已进入审核流程，无需重复提交内业自检"]
+        blockers: list[str] = []
+        if gate_summary.total_count == 0:
+            blockers.append("当前任务没有可提交的有效图斑")
+        if gate_summary.checked_count < gate_summary.total_count:
+            blockers.append(
+                "质量检查尚未覆盖全部图斑："
+                f"已检查 {gate_summary.checked_count}/"
+                f"{gate_summary.total_count}"
+            )
+        if gate_summary.passing_count < gate_summary.total_count:
+            blockers.append(
+                "仍有图斑未通过质量门禁："
+                f"通过 {gate_summary.passing_count}/"
+                f"{gate_summary.total_count}"
+            )
+        if gate_summary.average_score is None or gate_summary.average_score < 80:
+            blockers.append("任务平均质量得分不足 80，暂不能提交自检")
+        if latest_run is None:
+            blockers.append("尚未执行任务全量质量检查，不能提交内业自检")
+            return blockers
+        if not latest_run.can_submit:
+            blockers.append(
+                f"最近全量质检批次 {latest_run.run_code} 仍有阻断问题"
+            )
+        if latest_run.task_updated_at_snapshot != latest_run.created_at:
+            blockers.append("最近全量质检批次使用旧版任务快照语义，请重新运行全量质检")
+        elif latest_run.task_updated_at_snapshot != task.updated_at:
+            blockers.append("任务数据在最近全量质检后已发生变化，请重新运行全量质检")
+        if latest_run.task_plot_count != gate_summary.total_count:
+            blockers.append("当前任务图斑数量与最近全量质检批次不一致")
+        if (
+            latest_run.checked_plot_count != gate_summary.checked_count
+            or latest_run.passing_plot_count != gate_summary.passing_count
+        ):
+            blockers.append("当前逐图质量证据与最近全量质检批次不一致")
+        latest_score = (
+            float(latest_run.average_score)
+            if latest_run.average_score is not None
+            else None
+        )
+        if (
+            latest_score is None
+            or gate_summary.average_score is None
+            or abs(latest_score - gate_summary.average_score) >= 0.005
+        ):
+            blockers.append("当前平均质量得分与最近全量质检批次不一致")
+        return blockers
+
     async def _validate_geometry(
         self,
         db: AsyncSession,
@@ -2250,7 +2316,6 @@ class WorkbenchService:
             raise NotFoundException(f"未找到任务 {task_code}")
         if task.status != "interpreting":
             raise ValidationException("仅解译中的任务可以重新运行全量质量检查")
-        task_updated_at_snapshot = task.updated_at
         operator = await self.project_user_service.require_capability(
             db,
             task.project_id,
@@ -2355,9 +2420,10 @@ class WorkbenchService:
             for rule_code, counter in rule_counters.items()
         ]
         duration_ms = round((perf_counter() - started_counter) * 1000)
+        completed_at = datetime.now(UTC)
         run_code = f"QCR-{uuid4().hex.upper()}"
         task.quality_score = gate_summary.average_score
-        task.updated_at = datetime.now(UTC)
+        task.updated_at = completed_at
         await self.dao.add_task_quality_run(
             db,
             TaskQualityRun(
@@ -2365,7 +2431,7 @@ class WorkbenchService:
                 task_id=task.id,
                 project_id=task.project_id,
                 task_plot_count=len(plots),
-                task_updated_at_snapshot=task_updated_at_snapshot,
+                task_updated_at_snapshot=completed_at,
                 rule_config_version=int(getattr(config, "version", 1)),
                 rule_config_snapshot=rule_config_snapshot,
                 custom_field_schema_digest=custom_field_schema_digest,
@@ -2384,7 +2450,7 @@ class WorkbenchService:
                 operator_code=operator.user_code,
                 operator_role=operator.role_code,
                 comment=request.comment,
-                created_at=started_at,
+                created_at=completed_at,
             ),
         )
         summary_comment = (
@@ -2453,9 +2519,19 @@ class WorkbenchService:
             task.id,
             limit,
         )
+        latest_run = runs[0] if runs else None
+        gate_summary = await self.dao.get_quality_gate_summary(db, task.id)
+        submission_blockers = self._quality_submission_blockers(
+            task,
+            gate_summary,
+            latest_run,
+        )
         return TaskQualityRunListResponse(
             task_code=task_code,
             total_count=total_count,
+            latest_run_code=(latest_run.run_code if latest_run is not None else None),
+            submission_eligible=not submission_blockers,
+            submission_blockers=submission_blockers,
             items=[
                 self._to_task_quality_run_response(task_code, run)
                 for run in runs
@@ -2669,22 +2745,19 @@ class WorkbenchService:
             "submit_self_check",
         )
         gate_summary = await self.dao.get_quality_gate_summary(db, task.id)
-        if gate_summary.total_count == 0:
-            raise ValidationException("当前任务没有可提交的有效图斑")
-        if gate_summary.checked_count < gate_summary.total_count:
-            raise ValidationException(
-                "质量检查尚未覆盖全部图斑："
-                f"已检查 {gate_summary.checked_count}/"
-                f"{gate_summary.total_count}"
-            )
-        if gate_summary.passing_count < gate_summary.total_count:
-            raise ValidationException(
-                "仍有图斑未通过质量门禁："
-                f"通过 {gate_summary.passing_count}/"
-                f"{gate_summary.total_count}"
-            )
-        if gate_summary.average_score is None or gate_summary.average_score < 80:
-            raise ValidationException("任务平均质量得分不足 80，暂不能提交自检")
+        latest_run = await self.dao.get_latest_task_quality_run_for_update(
+            db,
+            task.id,
+        )
+        submission_blockers = self._quality_submission_blockers(
+            task,
+            gate_summary,
+            latest_run,
+        )
+        if submission_blockers:
+            raise ValidationException(submission_blockers[0])
+        if latest_run is None:
+            raise ValidationException("尚未执行任务全量质量检查，不能提交内业自检")
 
         task.status = "self_check"
         task.quality_score = gate_summary.average_score
@@ -2698,6 +2771,7 @@ class WorkbenchService:
                 reviewer=reviewer.display_name,
                 reviewer_code=reviewer.user_code,
                 reviewer_role=reviewer.role_code,
+                quality_run_code=latest_run.run_code,
                 comment=request.comment or "提交内业自检",
             ),
         )

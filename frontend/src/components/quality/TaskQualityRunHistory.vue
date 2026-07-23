@@ -13,6 +13,7 @@ const workbenchStore = useWorkbenchStore()
 const {
   taskQualityRunsRef,
   taskQualityRunsLoadingRef,
+  taskQualityRunsErrorRef,
 } = storeToRefs(workbenchStore)
 
 const runsComputed = computed(() => taskQualityRunsRef.value?.items || [])
@@ -30,9 +31,11 @@ const formatDateTime = (value: string): string => new Intl.DateTimeFormat(
   },
 ).format(new Date(value))
 
-onMounted(() => {
+const loadRuns = (): void => {
   void workbenchStore.loadTaskQualityRuns().catch(() => undefined)
-})
+}
+
+onMounted(loadRuns)
 </script>
 
 <template>
@@ -43,15 +46,40 @@ onMounted(() => {
         <small>IMMUTABLE QUALITY LEDGER</small>
         <strong>全量质检批次账本</strong>
       </div>
-      <a-tag>{{ taskQualityRunsRef?.total_count || 0 }} 次运行</a-tag>
+      <a-tag
+        :color="taskQualityRunsRef?.submission_eligible ? 'success' : 'warning'"
+      >
+        {{ taskQualityRunsRef?.submission_eligible ? '当前批次可提交' : `${taskQualityRunsRef?.total_count || 0} 次运行` }}
+      </a-tag>
     </header>
 
     <a-spin :spinning="taskQualityRunsLoadingRef">
+      <a-alert
+        v-if="taskQualityRunsErrorRef"
+        type="error"
+        show-icon
+        :message="taskQualityRunsErrorRef"
+      >
+        <template #action>
+          <a-button size="small" @click="loadRuns">重试</a-button>
+        </template>
+      </a-alert>
+      <a-alert
+        v-else-if="taskQualityRunsRef?.submission_blockers.length"
+        type="warning"
+        show-icon
+        :message="taskQualityRunsRef.submission_blockers[0]"
+        class="ledger-alert"
+      />
       <a-empty
-        v-if="!taskQualityRunsLoadingRef && !runsComputed.length"
+        v-if="!taskQualityRunsErrorRef && !taskQualityRunsLoadingRef && !runsComputed.length"
         description="尚无可复核的全量质检批次"
       />
-      <a-collapse v-else ghost accordion>
+      <a-collapse
+        v-else-if="!taskQualityRunsErrorRef && runsComputed.length"
+        ghost
+        accordion
+      >
         <a-collapse-panel
           v-for="run in runsComputed"
           :key="run.run_code"
@@ -66,6 +94,9 @@ onMounted(() => {
                 <strong>{{ run.run_code }}</strong>
                 <small>{{ formatDateTime(run.created_at) }} · {{ run.operator }} / {{ run.operator_role }}</small>
               </span>
+              <a-tag v-if="run.run_code === taskQualityRunsRef?.latest_run_code" color="blue">
+                最近批次
+              </a-tag>
               <span class="run-metrics">
                 <b>{{ run.checked_plot_count.toLocaleString() }} 覆盖</b>
                 <b>{{ run.passing_plot_count.toLocaleString() }} 通过</b>
@@ -183,6 +214,11 @@ header small,
   font-size: 10px;
   color: #506159;
   background: #f7faf8;
+}
+
+.ledger-alert {
+  margin: 8px 0;
+  font-size: 9px;
 }
 
 .rule-ledger {

@@ -454,6 +454,9 @@ class ReviewRecord(Base):
     """任务审核与整改操作记录。"""
 
     __tablename__ = "review_records"
+    __table_args__ = (
+        Index("idx_review_records_quality_run", "quality_run_code"),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     task_id: Mapped[int] = mapped_column(
@@ -465,6 +468,14 @@ class ReviewRecord(Base):
     reviewer: Mapped[str] = mapped_column(String(100), nullable=False)
     reviewer_code: Mapped[str | None] = mapped_column(String(50), nullable=True)
     reviewer_role: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    quality_run_code: Mapped[str | None] = mapped_column(
+        ForeignKey(
+            "task_quality_runs.run_code",
+            ondelete="RESTRICT",
+            name="fk_review_records_quality_run_code",
+        ),
+        nullable=True,
+    )
     comment: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),

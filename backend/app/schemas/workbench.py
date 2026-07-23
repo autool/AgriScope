@@ -645,6 +645,9 @@ class TaskQualityRunListResponse(BaseModel):
 
     task_code: str
     total_count: int
+    latest_run_code: str | None = None
+    submission_eligible: bool = False
+    submission_blockers: list[str] = Field(default_factory=list)
     items: list[TaskQualityRunResponse]
 
 
@@ -792,6 +795,7 @@ class ReviewRecordResponse(BaseModel):
     reviewer: str
     reviewer_code: str | None
     reviewer_role: str | None
+    quality_run_code: str | None = None
     comment: str | None
     created_at: datetime
 

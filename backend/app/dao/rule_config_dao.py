@@ -1,9 +1,15 @@
 """项目级业务规则配置数据访问对象。"""
 
-from sqlalchemy import select
+from sqlalchemy import delete, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.workbench import ProjectRuleConfig, ProjectRuleConfigAudit
+from app.models.workbench import (
+    MonitoringTask,
+    PlotQualityCheck,
+    ProjectRuleConfig,
+    ProjectRuleConfigAudit,
+    QualityIssue,
+)
 
 
 class RuleConfigDAO:
@@ -86,3 +92,43 @@ class RuleConfigDAO:
         db.add(audit)
         await db.flush()
         return audit
+
+    async def invalidate_project_quality_evidence(
+        self,
+        db: AsyncSession,
+        project_id: int,
+    ) -> None:
+        """规则版本变化后失效项目任务当前质量证据。
+
+        Args:
+            db: 异步数据库会话。
+            project_id: 项目主键。
+
+        Returns:
+            None: 不返回数据，仅保留不可变质检批次历史。
+        """
+        task_ids = select(MonitoringTask.id).where(
+            MonitoringTask.project_id == project_id
+        )
+        await db.execute(
+            delete(PlotQualityCheck).where(PlotQualityCheck.task_id.in_(task_ids))
+        )
+        await db.execute(
+            update(QualityIssue)
+            .where(
+                QualityIssue.task_id.in_(task_ids),
+                QualityIssue.source == "auto",
+                QualityIssue.issue_type == "quality_rule",
+                QualityIssue.status == "open",
+            )
+            .values(status="resolved", resolved_at=func.now())
+        )
+        await db.execute(
+            update(MonitoringTask)
+            .where(MonitoringTask.project_id == project_id)
+            .values(
+                status="interpreting",
+                quality_score=None,
+                updated_at=func.now(),
+            )
+        )

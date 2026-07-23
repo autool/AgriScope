@@ -2433,3 +2433,26 @@ class WorkbenchDAO:
             .limit(limit)
         )
         return result.scalars().all(), total
+
+    async def get_latest_task_quality_run_for_update(
+        self,
+        db: AsyncSession,
+        task_id: int,
+    ) -> TaskQualityRun | None:
+        """锁定任务最近一次全量质检批次供提交门禁绑定。
+
+        Args:
+            db: 异步数据库会话。
+            task_id: 作业任务主键。
+
+        Returns:
+            TaskQualityRun | None: 最近批次；尚未全量质检时返回 None。
+        """
+        result = await db.execute(
+            select(TaskQualityRun)
+            .where(TaskQualityRun.task_id == task_id)
+            .order_by(TaskQualityRun.created_at.desc(), TaskQualityRun.id.desc())
+            .limit(1)
+            .with_for_update()
+        )
+        return result.scalar_one_or_none()

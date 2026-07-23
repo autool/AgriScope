@@ -70,6 +70,7 @@ export const useWorkbenchStore = defineStore('workbench', () => {
   const taskQualityResultRef = ref<TaskQualityCheckResult | null>(null)
   const taskQualityRunsRef = ref<TaskQualityRunList | null>(null)
   const taskQualityRunsLoadingRef = ref<boolean>(false)
+  const taskQualityRunsErrorRef = ref<string | null>(null)
   const taskSubmittingRef = ref<boolean>(false)
   const batchUpdatingPlotsRef = ref<boolean>(false)
   const creatingPlotRef = ref<boolean>(false)
@@ -364,6 +365,7 @@ export const useWorkbenchStore = defineStore('workbench', () => {
         getPlotVersions(plotCode, taskCodeComputed.value),
         refreshOverview(),
         refreshPlotOperationHistory(),
+        refreshTaskQualityRunsSafely(),
       ])
       plotVersionsRef.value = versions
       qualityResultRef.value = null
@@ -395,6 +397,7 @@ export const useWorkbenchStore = defineStore('workbench', () => {
         refreshPlots(),
         refreshOverview(),
         refreshPlotOperationHistory(),
+        refreshTaskQualityRunsSafely(),
       ])
       taskQualityResultRef.value = null
       await selectByCode(attributes.plot_code)
@@ -435,6 +438,7 @@ export const useWorkbenchStore = defineStore('workbench', () => {
         refreshPlots(),
         refreshOverview(),
         refreshPlotOperationHistory(),
+        refreshTaskQualityRunsSafely(),
       ])
       taskQualityResultRef.value = null
       await selectByCode(plotCode)
@@ -469,6 +473,7 @@ export const useWorkbenchStore = defineStore('workbench', () => {
         refreshPlots(),
         refreshOverview(),
         refreshPlotOperationHistory(),
+        refreshTaskQualityRunsSafely(),
       ])
       taskQualityResultRef.value = null
       return attributes
@@ -507,6 +512,7 @@ export const useWorkbenchStore = defineStore('workbench', () => {
         refreshPlots(),
         refreshOverview(),
         refreshPlotOperationHistory(),
+        refreshTaskQualityRunsSafely(),
       ])
       taskQualityResultRef.value = null
       const firstChild = result.result_plots[0]
@@ -600,6 +606,7 @@ export const useWorkbenchStore = defineStore('workbench', () => {
         refreshPlots(),
         refreshOverview(),
         refreshPlotOperationHistory(),
+        refreshTaskQualityRunsSafely(),
       ])
       taskQualityResultRef.value = null
       await selectByCode(result.result_plot.plot_code)
@@ -631,6 +638,7 @@ export const useWorkbenchStore = defineStore('workbench', () => {
         refreshPlots(),
         refreshOverview(),
         refreshPlotOperationHistory(),
+        refreshTaskQualityRunsSafely(),
       ])
       taskQualityResultRef.value = null
       const firstActive = result.active_plot_codes[0]
@@ -703,7 +711,7 @@ export const useWorkbenchStore = defineStore('workbench', () => {
         { operator_code: user.user_code, comment: comment || null },
       )
       taskQualityResultRef.value = result
-      await Promise.all([refreshOverview(), loadTaskQualityRuns()])
+      await Promise.all([refreshOverview(), refreshTaskQualityRunsSafely()])
       return result
     } finally {
       taskQualityCheckingRef.value = false
@@ -713,13 +721,28 @@ export const useWorkbenchStore = defineStore('workbench', () => {
   /** 读取最近的不可变全量质检批次账本。 */
   const loadTaskQualityRuns = async (limit: number = 10): Promise<void> => {
     taskQualityRunsLoadingRef.value = true
+    taskQualityRunsErrorRef.value = null
     try {
       taskQualityRunsRef.value = await getWorkbenchTaskQualityRuns(
         taskCodeComputed.value,
         limit,
       )
+    } catch (error) {
+      taskQualityRunsErrorRef.value = error instanceof Error
+        ? error.message
+        : '全量质检批次账本加载失败'
+      throw error
     } finally {
       taskQualityRunsLoadingRef.value = false
+    }
+  }
+
+  /** 刷新辅助账本失败时保留主业务成功结果，并由账本区域显示错误状态。 */
+  const refreshTaskQualityRunsSafely = async (): Promise<void> => {
+    try {
+      await loadTaskQualityRuns()
+    } catch {
+      // 请求拦截器和 taskQualityRunsErrorRef 已保留可见错误证据。
     }
   }
 
@@ -741,7 +764,7 @@ export const useWorkbenchStore = defineStore('workbench', () => {
         taskCodeComputed.value,
         { reviewer_code: reviewerCode, comment: comment || null },
       )
-      await refreshOverview()
+      await Promise.all([refreshOverview(), refreshTaskQualityRunsSafely()])
     } finally {
       taskSubmittingRef.value = false
     }
@@ -765,7 +788,11 @@ export const useWorkbenchStore = defineStore('workbench', () => {
         { ...payload, operator_code: user.user_code },
       )
       taskQualityResultRef.value = null
-      await Promise.all([refreshOverview(), refreshPlotOperationHistory()])
+      await Promise.all([
+        refreshOverview(),
+        refreshPlotOperationHistory(),
+        refreshTaskQualityRunsSafely(),
+      ])
       const selectedCode = selectedPlotCodeComputed.value
       if (selectedCode && payload.plot_codes.includes(selectedCode)) {
         await loadSelectedPlot(selectedCode)
@@ -842,6 +869,7 @@ export const useWorkbenchStore = defineStore('workbench', () => {
     taskQualityResultRef,
     taskQualityRunsRef,
     taskQualityRunsLoadingRef,
+    taskQualityRunsErrorRef,
     taskSubmittingRef,
     batchUpdatingPlotsRef,
     creatingPlotRef,

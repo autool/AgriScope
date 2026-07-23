@@ -283,6 +283,7 @@ const handleRollback = async (targetVersion: number): Promise<void> => {
         <span>
           <strong>{{ reviewLevelLabel(record.review_level) }} · {{ reviewActionLabel(record.action) }}</strong>
           <small>{{ record.reviewer }} · {{ record.reviewer_code || '历史记录无稳定编码' }} · {{ formatReviewTime(record.created_at) }}</small>
+          <small v-if="record.quality_run_code">绑定质检批次 {{ record.quality_run_code }}</small>
           <em>{{ record.comment || '未填写说明' }}</em>
         </span>
         <a-tag>{{ record.reviewer_role || '历史角色' }}</a-tag>
