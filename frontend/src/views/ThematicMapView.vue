@@ -108,18 +108,18 @@ onMounted(() => {
 </template>
 
 <style scoped>
-.thematic-map-view { display: grid; grid-template-rows: auto minmax(0, 1fr); gap: 10px; height: 100%; padding: 10px; background: #eef2f0; }
+.thematic-map-view { box-sizing: border-box; display: grid; grid-template-rows: auto auto; gap: 10px; height: 100%; min-height: 0; padding: 10px 10px 24px; overflow: auto; background: #eef2f0; scrollbar-gutter: stable; }
 .summary-strip { display: grid; grid-template-columns: repeat(4, minmax(130px, 180px)) minmax(260px, 1fr); gap: 8px; }
 .summary-strip > span { display: flex; flex-direction: column; padding: 10px 12px; background: #fff; border: 1px solid #dfe5e2; border-radius: 7px; }
 .summary-strip small { font-size: 7px; color: #8b9791; }
 .summary-strip strong { font-size: 20px; color: #347958; }
 .summary-strip em { font-size: 8px; font-style: normal; color: #77867e; }
 .workspace-spin { min-height: 0; }
-.workspace-spin :deep(.ant-spin-container) { display: grid; grid-template-rows: minmax(390px, 0.8fr) auto minmax(250px, 1fr); gap: 10px; height: 100%; min-height: 0; overflow: auto; }
+.workspace-spin :deep(.ant-spin-container) { display: grid; grid-template-rows: minmax(390px, auto) auto auto; gap: 10px; min-height: 0; overflow: visible; }
 .composer-grid { display: grid; grid-template-columns: minmax(420px, 1fr) minmax(420px, 1fr); gap: 10px; min-height: 0; }
 @media (max-width: 1180px) {
   .summary-strip { grid-template-columns: repeat(4, 1fr); }
   .summary-strip :deep(.ant-alert) { grid-column: 1 / -1; }
-  .composer-grid { grid-template-columns: 1fr; overflow: auto; }
+  .composer-grid { grid-template-columns: 1fr; overflow: visible; }
 }
 </style>
