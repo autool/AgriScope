@@ -7,6 +7,7 @@ import {
   DatabaseOutlined,
   DeploymentUnitOutlined,
   DiffOutlined,
+  DownOutlined,
   EditOutlined,
   EnvironmentOutlined,
   FileDoneOutlined,
@@ -19,16 +20,37 @@ import {
   WifiOutlined,
 } from '@ant-design/icons-vue'
 import { storeToRefs } from 'pinia'
+import type { Component } from 'vue'
 import { computed } from 'vue'
+import { useRoute } from 'vue-router'
 
 import { useLayoutStore } from '@/store/layoutStore'
 import { useWorkbenchStore } from '@/store/workbenchStore'
 
 const workbenchStore = useWorkbenchStore()
 const layoutStore = useLayoutStore()
+const route = useRoute()
 const { overviewRef } = storeToRefs(workbenchStore)
 
-const navGroupsComputed = computed(() => [
+interface NavChild {
+  path: string
+  label: string
+}
+
+interface NavItem {
+  path: string
+  label: string
+  icon: Component
+  badge?: number
+  children?: NavChild[]
+}
+
+interface NavGroup {
+  label: string
+  items: NavItem[]
+}
+
+const navGroupsComputed = computed<NavGroup[]>(() => [
   {
     label: '监测作业',
     items: [
@@ -78,10 +100,23 @@ const navGroupsComputed = computed(() => [
     items: [
       { path: '/assets', label: '影像文件库', icon: DatabaseOutlined },
       { path: '/service-sharing', label: '数据共享', icon: ShareAltOutlined },
-      { path: '/settings', label: '规则配置', icon: SettingOutlined },
+      {
+        path: '/settings/rules',
+        label: '规则配置',
+        icon: SettingOutlined,
+        children: [
+          { path: '/settings/rules', label: '业务规则' },
+          { path: '/settings/fields', label: '地块字段' },
+          { path: '/settings/workflow', label: '审核流程' },
+        ],
+      },
     ],
   },
 ])
+
+const settingsExpandedComputed = computed<boolean>(() => (
+  route.path.startsWith('/settings/')
+))
 
 const remainingDaysComputed = computed<number>(() => {
   const deadline = overviewRef.value?.task.deadline
@@ -106,12 +141,37 @@ const remainingDaysComputed = computed<number>(() => {
         :title="layoutStore.preferencesRef.sidebar.collapsed ? item.label : undefined"
         placement="right"
       >
-        <router-link :to="item.path" class="nav-item">
-          <component :is="item.icon" />
-          <span v-if="!layoutStore.preferencesRef.sidebar.collapsed">{{ item.label }}</span>
-          <em v-if="item.badge && !layoutStore.preferencesRef.sidebar.collapsed">{{ item.badge }}</em>
-          <i v-else-if="item.badge" class="badge-dot" />
-        </router-link>
+        <div class="nav-entry">
+          <router-link
+            :to="item.path"
+            class="nav-item"
+            :class="{ 'nav-parent-active': item.children && settingsExpandedComputed }"
+          >
+            <component :is="item.icon" />
+            <span v-if="!layoutStore.preferencesRef.sidebar.collapsed">{{ item.label }}</span>
+            <DownOutlined
+              v-if="item.children && !layoutStore.preferencesRef.sidebar.collapsed"
+              class="submenu-arrow"
+              :class="{ expanded: settingsExpandedComputed }"
+            />
+            <em v-else-if="item.badge && !layoutStore.preferencesRef.sidebar.collapsed">{{ item.badge }}</em>
+            <i v-else-if="item.badge" class="badge-dot" />
+          </router-link>
+          <div
+            v-if="item.children && settingsExpandedComputed && !layoutStore.preferencesRef.sidebar.collapsed"
+            class="nav-submenu"
+          >
+            <router-link
+              v-for="child in item.children"
+              :key="child.path"
+              :to="child.path"
+              class="nav-subitem"
+            >
+              <i />
+              <span>{{ child.label }}</span>
+            </router-link>
+          </div>
+        </div>
       </a-tooltip>
     </div>
 
@@ -182,9 +242,40 @@ const remainingDaysComputed = computed<number>(() => {
 
 .nav-item:hover { color: #fff; background: rgb(255 255 255 / 5%); }
 .nav-item.router-link-active { color: #fff; background: #2d644c; box-shadow: inset 3px 0 #79c79c; }
+.nav-item.nav-parent-active { color: #fff; background: rgb(70 126 99 / 42%); box-shadow: inset 3px 0 #79c79c; }
 .nav-item > :first-child { font-size: 15px; }
 .nav-item em { min-width: 20px; padding: 1px 5px; font-size: 9px; font-style: normal; text-align: center; background: rgb(255 255 255 / 10%); border-radius: 10px; }
 .badge-dot { position: absolute; top: 8px; right: 8px; width: 5px; height: 5px; background: #f2bc58; border-radius: 50%; }
+.submenu-arrow { font-size: 9px; transition: transform 140ms ease; }
+.submenu-arrow.expanded { transform: rotate(180deg); }
+
+.nav-submenu {
+  padding: 2px 0 4px 28px;
+}
+
+.nav-subitem {
+  display: grid;
+  grid-template-columns: 10px 1fr;
+  gap: 5px;
+  align-items: center;
+  height: 29px;
+  padding: 0 8px;
+  font-size: 10px;
+  color: #93a69d;
+  text-decoration: none;
+  border-radius: 5px;
+}
+
+.nav-subitem > i {
+  width: 4px;
+  height: 4px;
+  background: #647b70;
+  border-radius: 50%;
+}
+
+.nav-subitem:hover { color: #fff; background: rgb(255 255 255 / 5%); }
+.nav-subitem.router-link-active { color: #fff; background: rgb(87 159 122 / 24%); }
+.nav-subitem.router-link-active > i { background: #8dd1a9; box-shadow: 0 0 0 3px rgb(141 209 169 / 12%); }
 
 .project-progress {
   position: absolute;

@@ -1,10 +1,9 @@
 <script setup lang="ts">
-import { SafetyCertificateOutlined, SettingOutlined } from '@ant-design/icons-vue'
+import { SafetyCertificateOutlined } from '@ant-design/icons-vue'
 import { message } from 'ant-design-vue'
 import { storeToRefs } from 'pinia'
 import { computed, onMounted, ref, watch } from 'vue'
 
-import PlotAttributeFieldManager from '@/components/settings/PlotAttributeFieldManager.vue'
 import { useRuleConfigStore } from '@/store/ruleConfigStore'
 import { useUserStore } from '@/store/userStore'
 
@@ -100,16 +99,6 @@ onMounted(() => {
 
 <template>
   <div class="settings-view">
-    <header class="page-heading">
-      <SettingOutlined />
-      <span>
-        <small>SYSTEM RULES</small>
-        <strong>项目业务规则配置</strong>
-        <em>阈值保存于数据库，并记录操作人和修改前后值</em>
-      </span>
-      <a-tag color="green">项目级配置</a-tag>
-    </header>
-
     <a-spin :spinning="loadingRef">
       <section class="rule-section">
         <header>
@@ -257,31 +246,18 @@ onMounted(() => {
           </a-button>
         </div>
       </section>
-
-      <PlotAttributeFieldManager :project-code="configRef?.project_code || 'RS-2026'" />
-
-      <section class="workflow-section">
-        <h3>审核流程</h3>
-        <div><span>内业自检</span><a-tag color="green">启用</a-tag></div>
-        <div><span>质检员审核</span><a-tag color="green">启用</a-tag></div>
-        <div><span>甲方复核</span><a-tag color="green">启用</a-tag></div>
-      </section>
     </a-spin>
   </div>
 </template>
 
 <style scoped>
-.settings-view { width: 820px; max-width: calc(100% - 28px); margin: 14px auto; }
-.page-heading { display: grid; grid-template-columns: 34px 1fr auto; gap: 10px; align-items: center; padding: 18px 20px; margin-bottom: 10px; color: #397d59; background: #fff; border: 1px solid #dfe6e2; border-radius: 8px; }
-.page-heading > :first-child { font-size: 24px; }
-.page-heading span, .save-bar span { display: flex; flex-direction: column; }
-.page-heading small, .save-bar small, .rule-section header small, label small { font-size: 8px; color: #89958f; }
-.page-heading strong { font-size: 15px; color: #28362f; }
-.page-heading em { margin-top: 2px; font-size: 9px; font-style: normal; color: #66736c; }
-.rule-section, .workflow-section { padding: 18px 20px; background: #fff; border: 1px solid #dfe6e2; border-radius: 8px; }
+.settings-view { width: min(1040px, 100%); margin: 0 auto; }
+.save-bar span { display: flex; flex-direction: column; }
+.save-bar small, .rule-section header small, label small { font-size: 8px; color: #89958f; }
+.rule-section { padding: 18px 20px; background: #fff; border: 1px solid #dfe6e2; border-radius: 8px; }
 .rule-section > header { display: flex; align-items: center; justify-content: space-between; padding-bottom: 12px; border-bottom: 1px solid #e5e9e7; }
 .rule-section > header span { display: flex; gap: 7px; align-items: center; color: #397d59; }
-.rule-section > header strong, .workflow-section h3 { font-size: 12px; color: #2d3a33; }
+.rule-section > header strong { font-size: 12px; color: #2d3a33; }
 .rule-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; padding: 14px 0; }
 .sub-heading { margin-top: 4px; padding-top: 14px !important; border-top: 1px solid #e5e9e7; }
 .production-rules { padding-top: 10px; }
@@ -295,8 +271,6 @@ onMounted(() => {
 .save-bar strong { font-size: 10px; }
 .save-bar em { font-size: 8px; font-style: normal; color: #7b8781; }
 .current-operator { padding-left: 10px; border-left: 2px solid #dfe7e2; }
-.workflow-section { margin-top: 10px; }
-.workflow-section > div { display: flex; align-items: center; justify-content: space-between; padding: 10px; font-size: 9px; background: #f7f9f8; border-bottom: 1px solid #edf0ee; }
 @media (max-width: 900px) {
   .rule-grid { grid-template-columns: 1fr; }
   .wide-rule { grid-column: auto; }

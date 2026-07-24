@@ -182,12 +182,46 @@ const router = createRouter({
         },
         {
           path: 'settings',
-          component: () => import('@/views/SettingsView.vue'),
+          component: () => import('@/views/SettingsLayoutView.vue'),
+          redirect: '/settings/rules',
           meta: {
             title: '规则配置',
-            description: '质量阈值、审核流程与权限规则',
-            keepAlive: true,
+            description: '项目业务规则、地块字段与审核职责',
+            fullWidth: true,
+            keepAlive: false,
           },
+          children: [
+            {
+              path: 'rules',
+              component: () => import('@/views/SettingsView.vue'),
+              meta: {
+                title: '业务规则配置',
+                description: '质量、外业与遥感生产阈值',
+                fullWidth: true,
+                keepAlive: false,
+              },
+            },
+            {
+              path: 'fields',
+              component: () => import('@/views/SettingsFieldsView.vue'),
+              meta: {
+                title: '地块字段配置',
+                description: '自定义属性、字段语义与模式版本',
+                fullWidth: true,
+                keepAlive: false,
+              },
+            },
+            {
+              path: 'workflow',
+              component: () => import('@/views/SettingsWorkflowView.vue'),
+              meta: {
+                title: '审核流程与权限',
+                description: '三级审核职责和真实项目成员能力',
+                fullWidth: true,
+                keepAlive: false,
+              },
+            },
+          ],
         },
       ],
     },
