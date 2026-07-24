@@ -4,19 +4,21 @@ import {
   CheckCircleOutlined,
   CloseCircleOutlined,
 } from '@ant-design/icons-vue'
-import { storeToRefs } from 'pinia'
 import { computed, onMounted } from 'vue'
 
 import { useWorkbenchStore } from '@/store/workbenchStore'
 
 const workbenchStore = useWorkbenchStore()
-const {
-  taskQualityRunsRef,
-  taskQualityRunsLoadingRef,
-  taskQualityRunsErrorRef,
-} = storeToRefs(workbenchStore)
-
-const runsComputed = computed(() => taskQualityRunsRef.value?.items || [])
+const taskQualityRunsComputed = computed(() => (
+  workbenchStore.taskQualityRunsRef ?? null
+))
+const taskQualityRunsLoadingComputed = computed<boolean>(() => (
+  workbenchStore.taskQualityRunsLoadingRef ?? false
+))
+const taskQualityRunsErrorComputed = computed<string | null>(() => (
+  workbenchStore.taskQualityRunsErrorRef ?? null
+))
+const runsComputed = computed(() => taskQualityRunsComputed.value?.items || [])
 
 const formatDateTime = (value: string): string => new Intl.DateTimeFormat(
   'zh-CN',
@@ -55,36 +57,36 @@ onMounted(loadRuns)
         <strong>全量质检批次账本</strong>
       </div>
       <a-tag
-        :color="taskQualityRunsRef?.submission_eligible ? 'success' : 'warning'"
+        :color="taskQualityRunsComputed?.submission_eligible ? 'success' : 'warning'"
       >
-        {{ taskQualityRunsRef?.submission_eligible ? '当前批次可提交' : `${taskQualityRunsRef?.total_count || 0} 次运行` }}
+        {{ taskQualityRunsComputed?.submission_eligible ? '当前批次可提交' : `${taskQualityRunsComputed?.total_count || 0} 次运行` }}
       </a-tag>
     </header>
 
-    <a-spin :spinning="taskQualityRunsLoadingRef">
+    <a-spin :spinning="taskQualityRunsLoadingComputed">
       <a-alert
-        v-if="taskQualityRunsErrorRef"
+        v-if="taskQualityRunsErrorComputed"
         type="error"
         show-icon
-        :message="taskQualityRunsErrorRef"
+        :message="taskQualityRunsErrorComputed"
       >
         <template #action>
           <a-button size="small" @click="loadRuns">重试</a-button>
         </template>
       </a-alert>
       <a-alert
-        v-else-if="taskQualityRunsRef?.submission_blockers.length"
+        v-else-if="taskQualityRunsComputed?.submission_blockers.length"
         type="warning"
         show-icon
-        :message="taskQualityRunsRef.submission_blockers[0]"
+        :message="taskQualityRunsComputed.submission_blockers[0]"
         class="ledger-alert"
       />
       <a-empty
-        v-if="!taskQualityRunsErrorRef && !taskQualityRunsLoadingRef && !runsComputed.length"
+        v-if="!taskQualityRunsErrorComputed && !taskQualityRunsLoadingComputed && !runsComputed.length"
         description="尚无可复核的全量质检批次"
       />
       <a-collapse
-        v-else-if="!taskQualityRunsErrorRef && runsComputed.length"
+        v-else-if="!taskQualityRunsErrorComputed && runsComputed.length"
         ghost
         accordion
       >
@@ -102,7 +104,7 @@ onMounted(loadRuns)
                 <strong>{{ run.run_code }}</strong>
                 <small>{{ formatDateTime(run.created_at) }} · {{ run.operator }} / {{ run.operator_role }}</small>
               </span>
-              <a-tag v-if="run.run_code === taskQualityRunsRef?.latest_run_code" color="blue">
+              <a-tag v-if="run.run_code === taskQualityRunsComputed?.latest_run_code" color="blue">
                 最近批次
               </a-tag>
               <span class="run-metrics">

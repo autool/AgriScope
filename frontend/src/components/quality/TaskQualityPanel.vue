@@ -19,10 +19,6 @@ const {
   canRunTaskQualityComputed,
   taskQualityCheckingRef,
   taskQualityResultRef,
-  taskQualityRunsRef,
-  taskQualityRunsErrorRef,
-  taskQualityRunsLoadingRef,
-  taskSubmittingRef,
 } = storeToRefs(workbenchStore)
 
 const commentRef = ref<string>('')
@@ -37,14 +33,28 @@ const canRunComputed = computed<boolean>(() => (
 const canSubmitIdentityComputed = computed<boolean>(() => (
   userStore.hasCapability('submit_self_check')
 ))
+// Pinia Store 在开发期新增字段时，旧 HMR 实例可能短暂缺少该字段。
+// 通过 Store 直接读取并提供安全默认值，避免组件热替换阶段中断整页渲染。
+const taskQualityRunsComputed = computed(() => (
+  workbenchStore.taskQualityRunsRef ?? null
+))
+const taskQualityRunsErrorComputed = computed<string | null>(() => (
+  workbenchStore.taskQualityRunsErrorRef ?? null
+))
+const taskQualityRunsLoadingComputed = computed<boolean>(() => (
+  workbenchStore.taskQualityRunsLoadingRef ?? false
+))
+const taskSubmittingComputed = computed<boolean>(() => (
+  workbenchStore.taskSubmittingRef ?? false
+))
 const canSubmitQualityRunComputed = computed<boolean>(() => (
-  !taskQualityRunsErrorRef.value
-  && !taskQualityRunsLoadingRef.value
-  && taskQualityRunsRef.value?.submission_eligible === true
+  !taskQualityRunsErrorComputed.value
+  && !taskQualityRunsLoadingComputed.value
+  && taskQualityRunsComputed.value?.submission_eligible === true
 ))
 const submissionBlockerComputed = computed<string>(() => (
-  taskQualityRunsErrorRef.value
-  || taskQualityRunsRef.value?.submission_blockers[0]
+  taskQualityRunsErrorComputed.value
+  || taskQualityRunsComputed.value?.submission_blockers[0]
   || '正在核验最近全量质检批次与当前任务数据'
 ))
 const coveragePercentComputed = computed<number>(() => {
@@ -120,7 +130,7 @@ const submitForSelfCheck = async (): Promise<void> => {
     <a-alert
       v-if="taskStatusComputed === 'interpreting' && !canSubmitQualityRunComputed"
       :message="submissionBlockerComputed"
-      :type="taskQualityRunsErrorRef ? 'error' : taskQualityRunsLoadingRef ? 'info' : 'warning'"
+      :type="taskQualityRunsErrorComputed ? 'error' : taskQualityRunsLoadingComputed ? 'info' : 'warning'"
       show-icon
       class="submission-alert"
     />
@@ -137,14 +147,14 @@ const submitForSelfCheck = async (): Promise<void> => {
       <a-button
         type="primary"
         :loading="taskQualityCheckingRef"
-        :disabled="!canRunComputed || taskSubmittingRef"
+        :disabled="!canRunComputed || taskSubmittingComputed"
         @click="runFullQualityCheck"
       >
         运行全量质检
       </a-button>
       <a-button
-        :loading="taskSubmittingRef"
-        :disabled="taskStatusComputed !== 'interpreting' || taskQualityCheckingRef || taskQualityRunsLoadingRef || !canSubmitIdentityComputed || !canSubmitQualityRunComputed"
+        :loading="taskSubmittingComputed"
+        :disabled="taskStatusComputed !== 'interpreting' || taskQualityCheckingRef || taskQualityRunsLoadingComputed || !canSubmitIdentityComputed || !canSubmitQualityRunComputed"
         @click="submitForSelfCheck"
       >
         提交内业自检

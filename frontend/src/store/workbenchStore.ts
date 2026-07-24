@@ -1,4 +1,4 @@
-import { defineStore } from 'pinia'
+import { acceptHMRUpdate, defineStore } from 'pinia'
 import { computed, ref } from 'vue'
 
 import {
@@ -924,3 +924,9 @@ export const useWorkbenchStore = defineStore('workbench', () => {
     loadPlotsForViewport,
   }
 })
+
+if (import.meta.hot) {
+  import.meta.hot.accept(
+    acceptHMRUpdate(useWorkbenchStore, import.meta.hot),
+  )
+}
